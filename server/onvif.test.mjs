@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getFreePort } from './test-port.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -82,7 +83,7 @@ test('ONVIF 设备信息/通道/取流解析', async (t) => {
 
 test('ONVIF discover + import API 端到端', async (t) => {
   const mock = await startMockOnvif(4601);
-  const port = 4394;
+  const port = await getFreePort();
   const base = `http://127.0.0.1:${port}`;
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fire-vision-onvif-'));
   const child = spawn(process.execPath, ['server/index.mjs', '--port', String(port)], {

@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { discoverOnvifDevices, parseProbeMatches } from './onvif-discovery.mjs';
+import { getFreePort } from './test-port.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -67,8 +68,8 @@ test('UDP 扫描收到响应并按主机去重', async (t) => {
 });
 
 test('ONVIF 全网段扫描 API 鉴权并返回设备列表', async (t) => {
-  const responder = await startUdpResponder(4412, responseXml('192.168.1.88', '周界云台'));
-  const port = 4410;
+  const port = await getFreePort();
+  const responder = await startUdpResponder(port, responseXml('192.168.1.88', '周界云台'));
   const base = `http://127.0.0.1:${port}`;
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fire-vision-wsdiscovery-'));
   const child = spawn(process.execPath, ['server/index.mjs', '--port', String(port)], {
@@ -78,7 +79,7 @@ test('ONVIF 全网段扫描 API 鉴权并返回设备列表', async (t) => {
       DATA_DIR: dataDir,
       MAX_CONCURRENT_STREAMS: '1',
       ONVIF_DISCOVERY_ADDRESS: '127.0.0.1',
-      ONVIF_DISCOVERY_PORT: '4412',
+      ONVIF_DISCOVERY_PORT: String(port),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

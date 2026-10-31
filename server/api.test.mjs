@@ -5,9 +5,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getFreePort } from './test-port.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const port = 4391;
+const port = await getFreePort();
 const base = `http://127.0.0.1:${port}`;
 const csrf = { 'X-Requested-With': 'flame-vision' };
 
