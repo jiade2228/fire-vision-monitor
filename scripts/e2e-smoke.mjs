@@ -311,6 +311,61 @@ async function main() {
     }));
     check('390px 视口无横向溢出', layout.scroll <= layout.viewport, JSON.stringify(layout));
 
+    // 本地视频测试回归：上传火灾样本 → 告警弹出 → 断开后检测框/光晕必须消失
+    // （曾出现断开后告警框残留）。样本只在本地有（test-videos 不入库），缺失则跳过。
+    const fireSample = path.join(root, 'test-videos', '火灾-酒精壁炉明火.webm');
+    if (fsSync.existsSync(fireSample)) {
+      await page.setViewport({ width: 1440, height: 900 });
+      await page.evaluate(() => {
+        const button = [...document.querySelectorAll('button')].find((item) =>
+          item.textContent.includes('监控'),
+        );
+        button?.click();
+      });
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      await page.evaluate(() => window.scrollTo(0, 0));
+      const fileInput = await page.$('input[type="file"]');
+      if (fileInput) {
+        await fileInput.uploadFile(fireSample);
+        const alarmVisible = await waitFor(
+          () =>
+            page.evaluate(
+              () =>
+                [...document.querySelectorAll('button')].some((item) =>
+                  item.textContent.includes('确认火情'),
+                ),
+            ),
+          60_000,
+        );
+        check('本地视频测试产生告警', alarmVisible);
+        if (alarmVisible) {
+          await page.evaluate(() => {
+            const tile = document.querySelector('.camera-tile');
+            const button = [...(tile?.querySelectorAll('button') ?? [])].find((item) =>
+              item.textContent.includes('断开'),
+            );
+            button?.click();
+          });
+          await new Promise((resolve) => setTimeout(resolve, 800));
+          const cleaned = await page.evaluate(() => {
+            const tile = document.querySelector('.camera-tile');
+            return {
+              hasVideo: Boolean(tile?.querySelector('video')),
+              hasDetectBox: Boolean(tile?.querySelector('.detect-box')),
+              hasGlow: Boolean(tile?.querySelector('.tile-alert-glow')),
+            };
+          });
+          check(
+            '断开后检测框与光晕消失',
+            !cleaned.hasVideo && !cleaned.hasDetectBox && !cleaned.hasGlow,
+            JSON.stringify(cleaned),
+          );
+        }
+      }
+    } else {
+      console.log('  --  本地视频测试回归：未找到 test-videos 样本，跳过');
+    }
+
     console.log(failures === 0 ? 'E2E 全部通过' : `E2E 失败 ${failures} 项`);
   } catch (error) {
     failures += 1;

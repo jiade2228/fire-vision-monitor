@@ -173,7 +173,7 @@ export default function CameraTile({
           <span className="tile-signal-note">已在放大窗口播放，本瓦片暂停拉流</span>
         )}
 
-        {alarmed && alarm && (
+        {source && alarmed && alarm && (
           <>
             <span
               className="tile-alert-glow"
