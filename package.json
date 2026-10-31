@@ -10,6 +10,7 @@
     "build": "tsc --noEmit && vite build",
     "test": "node --test --test-concurrency=1 server/*.test.mjs",
     "e2e": "node scripts/e2e-smoke.mjs",
+    "reset-password": "node server/reset-password.mjs",
     "nvr:probe": "node server/nvr-probe.mjs",
     "edge": "node server/edge-gateway.mjs",
     "start": "node server/index.mjs --port 4173",
