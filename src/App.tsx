@@ -557,12 +557,15 @@ export default function App() {
     (camera: Camera) => {
       if (readOnly) return false;
       if (preferences.localDetection === 'off') return false;
+      // 本地文件测试：文件只在浏览器里播放，服务端无从识别，必须由本地兜底，
+      // 不受 auto 策略（服务端接管即暂停本地）影响。
+      if (sources[camera.id]?.kind === 'file') return true;
       if (preferences.localDetection === 'on') return true;
       // auto：服务端识别已接管时暂停浏览器识别；边缘网关点位服务端不识别，仍由本地兜底。
       const point = cameraPoints.find((item) => item.id === camera.id);
       return !serverDetection || point?.protocol === 'edge';
     },
-    [readOnly, preferences.localDetection, serverDetection, cameraPoints],
+    [readOnly, preferences.localDetection, serverDetection, cameraPoints, sources],
   );
 
   const localDetectionIds = useMemo(
@@ -570,7 +573,7 @@ export default function App() {
       new Set(
         cameras.filter((camera) => localDetectionFor(camera)).map((camera) => camera.id),
       ),
-    [cameras, localDetectionFor],
+    [cameras, localDetectionFor, sources],
   );
 
   const onlineCount = cameras.filter((camera) => Boolean(sources[camera.id])).length;
