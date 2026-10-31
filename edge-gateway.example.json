@@ -1,0 +1,18 @@
+{
+  "centralUrl": "ws://127.0.0.1:4173/gateway",
+  "gatewayId": "site-a",
+  "name": "园区 A 现场网关",
+  "tokenEnv": "EDGE_GATEWAY_TOKEN",
+  "dataDir": "edge-data",
+  "cameras": {
+    "ch01": {
+      "label": "一号仓库",
+      "sourceUrlEnv": "NVR_CH01_RTSP",
+      "_comment": "源地址以 rtsp:// 为主；http(s) 源（网络摄像头/演示流）也可用于联调"
+    },
+    "ch02": {
+      "label": "配电室",
+      "sourceUrlEnv": "NVR_CH02_RTSP"
+    }
+  }
+}

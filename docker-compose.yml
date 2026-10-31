@@ -1,0 +1,26 @@
+services:
+  fire-vision:
+    build: .
+    container_name: fire-vision
+    restart: unless-stopped
+    ports:
+      - "4173:4173"
+    environment:
+      TZ: Asia/Shanghai
+      DATA_DIR: /data
+      MAX_CONCURRENT_STREAMS: "4"
+    volumes:
+      - fire-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    cpus: "2.0"
+    mem_limit: 2g
+
+volumes:
+  fire-data:

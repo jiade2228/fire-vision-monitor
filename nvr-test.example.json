@@ -1,0 +1,26 @@
+{
+  "devices": [
+    {
+      "name": "海康 NVR 测试机",
+      "vendorId": "hikvision",
+      "host": "192.168.1.64",
+      "port": 554,
+      "username": "admin",
+      "passwordEnv": "NVR_HIKVISION_PASSWORD",
+      "startChannel": 1,
+      "count": 4,
+      "streams": ["main", "sub"]
+    },
+    {
+      "name": "大华 NVR 测试机",
+      "vendorId": "dahua",
+      "host": "192.168.1.108",
+      "port": 554,
+      "username": "admin",
+      "passwordEnv": "NVR_DAHUA_PASSWORD",
+      "startChannel": 1,
+      "count": 4,
+      "streams": ["sub"]
+    }
+  ]
+}
