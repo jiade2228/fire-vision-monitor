@@ -2,6 +2,8 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { api, ApiError } from '../lib/api';
 import type {
+  AuditLog,
+  AuditLogPage,
   CameraInput,
   CameraSensitivity,
   DemoStatus,
@@ -25,6 +27,7 @@ import type {
 } from '../lib/api';
 import type { ToastKind } from '../types';
 import { formatDateTime } from '../lib/format';
+import { downloadAuditCsv } from '../lib/export';
 import RoiEditor from './RoiEditor';
 
 interface Props {
@@ -35,7 +38,7 @@ interface Props {
   onNotify: (text: string, kind?: ToastKind) => void;
 }
 
-type TabKey = 'cameras' | 'users' | 'sites' | 'stats' | 'notify';
+type TabKey = 'cameras' | 'users' | 'sites' | 'stats' | 'notify' | 'audit';
 
 const NOTIFY_KIND_LABELS: Record<NotifyKind, string> = {
   webhook: 'Webhook',
@@ -51,6 +54,53 @@ const NOTIFY_EVENT_LABELS: Record<string, string> = {
   summary: '每日摘要',
   'channel.disabled': '渠道停用',
 };
+
+/** 审计动作中文标签：后端 action 为「对象.动作」的点分格式。 */
+const AUDIT_ACTION_LABELS: Record<string, string> = {
+  'auth.login': '账号登录',
+  'system.setup': '系统初始化',
+  'system.backup': '数据库备份',
+  'camera.create': '新增点位',
+  'camera.update': '修改点位',
+  'camera.delete': '删除点位',
+  'camera.test': '测流',
+  'camera.import': '批量导入点位',
+  'alarm.create': '告警产生',
+  'alarm.update': '告警处置',
+  'alarm.clip': '告警短视频',
+  'notify.create': '新增通知渠道',
+  'notify.update': '修改通知渠道',
+  'notify.delete': '删除通知渠道',
+  'site.create': '新增站点',
+  'site.update': '修改站点',
+  'site.delete': '删除站点',
+  'user.create': '新增账号',
+  'user.update': '修改账号',
+  'user.delete': '删除账号',
+  'user.sites': '账号站点授权',
+  'demo.start': '启动演示',
+  'demo.stop': '停止演示',
+  'demo.purge': '清除演示数据',
+};
+
+const AUDIT_ACTION_GROUPS: { value: string; label: string }[] = [
+  { value: '', label: '全部动作' },
+  { value: 'auth', label: '登录认证' },
+  { value: 'camera', label: '点位变更' },
+  { value: 'alarm', label: '告警相关' },
+  { value: 'notify', label: '通知配置' },
+  { value: 'site', label: '站点管理' },
+  { value: 'user', label: '账号管理' },
+  { value: 'demo', label: '演示模式' },
+  { value: 'system', label: '系统操作' },
+];
+
+const AUDIT_RANGE_OPTIONS: { value: string; label: string; ms: number }[] = [
+  { value: 'all', label: '全部时间', ms: 0 },
+  { value: '1h', label: '近 1 小时', ms: 60 * 60 * 1000 },
+  { value: 'today', label: '今天', ms: -1 },
+  { value: '7d', label: '近 7 天', ms: 7 * 24 * 60 * 60 * 1000 },
+];
 
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -218,6 +268,12 @@ export default function AdminPanel({
   const [notifyBusy, setNotifyBusy] = useState(false);
   const [demoStatus, setDemoStatus] = useState<DemoStatus | null>(null);
   const [demoBusy, setDemoBusy] = useState(false);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [auditTotal, setAuditTotal] = useState(0);
+  const [auditOffset, setAuditOffset] = useState(0);
+  const [auditFilter, setAuditFilter] = useState({ action: '', q: '', range: 'all' });
+  const [auditBusy, setAuditBusy] = useState(false);
+  const AUDIT_PAGE_SIZE = 50;
   const [testingChannel, setTestingChannel] = useState<string | null>(null);
   const [notifyForm, setNotifyForm] = useState<{
     name: string;
@@ -317,6 +373,46 @@ export default function AdminPanel({
       setDemoStatus(result);
     } catch {
       // 演示状态非关键，失败静默
+    }
+  };
+
+  const loadAuditLogs = async (
+    overrides: Partial<{ action: string; q: string; range: string; offset: number }> = {},
+  ) => {
+    const filter = { ...auditFilter, offset: auditOffset, ...overrides };
+    const rangeOption =
+      AUDIT_RANGE_OPTIONS.find((option) => option.value === filter.range) ??
+      AUDIT_RANGE_OPTIONS[0];
+    const from =
+      rangeOption.ms === 0
+        ? null
+        : rangeOption.ms === -1
+          ? new Date(new Date().toDateString()).getTime()
+          : Date.now() - rangeOption.ms;
+    setAuditBusy(true);
+    try {
+      const result: AuditLogPage = await api.auditLogs({
+        limit: AUDIT_PAGE_SIZE,
+        offset: filter.offset,
+        action: filter.action,
+        q: filter.q,
+        from,
+      });
+      setAuditLogs(result.logs);
+      setAuditTotal(result.total);
+      setAuditFilter({
+        action: filter.action,
+        q: filter.q,
+        range: filter.range,
+      });
+      setAuditOffset(filter.offset);
+    } catch (requestError) {
+      onNotify(
+        requestError instanceof ApiError ? requestError.message : '审计日志加载失败',
+        'danger',
+      );
+    } finally {
+      setAuditBusy(false);
     }
   };
 
@@ -1117,6 +1213,20 @@ export default function AdminPanel({
           >
             告警通知
           </button>
+          {isSuperAdmin && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'audit'}
+              className={`admin-tab ${tab === 'audit' ? 'is-active' : ''}`}
+              onClick={() => {
+                setTab('audit');
+                void loadAuditLogs({ offset: 0 });
+              }}
+            >
+              审计日志
+            </button>
+          )}
           {isSuperAdmin && system && (
             <span className={`admin-system ${system.ffmpegAvailable ? 'is-ok' : 'is-warn'}`}>
               FFmpeg {system.ffmpegAvailable ? '可用' : '未安装'}
@@ -2467,6 +2577,145 @@ export default function AdminPanel({
                       {log.error && <span className="notify-log-error">{log.error}</span>}
                     </div>
                   ))}
+                </div>
+              )}
+            </div>
+          ) : tab === 'audit' ? (
+            <div className="admin-section">
+              <div className="admin-section-head">
+                <div>
+                  <h3>审计日志</h3>
+                  <p>
+                    记录所有账号的关键操作（登录、点位变更、告警处置、通知与系统操作），
+                    共 {auditTotal} 条，按时间倒序。
+                  </p>
+                </div>
+                <div className="admin-section-actions">
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost"
+                    disabled={auditBusy || auditLogs.length === 0}
+                    onClick={() =>
+                      downloadAuditCsv(auditLogs, AUDIT_ACTION_LABELS, '审计日志')
+                    }
+                  >
+                    导出当前页 CSV
+                  </button>
+                </div>
+              </div>
+
+              <div className="audit-filters">
+                <select
+                  className="settings-input"
+                  aria-label="按动作类型筛选"
+                  value={auditFilter.action}
+                  onChange={(event) =>
+                    void loadAuditLogs({ action: event.target.value, offset: 0 })
+                  }
+                >
+                  {AUDIT_ACTION_GROUPS.map((group) => (
+                    <option key={group.value} value={group.value}>
+                      {group.label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="settings-input"
+                  aria-label="按时间范围筛选"
+                  value={auditFilter.range}
+                  onChange={(event) =>
+                    void loadAuditLogs({ range: event.target.value, offset: 0 })
+                  }
+                >
+                  {AUDIT_RANGE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  className="settings-input"
+                  value={auditFilter.q}
+                  placeholder="搜索账号 / 详情 / 对象 ID"
+                  aria-label="搜索审计日志"
+                  onChange={(event) => setAuditFilter((prev) => ({ ...prev, q: event.target.value }))}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void loadAuditLogs({ offset: 0 });
+                  }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary"
+                  disabled={auditBusy}
+                  onClick={() => void loadAuditLogs({ offset: 0 })}
+                >
+                  {auditBusy ? '查询中…' : '查询'}
+                </button>
+              </div>
+
+              {auditLogs.length === 0 ? (
+                <p className="admin-empty">没有符合条件的审计记录。</p>
+              ) : (
+                <div className="audit-table-wrap">
+                  <table className="audit-table">
+                    <thead>
+                      <tr>
+                        <th>时间</th>
+                        <th>账号</th>
+                        <th>动作</th>
+                        <th>对象</th>
+                        <th>详情</th>
+                        <th>IP</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {auditLogs.map((log) => (
+                        <tr key={log.id}>
+                          <td className="audit-time">{formatDateTime(log.createdAt)}</td>
+                          <td>{log.username ?? '系统'}</td>
+                          <td>
+                            <span className="audit-action">
+                              {AUDIT_ACTION_LABELS[log.action] ?? log.action}
+                            </span>
+                          </td>
+                          <td className="audit-target">
+                            {log.targetType ? `${log.targetType}${log.targetId ? ` · ${log.targetId.slice(0, 8)}` : ''}` : '—'}
+                          </td>
+                          <td className="audit-detail">{log.detail || '—'}</td>
+                          <td className="audit-ip">{log.ip || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {auditTotal > AUDIT_PAGE_SIZE && (
+                <div className="audit-pager">
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost"
+                    disabled={auditBusy || auditOffset === 0}
+                    onClick={() =>
+                      void loadAuditLogs({
+                        offset: Math.max(0, auditOffset - AUDIT_PAGE_SIZE),
+                      })
+                    }
+                  >
+                    上一页
+                  </button>
+                  <span>
+                    第 {Math.floor(auditOffset / AUDIT_PAGE_SIZE) + 1} 页 / 共{' '}
+                    {Math.ceil(auditTotal / AUDIT_PAGE_SIZE)} 页
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost"
+                    disabled={auditBusy || auditOffset + AUDIT_PAGE_SIZE >= auditTotal}
+                    onClick={() => void loadAuditLogs({ offset: auditOffset + AUDIT_PAGE_SIZE })}
+                  >
+                    下一页
+                  </button>
                 </div>
               )}
             </div>

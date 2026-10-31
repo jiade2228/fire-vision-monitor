@@ -279,6 +279,47 @@ test('API auth, roles, alarms, audit and backup', async (t) => {
   const audit = await request('/api/audit', { cookie: adminCookie });
   assert.equal(audit.status, 200);
   assert.ok(audit.body.logs.length > 0);
+  assert.ok(audit.body.total >= audit.body.logs.length);
+
+  // 未登录与普通账号均不得查看审计日志
+  const auditAnon = await request('/api/audit');
+  assert.equal(auditAnon.status, 401);
+  const auditViewer = await request('/api/audit', { cookie: viewerCookie });
+  assert.equal(auditViewer.status, 403);
+
+  // 按动作前缀筛选：登录相关记录应全部命中
+  const auditAuth = await request('/api/audit?action=auth', { cookie: adminCookie });
+  assert.equal(auditAuth.status, 200);
+  assert.ok(auditAuth.body.logs.length > 0);
+  assert.ok(
+    auditAuth.body.logs.every((log) => log.action.startsWith('auth')),
+    'action=auth 前缀筛选应只返回 auth.* 记录',
+  );
+
+  // 关键词与时间范围筛选
+  const auditKeyword = await request('/api/audit?q=admin', { cookie: adminCookie });
+  assert.equal(auditKeyword.status, 200);
+  assert.ok(
+    auditKeyword.body.logs.every(
+      (log) =>
+        (log.username ?? '').includes('admin') ||
+        (log.detail ?? '').includes('admin') ||
+        (log.targetId ?? '').includes('admin'),
+    ),
+  );
+  const auditFuture = await request(
+    `/api/audit?from=${Date.now() + 60_000}`,
+    { cookie: adminCookie },
+  );
+  assert.equal(auditFuture.status, 200);
+  assert.equal(auditFuture.body.logs.length, 0);
+
+  // 分页：limit=1 时第二页不带回第一页的记录
+  const auditPage1 = await request('/api/audit?limit=1&offset=0', { cookie: adminCookie });
+  const auditPage2 = await request('/api/audit?limit=1&offset=1', { cookie: adminCookie });
+  assert.equal(auditPage1.body.logs.length, 1);
+  assert.equal(auditPage2.body.logs.length, 1);
+  assert.notEqual(auditPage1.body.logs[0].id, auditPage2.body.logs[0].id);
 
   const backup = await request('/api/admin/backup', {
     method: 'POST',

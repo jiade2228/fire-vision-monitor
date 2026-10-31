@@ -2879,8 +2879,20 @@ async function main() {
       res.json({ alarm: updated });
     });
 
+    // 审计日志：超管专属，支持按动作前缀/关键词/时间范围筛选与分页。
     app.get('/api/audit', requireAuth, requireRole('admin'), (req, res) => {
-      res.json({ logs: store.listAudit(req.query.limit).map(mapAudit) });
+      const filter = {
+        limit: Number(req.query.limit) || 50,
+        offset: Number(req.query.offset) || 0,
+        action: normalizeText(String(req.query.action ?? ''), 32),
+        q: normalizeText(String(req.query.q ?? ''), 64),
+        from: Number(req.query.from) || null,
+        to: Number(req.query.to) || null,
+      };
+      res.json({
+        logs: store.listAuditFiltered(filter).map(mapAudit),
+        total: store.countAuditFiltered(filter),
+      });
     });
 
     app.get('/api/metrics', requireAuth, requireRole('admin'), (_req, res) => {

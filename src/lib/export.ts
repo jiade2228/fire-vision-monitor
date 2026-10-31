@@ -17,6 +17,48 @@ function csvCell(value: string | number | undefined): string {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
+export interface AuditLogExportRow {
+  createdAt: number;
+  username?: string | null;
+  action: string;
+  targetType?: string | null;
+  targetId?: string | null;
+  detail?: string;
+  ip?: string;
+}
+
+/** 审计日志导出：与告警导出同一套公式注入防护与 BOM 头。 */
+export function downloadAuditCsv(
+  logs: AuditLogExportRow[],
+  actionLabels: Record<string, string>,
+  name: string,
+): void {
+  const headers = ['时间', '账号', '动作', '对象类型', '对象', '详情', 'IP'];
+  const rows = logs.map((log) => [
+    formatExportTime(log.createdAt),
+    log.username ?? '系统',
+    actionLabels[log.action] ?? log.action,
+    log.targetType ?? '',
+    log.targetId ?? '',
+    log.detail ?? '',
+    log.ip ?? '',
+  ]);
+  const csv = [headers, ...rows].map((row) => row.map(csvCell).join(',')).join('\r\n');
+  const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  const now = new Date();
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(
+    now.getHours(),
+  )}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  anchor.href = url;
+  anchor.download = `${name}-${stamp}.csv`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 export function downloadAlarmsCsv(alarms: Alarm[], name: string): void {
   const headers = [
     '告警编号',

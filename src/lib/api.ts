@@ -287,6 +287,23 @@ export interface SystemInfo {
   storage?: StorageUsage;
 }
 
+export interface AuditLog {
+  id: string;
+  userId: string | null;
+  username: string | null;
+  action: string;
+  targetType: string | null;
+  targetId: string | null;
+  detail: string;
+  ip: string;
+  createdAt: number;
+}
+
+export interface AuditLogPage {
+  logs: AuditLog[];
+  total: number;
+}
+
 export interface DemoStatus {
   running: boolean;
   ffmpegAvailable: boolean;
@@ -576,6 +593,24 @@ export const api = {
     ),
   detectionStatus: () => request<DetectionStatus>('/api/detection/status'),
   demoStatus: () => request<DemoStatus>('/api/demo/status'),
+  auditLogs: (params: {
+    limit?: number;
+    offset?: number;
+    action?: string;
+    q?: string;
+    from?: number | null;
+    to?: number | null;
+  } = {}) => {
+    const search = new URLSearchParams();
+    if (params.limit) search.set('limit', String(params.limit));
+    if (params.offset) search.set('offset', String(params.offset));
+    if (params.action) search.set('action', params.action);
+    if (params.q) search.set('q', params.q);
+    if (params.from) search.set('from', String(params.from));
+    if (params.to) search.set('to', String(params.to));
+    const query = search.toString();
+    return request<AuditLogPage>(`/api/audit${query ? `?${query}` : ''}`);
+  },
   startDemo: (siteId?: string) =>
     request<DemoStatus>('/api/demo/start', {
       method: 'POST',
