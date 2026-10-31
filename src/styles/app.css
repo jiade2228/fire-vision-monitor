@@ -4247,3 +4247,57 @@ button {
   color: var(--text-dim);
   font-size: 12px;
 }
+
+/* 大屏自动轮巡 */
+.tour-toggle.is-on {
+  border-color: rgba(255, 122, 47, 0.55);
+  color: #ffd7b8;
+  background: rgba(255, 122, 47, 0.14);
+}
+
+.tour-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 8px 14px;
+  margin: 0 auto;
+  max-width: 720px;
+  border-radius: 999px;
+  background: rgba(12, 14, 18, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(6px);
+}
+
+.tour-progress {
+  font-size: 12px;
+  color: #ffd7b8;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+
+.tour-interval {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.tour-interval select {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  color: inherit;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+@media (max-width: 560px) {
+  .tour-bar {
+    border-radius: 12px;
+    gap: 8px;
+    padding: 8px 10px;
+  }
+}

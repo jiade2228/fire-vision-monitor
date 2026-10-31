@@ -27,6 +27,18 @@ interface Props {
   onClose: () => void;
   onOpenAlarm: (id: string) => void;
   onDisconnect: (cameraId: string) => void;
+  /** 自动轮巡控制（仅在轮巡模式下传入）。 */
+  tour?: {
+    paused: boolean;
+    interval: number;
+    position: number;
+    total: number;
+    onPrev: () => void;
+    onNext: () => void;
+    onTogglePause: () => void;
+    onIntervalChange: (seconds: number) => void;
+    onStop: () => void;
+  };
 }
 
 const STATE_LABEL: Record<CameraStatus, string> = {
@@ -46,6 +58,7 @@ export default function FocusViewer({
   onClose,
   onOpenAlarm,
   onDisconnect,
+  tour,
 }: Props) {
   const { videoRef, playback } = useVideoPlayback(source);
   const { analysisWarning } = useFrameDetection({
@@ -199,6 +212,45 @@ export default function FocusViewer({
           <span className="focus-clock">{formatTime(now)}</span>
           <span className="focus-watermark">FLAME VISION · LIVE</span>
         </div>
+
+        {tour && (
+          <div className="tour-bar" role="group" aria-label="自动轮巡控制">
+            <span className="tour-progress">
+              轮巡 {tour.position} / {tour.total}
+            </span>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={tour.onPrev}>
+              上一路
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              onClick={tour.onTogglePause}
+              aria-pressed={tour.paused}
+            >
+              {tour.paused ? '继续轮巡' : '暂停轮巡'}
+            </button>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={tour.onNext}>
+              下一路
+            </button>
+            <label className="tour-interval">
+              <span>间隔</span>
+              <select
+                value={tour.interval}
+                aria-label="轮巡切换间隔"
+                onChange={(event) => tour.onIntervalChange(Number(event.target.value))}
+              >
+                {[10, 15, 30, 60].map((seconds) => (
+                  <option key={seconds} value={seconds}>
+                    {seconds} 秒
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button type="button" className="btn btn-sm btn-danger" onClick={tour.onStop}>
+              退出轮巡
+            </button>
+          </div>
+        )}
 
         <footer className="focus-foot">
           <div className="focus-foot-info">

@@ -61,6 +61,13 @@ export default function App() {
   const [sources, setSources] = useState<Record<string, CameraSource>>({});
   const [selectedCameraId, setSelectedCameraId] = useState('');
   const [focusedCameraId, setFocusedCameraId] = useState<string | null>(null);
+  // 大屏自动轮巡：按「有视频源的点位」顺序逐路全屏播放，可暂停 / 上下一路 / 改间隔。
+  const [tour, setTour] = useState({
+    enabled: false,
+    paused: false,
+    interval: 15,
+    index: 0,
+  });
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
   const [preferences, setPreferences] = useState(loadPreferences);
@@ -508,6 +515,8 @@ export default function App() {
 
   const handleCloseFocus = useCallback(() => {
     setFocusedCameraId(null);
+    // 关闭大屏即退出轮巡，避免后台继续空转。
+    setTour((prev) => (prev.enabled ? { ...prev, enabled: false, paused: false } : prev));
   }, []);
 
   const handleOpenFocusedAlarm = useCallback((id: string) => {
@@ -589,6 +598,47 @@ export default function App() {
   const selectedAlarm = activeAlarms[selectedCamera.id];
   const focusedCamera = focusedCameraId ? cameraMap[focusedCameraId] : null;
   const focusedSource = focusedCamera ? sources[focusedCamera.id] : undefined;
+
+  // 轮巡队列：只包含当前已接入视频源的点位（无源的跳过，避免大屏出现空窗）。
+  const tourQueue = useMemo(
+    () => cameras.filter((camera) => Boolean(sources[camera.id])).map((camera) => camera.id),
+    [cameras, sources],
+  );
+
+  const startTour = useCallback(() => {
+    if (tourQueue.length === 0) {
+      showToast('先接入至少一路视频源再开启自动轮巡', 'info');
+      return;
+    }
+    setTour({ enabled: true, paused: false, interval: 15, index: 0 });
+    setFocusedCameraId(tourQueue[0]);
+  }, [tourQueue, showToast]);
+
+  const stopTour = useCallback(() => {
+    setTour((prev) => ({ ...prev, enabled: false, paused: false }));
+  }, []);
+
+  const stepTour = useCallback(
+    (delta: number) => {
+      if (tourQueue.length === 0) return;
+      const next = (tour.index + delta + tourQueue.length) % tourQueue.length;
+      setTour((prev) => ({ ...prev, index: next }));
+      setFocusedCameraId(tourQueue[next]);
+    },
+    [tour.index, tourQueue],
+  );
+
+  // 定时推进：暂停或只有一路时不切换（仍保持全屏播放）。
+  useEffect(() => {
+    if (!tour.enabled || tour.paused) return;
+    if (tourQueue.length <= 1) return;
+    const timer = window.setTimeout(() => {
+      const next = (tour.index + 1) % tourQueue.length;
+      setTour((prev) => ({ ...prev, index: next }));
+      setFocusedCameraId(tourQueue[next]);
+    }, tour.interval * 1000);
+    return () => window.clearTimeout(timer);
+  }, [tour.enabled, tour.paused, tour.interval, tour.index, tourQueue]);
 
   return (
     <div className={`app-shell view-${view}`}>
@@ -687,6 +737,27 @@ export default function App() {
                       onClick={() => void handleToggleWakeLock()}
                     >
                       屏幕常亮{screenAwake ? '开' : '关'}
+                    </button>
+                    <button
+                      type="button"
+                      className={`tour-toggle ${tour.enabled ? 'is-on' : ''}`}
+                      aria-pressed={tour.enabled}
+                      title={
+                        tour.enabled
+                          ? '退出自动轮巡'
+                          : `大屏轮巡已接入的 ${tourQueue.length} 路点位，默认每 15 秒切换`
+                      }
+                      onClick={() => {
+                        if (tour.enabled) {
+                          stopTour();
+                          setFocusedCameraId(null);
+                          showToast('已退出自动轮巡', 'info');
+                        } else {
+                          startTour();
+                        }
+                      }}
+                    >
+                      自动轮巡{tour.enabled ? '中' : ''}
                     </button>
                   </div>
                 </div>
@@ -836,6 +907,28 @@ export default function App() {
           onClose={handleCloseFocus}
           onOpenAlarm={handleOpenFocusedAlarm}
           onDisconnect={handleDisconnect}
+          tour={
+            tour.enabled
+              ? {
+                  paused: tour.paused,
+                  interval: tour.interval,
+                  position:
+                    Math.max(0, tourQueue.indexOf(focusedCamera.id)) + 1,
+                  total: tourQueue.length,
+                  onPrev: () => stepTour(-1),
+                  onNext: () => stepTour(1),
+                  onTogglePause: () =>
+                    setTour((prev) => ({ ...prev, paused: !prev.paused })),
+                  onIntervalChange: (seconds: number) =>
+                    setTour((prev) => ({ ...prev, interval: seconds })),
+                  onStop: () => {
+                    stopTour();
+                    setFocusedCameraId(null);
+                    showToast('已退出自动轮巡', 'info');
+                  },
+                }
+              : undefined
+          }
         />
       )}
 
