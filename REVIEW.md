@@ -11,14 +11,14 @@
 | # | 问题 | 位置 | 影响 | 修复建议 |
 |---|---|---|---|---|
 | 1 | **告警保留清理留下孤儿数据**：`pruneAlarms()` 只 `DELETE FROM alarms`，`alarm_events` / `notification_logs` 无外键、无级联，告警删除后事件与推送日志永久残留 | `server/store.mjs` `pruneAlarms` | 数据膨胀、按 alarm_id 查询出现指向不存在告警的记录；生产已有 17 条事件对 2 条告警的实例 | 在同一事务里按 alarm_id 删 `alarm_events` 与 `notification_logs`；补「删除告警后关联记录同步清理」测试 |
-| 2 | **静态资源强缓存规则与 Vite 文件名不匹配**：immutable 正则 `\./[0-9a-f]{8,}\.` 只认 hex，而 Vite 产物 hash 是字母数字混合（如 `index-Bgu3cM9H.js`），因此带 hash 的 JS/CSS 实际没有 immutable 缓存 | `server/index.mjs` 静态服务中间件 | 每次刷新都回源拉取 JS/CSS，弱网/大屏多开时首屏变慢 | 对 `/assets/` 下的构建产物统一 `Cache-Control: public, max-age=31536000, immutable`（文件名含 hash 即安全）；`index.html` 保持 no-cache |
+| 2 | ~~静态资源强缓存规则与 Vite 文件名不匹配~~（**已复核：本条为审查误诊**） | `server/index.mjs` 静态服务中间件 | 复核后实测：`express.static` 已全局 `maxAge: 1y + immutable: true`，`/assets/*.js` 响应头实测为 `Cache-Control: public, max-age=31536000, immutable`，`/` 为 `no-store`。我此前按印象写入了不存在的「hex 正则」，此条不成立，无需修复。 | （无动作） |
 
 ### P1 · 安全与数据治理
 
 | # | 问题 | 位置 | 影响 | 修复建议 |
 |---|---|---|---|---|
-| 3 | **Webhook 地址缺少校验**：通知渠道 URL 直接由服务端 `fetch`，未限制协议/目标。管理员可误配或指向内网服务、云元数据地址（SSRF 面） | `server/notify.mjs` `post/postWithRetry`；`parseNotifyChannelInput` | 仅限管理员/站点管理员可配，风险中低，但属于典型 SSRF 入口 | 仅允许 `http/https`；可选禁 `169.254.0.0/16`、`localhost`、内网段（提供 `NOTIFY_ALLOW_PRIVATE=1` 供内网 Webhook 场景）；URL 长度限制已有 |
-| 4 | **审计日志无保留策略**：`audit_logs` 只增不清，长期运行膨胀 | `server/store.mjs` `retentionRun` | 量小但无界；目前 22 条 | 加 `AUDIT_RETENTION_DAYS`（默认 180 天）复用现有每日清理 |
+| 3 | **Webhook 目标主机未限制**（协议校验原本已有）：`parseNotifyChannelInput` 已限 `http/https` 与长度，但主机的 IP 段未限制，可指向 `169.254.169.254`（云元数据）等 | `server/index.mjs` `parseNotifyChannelInput` | 仅管理员/站点管理员可配，风险中低 | **已修复**：新增 `isBlockedNotifyHost()`——永久拦 `169.254.0.0/16` 与 `0.0.0.0`；环回与私网默认放行（内网/本机 Webhook 是真实用法），公网部署设 `NOTIFY_BLOCK_PRIVATE=1` 时额外拦环回、私网与 `.local`；已加测试 |
+| 4 | **审计日志只有条数上限、无天数保留**（原描述「无保留策略」不准确）：`pruneAuditLogs()` 已按「保留最近 20000 条」裁剪，但缺按保留期的清理语义 | `server/store.mjs` | 20000 条足以兜底不膨胀，属治理一致性而非缺陷 | **已补**：新增 `pruneAuditLogsByAge()` + `AUDIT_RETENTION_DAYS`（默认 180 天），在每日 `retentionRun` 中与告警/推送日志一起执行；已加测试 |
 | 5 | **登录限流表可被灌满后整体清空**：`loginAttempts.size > 10000` 直接 `clear()`，给攻击者制造重置窗口 | `server/index.mjs` 登录限流 | 低危，内存型限流的常见边角 | 改 LRU 淘汰最旧键而非全清；按 IP 维度再设一层总限流 |
 
 ### P2 · 可维护性
@@ -46,6 +46,17 @@
 - 代理：`/proxy/:id` 同源限制防 SSRF；跨域越权 404 防探测。
 - 子进程：FFmpeg 退出按指数退避重启、关停清理、演示实例停止即回收。
 - 测试：65 项 + E2E 11 项，动态端口避免撞车。
+
+
+### 审查复核修正记录（重要）
+
+首版报告中三项判断经复核不成立，已在上表标注，此处集中说明，避免误导后续工作：
+
+1. **「静态资源强缓存失效」——误诊**。`express.static` 已全局 `maxAge: '1y', immutable: true`，`index.html` 单独 `no-store`。实测：`/assets/index-*.js` 返回 `Cache-Control: public, max-age=31536000, immutable`。报告中提到的「hex 正则」并不存在，属我按印象误写。
+2. **「Webhook 未限制协议」——不准确**。协议（http/https）与长度校验原本就有，真实缺口只是「目标主机 IP 段未限」，已按分层策略修复。
+3. **「审计日志无保留策略」——不准确**。原本已有「保留最近 20000 条」的上限裁剪，缺的是按天数的保留期语义，已补。
+
+教训：审查必须逐条对照实现取证（读代码 + 实测响应），不能凭架构印象推断；本次是因「以为是常见写法」而写了不存在的实现细节。
 
 ---
 

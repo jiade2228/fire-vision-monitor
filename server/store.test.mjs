@@ -346,11 +346,31 @@ test('alarm retention only removes closed old alarms', async (t) => {
   );
   store.createAlarm({ ...base, id: 'fresh', level: 'smoke' });
 
+  // 为被清理的告警造事件与推送日志：删除告警时必须一并清理，避免孤儿记录。
+  store.updateAlarm(
+    'old',
+    { note: '值班备注' },
+    { id: 'u1', username: 'op' },
+  );
+  store.claimNotification('old', 'ch1', 'created');
+  assert.ok(store.listAlarmEvents('old').length > 0);
+  assert.equal(
+    store.db.prepare('SELECT COUNT(*) AS c FROM notification_logs WHERE alarm_id = ?').get('old').c,
+    1,
+  );
+
   const result = store.pruneAlarms({ retainDays: 0, at: Date.now() + 10_000 });
   assert.equal(result.deleted, 1);
   assert.deepEqual(result.snapshots, ['old.jpg']);
   assert.equal(store.getAlarm('old'), null);
   assert.equal(store.getAlarm('fresh').id, 'fresh');
+  // 级联清理：事件与推送日志不残留
+  assert.equal(store.listAlarmEvents('old').length, 0);
+  assert.equal(
+    store.db.prepare('SELECT COUNT(*) AS c FROM notification_logs WHERE alarm_id = ?').get('old').c,
+    0,
+  );
+  assert.ok(result.events > 0, '应报告清理的事件数');
 });
 
 test('site admin flag persists and scopes manageable sites', async (t) => {

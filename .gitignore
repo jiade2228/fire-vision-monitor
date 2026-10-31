@@ -5,3 +5,19 @@ data/
 .env
 .env.*
 test-videos/
+
+# 数据库与运行残留
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# 测试与构建中间产物
+coverage/
+.tmp-*.mjs
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

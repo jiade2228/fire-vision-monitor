@@ -59,3 +59,19 @@ test('审计日志：按动作前缀/关键词/时间范围筛选与计数', asy
     assert.ok(store.listAuditFiltered({ limit: 9999 }).length <= 200);
   });
 });
+
+test('审计日志保留：超期记录按天数清理，未超期保留', async () => {
+  await withStore(async (store) => {
+    store.recordAudit({ action: 'auth.login', user: { username: 'old' }, detail: '旧记录' });
+    store.recordAudit({ action: 'auth.login', user: { username: 'new' }, detail: '新记录' });
+    // 把 old 的时间推到 200 天前
+    store.db
+      .prepare("UPDATE audit_logs SET created_at = created_at - ? WHERE username = 'old'")
+      .run(200 * 24 * 60 * 60 * 1000);
+
+    const removed = store.pruneAuditLogsByAge(180);
+    assert.equal(removed, 1);
+    assert.equal(store.countAuditFiltered({ q: 'old' }), 0);
+    assert.equal(store.countAuditFiltered({ q: 'new' }), 1);
+  });
+});

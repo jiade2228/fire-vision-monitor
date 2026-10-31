@@ -310,6 +310,43 @@ function notifyChannelForClient(channel, siteName = null) {
   };
 }
 
+/**
+ * 通知渠道目标校验（SSRF 缓解）。
+ * 永久拦截：169.254.0.0/16（链路本地/云元数据）与 0.0.0.0——任何部署形态都无正当用途。
+ * 默认放行：环回（127/8、::1、localhost）与私网段（10/8、172.16/12、192.168/16、100.64/10）——
+ *   内网部署的 Webhook 常在内网甚至本机（本地转发/自建接收端）。
+ * 公网部署建议设 NOTIFY_BLOCK_PRIVATE=1：额外拦截环回、私网与 .local。
+ */
+function isBlockedNotifyHost(hostname) {
+  const host = String(hostname ?? '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (!host) return '主机名不能为空';
+  const strict = process.env.NOTIFY_BLOCK_PRIVATE === '1';
+  if (host === '0.0.0.0') return '不允许指向未指定地址';
+  if (host === 'localhost' || host === '::1') {
+    return strict ? '公网部署模式下不允许指向本机' : null;
+  }
+  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
+    if (a === 169 && b === 254) return '不允许指向链路本地地址（含云元数据）';
+    if (a === 0) return '不允许指向未指定地址';
+    if (!strict) return null;
+    const privateOrLoopback =
+      a === 127 ||
+      a === 10 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 198 && (b === 18 || b === 19));
+    if (privateOrLoopback) return '公网部署模式下不允许指向私网或环回地址';
+    return null;
+  }
+  if (strict && host.endsWith('.local')) {
+    return '公网部署模式下不允许指向 .local';
+  }
+  return null;
+}
+
 function parseNotifyChannelInput(body, { partial = false } = {}) {
   const value = {};
   if (!partial || body.kind !== undefined) {
@@ -336,6 +373,8 @@ function parseNotifyChannelInput(body, { partial = false } = {}) {
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return { error: '推送地址必须是 http:// 或 https://' };
     }
+    const hostBlocked = isBlockedNotifyHost(parsed.hostname);
+    if (hostBlocked) return { error: hostBlocked };
     value.url = url;
   }
   if (body.secret !== undefined) {
@@ -767,9 +806,10 @@ async function main() {
     offlineTimer.unref?.();
     setTimeout(offlineCheck, Math.min(8_000, offlineCheckEveryMs)).unref?.();
 
-    // 数据保留：清理超期的已关闭告警、抓拍/短视频与推送日志。
+    // 数据保留：清理超期的已关闭告警、抓拍/短视频、推送日志与审计日志。
     const alarmRetentionDays = Number(process.env.ALARM_RETENTION_DAYS) || 180;
     const notifyRetentionDays = Number(process.env.NOTIFY_RETENTION_DAYS) || 30;
+    const auditRetentionDays = Number(process.env.AUDIT_RETENTION_DAYS) || 180;
     const retentionRun = async () => {
       try {
         const result = store.pruneAlarms({ retainDays: alarmRetentionDays });
@@ -780,14 +820,18 @@ async function main() {
           await fsp.rm(path.join(recordingsDir, path.basename(file)), { force: true });
         }
         const logs = store.pruneNotificationLogs(notifyRetentionDays);
-        if (result.deleted || logs) {
+        const auditLogs = store.pruneAuditLogsByAge(auditRetentionDays);
+        if (result.deleted || logs || auditLogs) {
           log('info', 'retention_applied', {
             alarms: result.deleted,
+            alarmEvents: result.events ?? 0,
             snapshots: result.snapshots.length,
             clips: result.clips.length,
             notifyLogs: logs,
+            auditLogs,
             alarmRetentionDays,
             notifyRetentionDays,
+            auditRetentionDays,
           });
         }
       } catch (error) {
@@ -1236,8 +1280,18 @@ async function main() {
       for (const [key, record] of ipAttempts) {
         if (now - record.started > windowMs) ipAttempts.delete(key);
       }
-      if (loginAttempts.size > 10_000) loginAttempts.clear();
-      if (ipAttempts.size > 10_000) ipAttempts.clear();
+      // 超量时淘汰最旧记录而非整体清空——整表 clear 会给攻击者制造限流重置窗口。
+      const evictOldest = (map) => {
+        const overflow = map.size - 10_000;
+        if (overflow <= 0) return;
+        let removed = 0;
+        for (const key of map.keys()) {
+          map.delete(key);
+          if (++removed >= overflow) break;
+        }
+      };
+      evictOldest(loginAttempts);
+      evictOldest(ipAttempts);
     }, 5 * 60 * 1000).unref();
 
     let setupInFlight = false;

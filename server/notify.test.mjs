@@ -156,6 +156,44 @@ test('alarm notifications reach webhook and wecom channels with signature', asyn
   });
   assert.equal(invalid.status, 400);
 
+  // SSRF 缓解：链路本地（云元数据）与未指定地址永久拦截
+  const blockedHosts = [
+    'http://169.254.169.254/latest/meta-data/',
+    'http://0.0.0.0/hook',
+  ];
+  for (const url of blockedHosts) {
+    const blocked = await request('/api/notify/channels', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: { kind: 'webhook', name: '被拦截地址', url },
+    });
+    assert.equal(blocked.status, 400, `${url} 应被拒绝`);
+  }
+  // 环回默认放行（本机往往就是 Webhook 接收端）——本次测试本身依赖 127.0.0.1 接收推送
+  const loopbackAllowed = await request('/api/notify/channels', {
+    method: 'POST',
+    cookie: adminCookie,
+    body: {
+      kind: 'webhook',
+      name: '本机接收端',
+      url: 'http://127.0.0.1:9/hook',
+      enabled: false,
+    },
+  });
+  assert.equal(loopbackAllowed.status, 201, '默认应放行环回地址');
+  // 内网地址默认放行（内网部署的 Webhook 常在内网）；建为停用，避免后续推送真的去连它
+  const privateAllowed = await request('/api/notify/channels', {
+    method: 'POST',
+    cookie: adminCookie,
+    body: {
+      kind: 'webhook',
+      name: '内网地址',
+      url: 'http://192.168.1.10:9000/hook',
+      enabled: false,
+    },
+  });
+  assert.equal(privateAllowed.status, 201);
+
   const camera = await request('/api/cameras', {
     method: 'POST',
     cookie: adminCookie,

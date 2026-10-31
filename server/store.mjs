@@ -1431,15 +1431,30 @@ export class Store {
         LIMIT 5000
       `)
       .all(cutoff);
-    if (!rows.length) return { deleted: 0, snapshots: [], clips: [] };
+    if (!rows.length) return { deleted: 0, snapshots: [], clips: [], events: 0, notifications: 0 };
+    const alarmIds = rows.map((row) => row.id);
+    const placeholders = alarmIds.map(() => '?').join(',');
     const remove = this.db.prepare('DELETE FROM alarms WHERE id = ?');
+    const removeEvents = this.db.prepare(
+      `DELETE FROM alarm_events WHERE alarm_id IN (${placeholders})`,
+    );
+    const removeNotifications = this.db.prepare(
+      `DELETE FROM notification_logs WHERE alarm_id IN (${placeholders})`,
+    );
+    let events = 0;
+    let notifications = 0;
     this.transaction(() => {
-      for (const row of rows) remove.run(row.id);
+      // 告警删除必须级联清理事件与推送日志，否则这些表会留下指向已删告警的孤儿记录。
+      events = removeEvents.run(...alarmIds).changes;
+      notifications = removeNotifications.run(...alarmIds).changes;
+      for (const id of alarmIds) remove.run(id);
     });
     return {
       deleted: rows.length,
       snapshots: rows.map((row) => row.snapshot_file).filter(Boolean),
       clips: rows.map((row) => row.clip_file).filter(Boolean),
+      events,
+      notifications,
     };
   }
 
@@ -1664,6 +1679,18 @@ export class Store {
       `)
       .run(safeRetain);
     return Number(result.changes);
+  }
+
+  /**
+   * 审计日志按天数清理（与告警/推送日志的保留语义对齐）。
+   * 与上面的「按条数上限」互补：条数上限防无限膨胀，天数清理满足保留期约定。
+   */
+  pruneAuditLogsByAge(retainDays = 180) {
+    const safeDays = Math.min(Math.max(Number(retainDays) || 180, 1), 3650);
+    const cutoff = now() - safeDays * 24 * 60 * 60 * 1000;
+    return Number(
+      this.db.prepare('DELETE FROM audit_logs WHERE created_at < ?').run(cutoff).changes,
+    );
   }
 
   stats() {
