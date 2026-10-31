@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 安装依赖
+        run: npm ci
+      - name: 安装 FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: 单元与接口测试
+        run: npm test
+      - name: 类型检查与构建
+        run: npm run build
+      - name: E2E 冒烟（无 Chrome 时自动跳过）
+        run: npm run e2e
