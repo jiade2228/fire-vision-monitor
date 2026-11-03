@@ -27,6 +27,7 @@ import {
   DemoSourceError,
 } from './demo-source.mjs';
 import { Notifier } from './notify.mjs';
+import { createGuards } from './http/guards.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -1188,61 +1189,16 @@ async function main() {
       );
     }
 
-    function requireAuth(req, res, next) {
-      const user = currentUser(req);
-      if (!user) return res.status(401).json({ error: '请先登录' });
-      req.user = user;
-      next();
-    }
-
-    function requireRole(...roles) {
-      return (req, res, next) => {
-        if (!req.user) return res.status(401).json({ error: '请先登录' });
-        if (!roles.includes(req.user.role)) {
-          return res.status(403).json({ error: '当前账号没有此操作权限' });
-        }
-        next();
-      };
-    }
-
-    /** 站点管理员可管理的站点 ID；全局管理员返回 null 表示全部。 */
-    function adminSiteIdsFor(user) {
-      if (!user) return [];
-      if (user.role === 'admin') return null;
-      if (!user.siteAdmin) return [];
-      return store.siteMemberSiteIds(user.id);
-    }
-
-    function canManageSite(user, siteId) {
-      const ids = adminSiteIdsFor(user);
-      if (ids === null) return true;
-      return Boolean(siteId) && ids.includes(siteId);
-    }
-
-    function canManageCamera(user, camera) {
-      if (!camera) return false;
-      return canManageSite(user, camera.siteId || store.defaultSiteId);
-    }
-
-    function isManager(user) {
-      const ids = adminSiteIdsFor(user);
-      return ids === null || ids.length > 0;
-    }
-
-    function requireManager(req, res, next) {
-      if (!req.user) return res.status(401).json({ error: '请先登录' });
-      if (!isManager(req.user)) {
-        return res.status(403).json({ error: '当前账号没有管理权限' });
-      }
-      next();
-    }
-
-    /** 站点管理员的默认站点：其第一个可管理站点；全局管理员用默认站点。 */
-    function fallbackSiteIdFor(user) {
-      const ids = adminSiteIdsFor(user);
-      if (ids === null) return store.defaultSiteId;
-      return ids[0] ?? '';
-    }
+    const {
+      requireAuth,
+      requireRole,
+      requireManager,
+      adminSiteIdsFor,
+      canManageSite,
+      canManageCamera,
+      isManager,
+      fallbackSiteIdFor,
+    } = createGuards(store, currentUser);
 
     const loginAttempts = new Map();
     const ipAttempts = new Map();
