@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { Alarm, AlarmFilter, AlarmHandlers, AlarmLevel } from '../types';
 import { downloadAlarmsCsv } from '../lib/export';
 import AlarmCard from './AlarmCard';
+import AlarmClipTimeline from './AlarmClipTimeline';
 
 interface Props {
   alarms: Alarm[];
@@ -30,6 +31,7 @@ export default function AlarmCenter({
   const [levelFilter, setLevelFilter] = useState<LevelFilter>('all');
   const [sortOrder, setSortOrder] = useState<SortOrder>('newest');
   const [query, setQuery] = useState('');
+  const [mode, setMode] = useState<'list' | 'replay'>('list');
 
   const counts = useMemo(
     () => ({
@@ -82,6 +84,22 @@ export default function AlarmCenter({
           <h2>告警中心</h2>
           <p className="panel-sub">全部视频识别告警、处置进度与值守记录</p>
         </div>
+        <div className="alarm-view-switch" role="group" aria-label="告警视图切换">
+          <button
+            type="button"
+            className={`btn btn-sm ${mode === 'list' ? 'is-active' : ''}`}
+            onClick={() => setMode('list')}
+          >
+            列表
+          </button>
+          <button
+            type="button"
+            className={`btn btn-sm ${mode === 'replay' ? 'is-active' : ''}`}
+            onClick={() => setMode('replay')}
+          >
+            短片回放
+          </button>
+        </div>
         <div className="filter-row" role="group" aria-label="告警状态筛选">
           {FILTERS.map((item) => (
             <button
@@ -98,7 +116,11 @@ export default function AlarmCenter({
         </div>
       </div>
 
-      <div className="alarm-toolbar">
+      {mode === 'replay' ? (
+        <AlarmClipTimeline alarms={alarms} />
+      ) : (
+        <>
+          <div className="alarm-toolbar">
         <div className="search-field">
           <span className="search-icon" aria-hidden="true">⌕</span>
           <input
@@ -184,7 +206,8 @@ export default function AlarmCenter({
             />
           ))}
         </div>
-      )}
+        )}
+      </>)}
     </section>
   );
 }

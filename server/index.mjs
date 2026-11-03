@@ -305,6 +305,7 @@ function notifyChannelForClient(channel, siteName = null) {
     urlHint,
     hasSecret: Boolean(channel.secret),
     enabled: channel.enabled,
+    templateId: channel.templateId ?? null,
     createdAt: channel.createdAt,
     updatedAt: channel.updatedAt,
   };
@@ -385,6 +386,10 @@ function parseNotifyChannelInput(body, { partial = false } = {}) {
   }
   if (body.siteId !== undefined) {
     value.siteId = normalizeText(String(body.siteId ?? ''), 64) || null;
+  }
+  if (!partial || body.templateId !== undefined) {
+    const templateId = typeof body.templateId === 'string' ? body.templateId.trim() : '';
+    value.templateId = templateId || null;
   }
   return { value };
 }
@@ -2134,6 +2139,65 @@ async function main() {
       res.json({ logs: logs.filter((log) => allowed.has(log.channelId)) });
     });
 
+    // 通知文案模板：可复用的告警消息模板，渠道引用后覆盖默认文案。
+    app.get('/api/notify/templates', requireAuth, requireManager, (req, res) => {
+      res.json({ templates: store.listNotificationTemplates() });
+    });
+
+    app.post('/api/notify/templates', requireAuth, requireManager, (req, res) => {
+      const name = normalizeText(String(req.body.name ?? ''), 32);
+      const body = typeof req.body.body === 'string' ? req.body.body : '';
+      if (!name) return res.status(400).json({ error: '请填写模板名称' });
+      if (!body.trim()) return res.status(400).json({ error: '请填写模板内容' });
+      if (body.length > 2000) {
+        return res.status(400).json({ error: '模板内容过长（上限 2000 字）' });
+      }
+      const template = store.createNotificationTemplate({ name, body });
+      store.recordAudit({
+        user: req.user,
+        action: 'notify.template.create',
+        targetType: 'notify',
+        targetId: template.id,
+        detail: template.name,
+        ip: clientIp(req),
+      });
+      res.status(201).json({ template });
+    });
+
+    app.patch('/api/notify/templates/:id', requireAuth, requireManager, (req, res) => {
+      const current = store.getNotificationTemplate(req.params.id);
+      if (!current) return res.status(404).json({ error: '模板不存在' });
+      const name =
+        req.body.name !== undefined ? normalizeText(String(req.body.name ?? ''), 32) : undefined;
+      const body = typeof req.body.body === 'string' ? req.body.body : undefined;
+      if (name !== undefined && !name) {
+        return res.status(400).json({ error: '请填写模板名称' });
+      }
+      if (body !== undefined && !body.trim()) {
+        return res.status(400).json({ error: '请填写模板内容' });
+      }
+      if (body !== undefined && body.length > 2000) {
+        return res.status(400).json({ error: '模板内容过长（上限 2000 字）' });
+      }
+      const template = store.updateNotificationTemplate(req.params.id, { name, body });
+      res.json({ template });
+    });
+
+    app.delete('/api/notify/templates/:id', requireAuth, requireManager, (req, res) => {
+      const current = store.getNotificationTemplate(req.params.id);
+      if (!current) return res.status(404).json({ error: '模板不存在' });
+      const ok = store.deleteNotificationTemplate(req.params.id);
+      if (!ok) return res.status(404).json({ error: '模板不存在' });
+      store.recordAudit({
+        user: req.user,
+        action: 'notify.template.delete',
+        targetType: 'notify',
+        targetId: req.params.id,
+        ip: clientIp(req),
+      });
+      res.json({ ok: true });
+    });
+
     app.get('/api/vendors', requireAuth, (_req, res) => {
       res.json({ vendors: publicVendors() });
     });
@@ -2427,6 +2491,108 @@ async function main() {
         force: true,
       });
       res.json({ ok: true });
+    });
+
+    // 点位批量操作：启停检测 / 灵敏度 / 站点迁移 / 删除，逐条鉴权并在同一响应汇总结果。
+    app.post('/api/cameras/batch-update', requireAuth, requireManager, (req, res) => {
+      const ids = Array.isArray(req.body.ids)
+        ? req.body.ids.slice(0, 200).filter((id) => typeof id === 'string' && id)
+        : [];
+      if (ids.length === 0) return res.status(400).json({ error: '请选择至少一个点位' });
+      const patch = {};
+      if (req.body.detectEnabled !== undefined) {
+        patch.detectEnabled = req.body.detectEnabled === true;
+      }
+      if (req.body.detectSensitivity !== undefined) {
+        const allowed = ['low', 'standard', 'high', null];
+        if (!allowed.includes(req.body.detectSensitivity)) {
+          return res.status(400).json({ error: '灵敏度取值无效' });
+        }
+        patch.detectSensitivity = req.body.detectSensitivity;
+      }
+      if (req.body.siteId !== undefined) {
+        const siteId = normalizeText(String(req.body.siteId ?? ''), 64);
+        if (!siteId) return res.status(400).json({ error: '站点 ID 不能为空' });
+        if (!store.getSite(siteId)) {
+          return res.status(400).json({ error: '指定的站点不存在' });
+        }
+        if (!canManageSite(req.user, siteId)) {
+          return res.status(403).json({ error: '无权管理目标站点' });
+        }
+        patch.siteId = siteId;
+      }
+      if (Object.keys(patch).length === 0) {
+        return res.status(400).json({ error: '没有可应用的批量修改项' });
+      }
+      const updated = [];
+      const errors = [];
+      for (const id of ids) {
+        const camera = store.getCamera(id);
+        if (!camera) {
+          errors.push({ id, error: '点位不存在' });
+          continue;
+        }
+        if (!canManageCamera(req.user, camera)) {
+          errors.push({ id, error: '无权管理该站点点位' });
+          continue;
+        }
+        try {
+          updated.push(cameraForClient(store.updateCamera(id, patch), req.user));
+        } catch (error) {
+          errors.push({ id, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+      store.recordAudit({
+        user: req.user,
+        action: 'camera.batch_update',
+        targetType: 'camera',
+        targetId: ids.join(','),
+        detail: `批量更新 ${updated.length}/${ids.length} 个点位：${Object.keys(patch).join(',')}`,
+        ip: clientIp(req),
+      });
+      syncDetection();
+      res.json({ updated: updated.length, errors, cameras: updated });
+    });
+
+    app.post('/api/cameras/batch-delete', requireAuth, requireManager, async (req, res) => {
+      const ids = Array.isArray(req.body.ids)
+        ? req.body.ids.slice(0, 200).filter((id) => typeof id === 'string' && id)
+        : [];
+      if (ids.length === 0) return res.status(400).json({ error: '请选择至少一个点位' });
+      const deleted = [];
+      const errors = [];
+      for (const id of ids) {
+        const camera = store.getCamera(id);
+        if (!camera) {
+          errors.push({ id, error: '点位不存在' });
+          continue;
+        }
+        if (!canManageCamera(req.user, camera)) {
+          errors.push({ id, error: '无权管理该站点点位' });
+          continue;
+        }
+        try {
+          streamManager.stop(camera.id);
+          detectionEngine?.stop(camera.id);
+          store.deleteCamera(camera.id);
+          await fsp
+            .rm(path.join(dataDir, 'streams', camera.id), { recursive: true, force: true })
+            .catch(() => undefined);
+          deleted.push(camera.id);
+        } catch (error) {
+          errors.push({ id, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+      store.recordAudit({
+        user: req.user,
+        action: 'camera.batch_delete',
+        targetType: 'camera',
+        targetId: deleted.join(','),
+        detail: `批量删除 ${deleted.length}/${ids.length} 个点位`,
+        ip: clientIp(req),
+      });
+      syncDetection();
+      res.json({ deleted: deleted.length, errors });
     });
 
     async function importBrandCameras(req, res, forcedVendorId = '') {

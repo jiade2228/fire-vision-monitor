@@ -171,7 +171,7 @@ test('schema v2 database without site_id upgrades in place', async (t) => {
     await fs.rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
-  assert.equal(store.schemaVersion, 5);
+  assert.equal(store.schemaVersion, 6);
   const cameras = store.listCameras();
   assert.equal(cameras.length, 1);
   assert.equal(cameras[0].siteId, store.defaultSiteId);
@@ -255,7 +255,7 @@ test('schema v3 alarm table is rebuilt without losing rows', async (t) => {
     await fs.rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
-  assert.equal(store.schemaVersion, 5);
+  assert.equal(store.schemaVersion, 6);
   const alarms = store.listAlarms(10);
   assert.equal(alarms.length, 1);
   assert.equal(alarms[0].level, 'fire');

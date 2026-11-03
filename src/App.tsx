@@ -7,6 +7,7 @@ import AlarmCenter from './components/AlarmCenter';
 import RecordsView from './components/RecordsView';
 import FocusViewer from './components/FocusViewer';
 import AdminPanel from './components/AdminPanel';
+import OnboardingGuide from './components/OnboardingGuide';
 import Toast from './components/Toast';
 import { useAuth } from './context/AuthContext';
 import { useCameraPoints } from './hooks/useCameraPoints';
@@ -70,6 +71,8 @@ export default function App() {
   });
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [adminTab, setAdminTab] = useState<'cameras' | 'notify'>('cameras');
+  const [demoBusy, setDemoBusy] = useState(false);
   const [preferences, setPreferences] = useState(loadPreferences);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [screenAwake, setScreenAwake] = useState(false);
@@ -112,6 +115,33 @@ export default function App() {
     }
     toastTimer.current = window.setTimeout(() => setToast(null), 2800);
   }, []);
+
+  const openAdmin = useCallback((tab: 'cameras' | 'notify') => {
+    setAdminTab(tab);
+    setAdminOpen(true);
+  }, []);
+
+  const startDemoWalkthrough = useCallback(async () => {
+    if (demoBusy) return;
+    setDemoBusy(true);
+    try {
+      const result = await api.startDemo();
+      await refreshPoints();
+      showToast(
+        result.running
+          ? '演示已启动，几秒内监控大屏将出现火焰告警'
+          : '演示视频源已启动',
+        'ok',
+      );
+    } catch (error) {
+      showToast(
+        error instanceof Error ? error.message : '演示启动失败',
+        'danger',
+      );
+    } finally {
+      setDemoBusy(false);
+    }
+  }, [demoBusy, refreshPoints, showToast]);
 
   const requestScreenWakeLock = useCallback(async () => {
     const wakeLock = (
@@ -651,7 +681,10 @@ export default function App() {
           totalCount={cameras.length}
           platformName={preferences.platformName}
           user={user}
-          onManage={() => setAdminOpen(true)}
+          onManage={() => {
+            setAdminTab('cameras');
+            setAdminOpen(true);
+          }}
           onLogout={() => {
             void logout();
           }}
@@ -766,21 +799,14 @@ export default function App() {
                   <p className="panel-status panel-status--error">{pointsError}</p>
                 )}
                 {!pointsLoading && !pointsError && cameras.length === 0 && (
-                  <div className="empty-state empty-state--compact panel-status">
-                    <strong>还没有配置监控点位</strong>
-                    <span>
-                      由管理员添加现场 NVR 的 RTSP 地址或 HLS 流地址，配置后所有账号均可远程查看。
-                    </span>
-                    {user.role === 'admin' && (
-                      <button
-                        type="button"
-                        className="btn btn-sm empty-action"
-                        onClick={() => setAdminOpen(true)}
-                      >
-                        添加第一个点位
-                      </button>
-                    )}
-                  </div>
+                  <OnboardingGuide
+                    canDemo={user.role === 'admin'}
+                    canManage={user.role === 'admin' || Boolean(user.siteAdmin)}
+                    demoBusy={demoBusy}
+                    onStartDemo={startDemoWalkthrough}
+                    onAddCamera={() => openAdmin('cameras')}
+                    onConfigureNotify={() => openAdmin('notify')}
+                  />
                 )}
                 <VideoWall
                   cameras={cameras}
@@ -936,6 +962,7 @@ export default function App() {
         <AdminPanel
           cameras={cameraPoints}
           currentUser={user}
+          initialTab={adminTab}
           onClose={() => setAdminOpen(false)}
           onCamerasChanged={async () => {
             await refreshPoints();

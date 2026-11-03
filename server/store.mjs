@@ -4,7 +4,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 function now() {
   return Date.now();
@@ -261,10 +261,20 @@ function createSchema(db) {
       url TEXT NOT NULL,
       secret TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
+      template_id TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_notify_site ON notify_channels(site_id);
+
+    CREATE TABLE IF NOT EXISTS notification_templates (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      body TEXT NOT NULL,
+      builtin INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
 
     CREATE TABLE IF NOT EXISTS notification_logs (
       id TEXT PRIMARY KEY,
@@ -500,6 +510,62 @@ function migrateSchemaV5(db) {
     }
     db.prepare(
       "INSERT INTO meta(key, value) VALUES('schema_version', '5') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+    ).run();
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+function migrateSchemaV6(db) {
+  const version = Number(
+    db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()?.value ?? 0,
+  );
+  if (version >= 6) return;
+  const channelColumns = new Set(
+    db.prepare('PRAGMA table_info(notify_channels)').all().map((row) => row.name),
+  );
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    if (!channelColumns.has('template_id')) {
+      db.exec('ALTER TABLE notify_channels ADD COLUMN template_id TEXT');
+    }
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS notification_templates (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        body TEXT NOT NULL,
+        builtin INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+    );
+    // 内置模板仅首次迁移时写入（INSERT OR IGNORE 保证重复迁移不覆盖用户改动）。
+    const seedTemplates = [
+      {
+        id: 'builtin-default',
+        name: '标准告警（默认）',
+        body:
+          '【{level}】{site} / {camera}（{zone}）\n识别：{level} · 置信度 {confidence}%\n时间：{time}\n请立即登录平台核实处置，处置入口：{link}',
+      },
+      {
+        id: 'builtin-concise',
+        name: '精简告警',
+        body: '{time} {site}/{camera} 触发{level}（{confidence}%），请尽快核实：{link}',
+      },
+    ];
+    const ts = now();
+    const insertTpl = db.prepare(
+      `INSERT OR IGNORE INTO notification_templates
+       (id, name, body, builtin, created_at, updated_at)
+       VALUES (?, ?, ?, 1, ?, ?)`,
+    );
+    for (const tpl of seedTemplates) {
+      insertTpl.run(tpl.id, tpl.name, tpl.body, ts, ts);
+    }
+    db.prepare(
+      "INSERT INTO meta(key, value) VALUES('schema_version', '6') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
     ).run();
     db.exec('COMMIT');
   } catch (error) {
@@ -1257,6 +1323,8 @@ export class Store {
       url: decode(row.url),
       secret: row.secret ? decode(row.secret) : '',
       enabled: bool(row.enabled),
+      templateId: row.template_id ?? null,
+      templateBody: row.template_id ? this.getNotificationTemplateBody(row.template_id) : null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -1281,8 +1349,8 @@ export class Store {
     this.db
       .prepare(`
         INSERT INTO notify_channels
-        (id, site_id, kind, name, url, secret, enabled, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, site_id, kind, name, url, secret, enabled, template_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         id,
@@ -1292,6 +1360,7 @@ export class Store {
         this.secretBox.encrypt(channel.url),
         channel.secret ? this.secretBox.encrypt(channel.secret) : null,
         channel.enabled === false ? 0 : 1,
+        channel.templateId || null,
         timestamp,
         timestamp,
       );
@@ -1327,6 +1396,10 @@ export class Store {
       sets.push('enabled = ?');
       values.push(changes.enabled ? 1 : 0);
     }
+    if (changes.templateId !== undefined) {
+      sets.push('template_id = ?');
+      values.push(changes.templateId || null);
+    }
     values.push(id);
     this.db.prepare(`UPDATE notify_channels SET ${sets.join(', ')} WHERE id = ?`).run(...values);
     return this.getNotifyChannel(id);
@@ -1335,6 +1408,77 @@ export class Store {
   deleteNotifyChannel(id) {
     this.db.prepare('DELETE FROM notification_logs WHERE channel_id = ?').run(id);
     return this.db.prepare('DELETE FROM notify_channels WHERE id = ?').run(id).changes > 0;
+  }
+
+  /** 仅取模板正文（供渠道对象内联解析）。 */
+  getNotificationTemplateBody(id) {
+    const row = this.db
+      .prepare('SELECT body FROM notification_templates WHERE id = ?')
+      .get(id);
+    return row ? row.body : null;
+  }
+
+  listNotificationTemplates() {
+    return this.db
+      .prepare(
+        'SELECT * FROM notification_templates ORDER BY builtin DESC, created_at ASC',
+      )
+      .all()
+      .map((row) => this.notificationTemplateRowToObject(row));
+  }
+
+  getNotificationTemplate(id) {
+    const row = this.db
+      .prepare('SELECT * FROM notification_templates WHERE id = ?')
+      .get(id);
+    return row ? this.notificationTemplateRowToObject(row) : null;
+  }
+
+  createNotificationTemplate({ name, body }) {
+    const id = crypto.randomUUID();
+    const timestamp = now();
+    this.db
+      .prepare(
+        `INSERT INTO notification_templates
+         (id, name, body, builtin, created_at, updated_at)
+         VALUES (?, ?, ?, 0, ?, ?)`,
+      )
+      .run(id, name, body, timestamp, timestamp);
+    return this.getNotificationTemplate(id);
+  }
+
+  updateNotificationTemplate(id, { name, body } = {}) {
+    const current = this.getNotificationTemplate(id);
+    if (!current) return null;
+    this.db
+      .prepare(
+        `UPDATE notification_templates SET name = ?, body = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(name ?? current.name, body ?? current.body, now(), id);
+    return this.getNotificationTemplate(id);
+  }
+
+  deleteNotificationTemplate(id) {
+    const current = this.getNotificationTemplate(id);
+    if (!current) return false;
+    // 删除模板后，引用它的渠道回退到默认文案（template_id 置空）。
+    this.db
+      .prepare('UPDATE notify_channels SET template_id = NULL WHERE template_id = ?')
+      .run(id);
+    return (
+      this.db.prepare('DELETE FROM notification_templates WHERE id = ?').run(id).changes > 0
+    );
+  }
+
+  notificationTemplateRowToObject(row) {
+    return {
+      id: row.id,
+      name: row.name,
+      body: row.body,
+      builtin: bool(row.builtin),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
   }
 
   /** 站点渠道 + 全局渠道（site_id IS NULL）。 */
@@ -1779,6 +1923,7 @@ export async function openStore({ dataDir, secretBox, legacyData = null }) {
     migrateSchemaV3(db);
     migrateSchemaV4(db);
     migrateSchemaV5(db);
+    migrateSchemaV6(db);
     ensureDefaultSite(db);
   } catch (error) {
     try {

@@ -12,6 +12,7 @@ import type {
   NotificationLog,
   NotifyChannel,
   NotifyKind,
+  NotifyTemplate,
   AlarmStats,
   AlarmStatsDay,
   OnvifDiscoverResult,
@@ -33,6 +34,7 @@ import RoiEditor from './RoiEditor';
 interface Props {
   cameras: ManagedCamera[];
   currentUser: SessionUser;
+  initialTab?: TabKey;
   onClose: () => void;
   onCamerasChanged: () => Promise<void>;
   onNotify: (text: string, kind?: ToastKind) => void;
@@ -71,6 +73,11 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   'notify.create': '新增通知渠道',
   'notify.update': '修改通知渠道',
   'notify.delete': '删除通知渠道',
+  'notify.template.create': '新增通知模板',
+  'notify.template.update': '修改通知模板',
+  'notify.template.delete': '删除通知模板',
+  'camera.batch_update': '批量更新点位',
+  'camera.batch_delete': '批量删除点位',
   'site.create': '新增站点',
   'site.update': '修改站点',
   'site.delete': '删除站点',
@@ -201,12 +208,13 @@ const EMPTY_CAMERA: CameraInput = {
 export default function AdminPanel({
   cameras,
   currentUser,
+  initialTab,
   onClose,
   onCamerasChanged,
   onNotify,
 }: Props) {
   const isSuperAdmin = currentUser.role === 'admin';
-  const [tab, setTab] = useState<TabKey>('cameras');
+  const [tab, setTab] = useState<TabKey>(initialTab ?? 'cameras');
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [cameraForm, setCameraForm] = useState<CameraInput>(EMPTY_CAMERA);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -282,6 +290,7 @@ export default function AdminPanel({
     secret: string;
     siteId: string;
     enabled: boolean;
+    templateId: string;
   }>({
     name: '',
     kind: 'wecom',
@@ -289,7 +298,13 @@ export default function AdminPanel({
     secret: '',
     siteId: '',
     enabled: true,
+    templateId: '',
   });
+  const [notifyTemplates, setNotifyTemplates] = useState<NotifyTemplate[]>([]);
+  const [templateBusy, setTemplateBusy] = useState(false);
+  const [showTemplateEditor, setShowTemplateEditor] = useState(false);
+  const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
+  const [templateDraft, setTemplateDraft] = useState({ name: '', body: '' });
   const selectedVendor = vendors.find((vendor) => vendor.id === nvrForm.vendorId);
   const [users, setUsers] = useState<SessionUser[]>([]);
   const [usersLoading, setUsersLoading] = useState(false);
@@ -301,6 +316,10 @@ export default function AdminPanel({
     siteAdmin: false,
   });
   const [userBusy, setUserBusy] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [batchSensitivity, setBatchSensitivity] = useState<'' | CameraSensitivity>('');
+  const [batchSiteId, setBatchSiteId] = useState('');
   const [error, setError] = useState('');
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
@@ -337,12 +356,80 @@ export default function AdminPanel({
 
   const loadNotify = async () => {
     try {
-      const result = await api.notifyChannels();
-      setNotifyChannels(result.channels);
+      const [channelsResult, templatesResult] = await Promise.all([
+        api.notifyChannels(),
+        api.notifyTemplates(),
+      ]);
+      setNotifyChannels(channelsResult.channels);
+      setNotifyTemplates(templatesResult.templates);
     } catch (requestError) {
       setError(
         requestError instanceof ApiError ? requestError.message : '通知渠道加载失败',
       );
+    }
+  };
+
+  const loadNotifyTemplates = async () => {
+    try {
+      const result = await api.notifyTemplates();
+      setNotifyTemplates(result.templates);
+    } catch {
+      // 模板加载失败不阻塞通知页。
+    }
+  };
+
+  const openTemplateEditor = (tpl?: NotifyTemplate) => {
+    setEditingTemplateId(tpl?.id ?? null);
+    setTemplateDraft({ name: tpl?.name ?? '', body: tpl?.body ?? '' });
+    setShowTemplateEditor(true);
+  };
+
+  const closeTemplateEditor = () => {
+    setShowTemplateEditor(false);
+    setEditingTemplateId(null);
+    setTemplateDraft({ name: '', body: '' });
+  };
+
+  const insertTemplateVar = (v: string) => {
+    setTemplateDraft((prev) => ({ ...prev, body: `${prev.body}{${v}}` }));
+  };
+
+  const saveTemplate = async () => {
+    if (!templateDraft.name.trim() || !templateDraft.body.trim()) {
+      setError('请填写模板名称与内容');
+      return;
+    }
+    setTemplateBusy(true);
+    try {
+      if (editingTemplateId) {
+        await api.updateNotifyTemplate(editingTemplateId, {
+          name: templateDraft.name.trim(),
+          body: templateDraft.body,
+        });
+      } else {
+        await api.createNotifyTemplate({
+          name: templateDraft.name.trim(),
+          body: templateDraft.body,
+        });
+      }
+      await loadNotifyTemplates();
+      closeTemplateEditor();
+      onNotify('通知模板已保存', 'ok');
+    } catch (requestError) {
+      setError(requestError instanceof ApiError ? requestError.message : '保存模板失败');
+    } finally {
+      setTemplateBusy(false);
+    }
+  };
+
+  const removeTemplate = async (tpl: NotifyTemplate) => {
+    if (!window.confirm(`删除模板「${tpl.name}」？引用它的渠道将回退为默认文案。`)) return;
+    try {
+      await api.deleteNotifyTemplate(tpl.id);
+      await loadNotifyTemplates();
+      onNotify('通知模板已删除', 'info');
+    } catch (requestError) {
+      setError(requestError instanceof ApiError ? requestError.message : '删除模板失败');
     }
   };
 
@@ -817,6 +904,77 @@ export default function AdminPanel({
     }
   };
 
+  const visibleCameraIds = cameras
+    .filter((camera) => (siteFilter ? siteKey(camera.siteId) === siteFilter : true))
+    .map((camera) => camera.id);
+
+  const toggleSelectAll = () => {
+    setSelectedIds((prev) =>
+      prev.length === visibleCameraIds.length && visibleCameraIds.length > 0
+        ? []
+        : [...visibleCameraIds],
+    );
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id],
+    );
+  };
+
+  const exitSelectionMode = () => {
+    setSelectionMode(false);
+    setSelectedIds([]);
+  };
+
+  const runBatchUpdate = async (
+    patch: {
+      detectEnabled?: boolean;
+      detectSensitivity?: CameraSensitivity | null;
+      siteId?: string | null;
+    },
+    label: string,
+  ) => {
+    if (selectedIds.length === 0) return;
+    setCameraBusy(true);
+    try {
+      const result = await api.batchUpdateCameras({ ids: selectedIds, ...patch });
+      await onCamerasChanged();
+      setSelectedIds([]);
+      onNotify(`已${label} ${result.updated ?? 0} 个点位`, 'ok');
+      if (result.errors.length) {
+        onNotify(`${result.errors.length} 个点位操作失败`, 'danger');
+      }
+    } catch (requestError) {
+      setError(requestError instanceof ApiError ? requestError.message : '批量操作失败');
+    } finally {
+      setCameraBusy(false);
+    }
+  };
+
+  const runBatchDelete = async () => {
+    if (selectedIds.length === 0) return;
+    if (
+      !window.confirm(`确定批量删除选中的 ${selectedIds.length} 个点位？此操作不可撤销。`)
+    ) {
+      return;
+    }
+    setCameraBusy(true);
+    try {
+      const result = await api.batchDeleteCameras(selectedIds);
+      await onCamerasChanged();
+      setSelectedIds([]);
+      onNotify(`已删除 ${result.deleted ?? 0} 个点位`, 'info');
+      if (result.errors.length) {
+        onNotify(`${result.errors.length} 个点位删除失败`, 'danger');
+      }
+    } catch (requestError) {
+      setError(requestError instanceof ApiError ? requestError.message : '批量删除失败');
+    } finally {
+      setCameraBusy(false);
+    }
+  };
+
   const runProbe = async (camera: ManagedCamera) => {
     setTestingId(camera.id);
     setError('');
@@ -1071,6 +1229,7 @@ export default function AdminPanel({
         secret: notifyForm.secret.trim() || undefined,
         siteId: notifyForm.siteId || null,
         enabled: notifyForm.enabled,
+        templateId: notifyForm.templateId || null,
       });
       setNotifyChannels((prev) => [...prev, result.channel]);
       setNotifyForm((prev) => ({ ...prev, name: '', url: '', secret: '' }));
@@ -1276,6 +1435,13 @@ export default function AdminPanel({
                   </button>
                   <button type="button" className="btn btn-sm btn-danger" onClick={openCreateCamera}>
                     新增单个点位
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn btn-sm btn-ghost ${selectionMode ? 'is-active' : ''}`}
+                    onClick={() => (selectionMode ? exitSelectionMode() : setSelectionMode(true))}
+                  >
+                    {selectionMode ? '取消批量' : '批量管理'}
                   </button>
                 </div>
               </div>
@@ -1861,6 +2027,91 @@ export default function AdminPanel({
                 <p className="admin-empty">还没有点位，请先新增一个网络监控点位。</p>
               ) : (
                 <>
+                  {selectionMode && (
+                    <div className="batch-bar">
+                      <label className="batch-select-all">
+                        <input
+                          type="checkbox"
+                          checked={
+                            selectedIds.length === visibleCameraIds.length &&
+                            visibleCameraIds.length > 0
+                          }
+                          onChange={toggleSelectAll}
+                        />
+                        全选（{selectedIds.length}/{visibleCameraIds.length}）
+                      </label>
+                      <div className="batch-actions">
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          disabled={selectedIds.length === 0 || cameraBusy}
+                          onClick={() => void runBatchUpdate({ detectEnabled: true }, '启用检测')}
+                        >
+                          启用检测
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          disabled={selectedIds.length === 0 || cameraBusy}
+                          onClick={() => void runBatchUpdate({ detectEnabled: false }, '停用检测')}
+                        >
+                          停用检测
+                        </button>
+                        <select
+                          className="settings-input batch-select"
+                          value={batchSensitivity}
+                          disabled={selectedIds.length === 0 || cameraBusy}
+                          onChange={(event) => {
+                            const value = event.target.value as '' | CameraSensitivity;
+                            setBatchSensitivity(value);
+                            if (value) {
+                              void runBatchUpdate(
+                                { detectSensitivity: value },
+                                `设为${value === 'low' ? '低' : value === 'high' ? '高' : '标准'}灵敏度`,
+                              );
+                            }
+                          }}
+                        >
+                          <option value="">灵敏度…</option>
+                          <option value="low">低</option>
+                          <option value="standard">标准</option>
+                          <option value="high">高</option>
+                        </select>
+                        <select
+                          className="settings-input batch-select"
+                          value={batchSiteId}
+                          disabled={selectedIds.length === 0 || cameraBusy}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            setBatchSiteId(value);
+                            if (value) void runBatchUpdate({ siteId: value }, '调整所属站点');
+                          }}
+                        >
+                          <option value="">移动到站点…</option>
+                          {sites.map((site) => (
+                            <option key={site.id} value={site.id}>
+                              {site.name}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-danger"
+                          disabled={selectedIds.length === 0 || cameraBusy}
+                          onClick={() => void runBatchDelete()}
+                        >
+                          删除选中
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-ghost"
+                          onClick={exitSelectionMode}
+                        >
+                          退出
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   {sites.length > 0 && (
                     <div className="admin-filter-row">
                       <label className="admin-filter">
@@ -1894,6 +2145,14 @@ export default function AdminPanel({
                     return (
                       <Fragment key={camera.id}>
                         <div className="point-row">
+                          {selectionMode && (
+                            <input
+                              type="checkbox"
+                              className="point-select"
+                              checked={selectedIds.includes(camera.id)}
+                              onChange={() => toggleSelect(camera.id)}
+                            />
+                          )}
                           <span className="point-code">{camera.code}</span>
                           <div className="point-main">
                             <strong>{camera.name}</strong>
@@ -2401,6 +2660,114 @@ export default function AdminPanel({
                 </div>
               </div>
 
+              <div className="template-card">
+                <div className="admin-subhead">
+                  <h4>告警通知文案模板</h4>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost"
+                    onClick={() => openTemplateEditor()}
+                  >
+                    新建模板
+                  </button>
+                </div>
+                <p className="admin-form-hint">
+                  可用变量：{'{site}'} 站点 · {'{camera}'} 点位 · {'{zone}'} 区域 · {'{level}'} 类型 ·
+                  {'{confidence}'} 置信度 · {'{time}'} 时间 · {'{hotspot}'} 热区 · {'{link}'} 处置入口。
+                  仅作用于「告警产生」通知，其余事件沿用内置文案。
+                </p>
+                {showTemplateEditor && (
+                  <div className="template-editor">
+                    <input
+                      className="settings-input"
+                      placeholder="模板名称"
+                      value={templateDraft.name}
+                      maxLength={32}
+                      onChange={(event) =>
+                        setTemplateDraft((prev) => ({ ...prev, name: event.target.value }))
+                      }
+                    />
+                    <textarea
+                      className="settings-input template-body"
+                      rows={3}
+                      placeholder="例如：{time} {site}/{camera} 触发{level}（{confidence}%），请核实：{link}"
+                      value={templateDraft.body}
+                      onChange={(event) =>
+                        setTemplateDraft((prev) => ({ ...prev, body: event.target.value }))
+                      }
+                    />
+                    <div className="template-var-row">
+                      {[
+                        'site',
+                        'camera',
+                        'zone',
+                        'level',
+                        'confidence',
+                        'time',
+                        'hotspot',
+                        'link',
+                      ].map((variable) => (
+                        <button
+                          type="button"
+                          key={variable}
+                          className="chip"
+                          onClick={() => insertTemplateVar(variable)}
+                        >
+                          {`{${variable}}`}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="admin-form-actions">
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-danger"
+                        disabled={templateBusy}
+                        onClick={() => void saveTemplate()}
+                      >
+                        {templateBusy ? '保存中…' : '保存模板'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-ghost"
+                        onClick={closeTemplateEditor}
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <div className="template-list">
+                  {!showTemplateEditor && notifyTemplates.length === 0 && (
+                    <p className="admin-empty">暂无模板，使用默认文案。可新建可复用模板。</p>
+                  )}
+                  {notifyTemplates.map((tpl) => (
+                    <div className="template-item" key={tpl.id}>
+                      <div className="template-meta">
+                        <strong>{tpl.name}</strong>
+                        {tpl.builtin && <span className="chip chip--mini">内置</span>}
+                      </div>
+                      <code className="template-preview">{tpl.body}</code>
+                      <div className="template-item-actions">
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-ghost"
+                          onClick={() => openTemplateEditor(tpl)}
+                        >
+                          编辑
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-ghost"
+                          onClick={() => void removeTemplate(tpl)}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
               <form className="admin-form admin-notify-form" onSubmit={submitNotify}>
                 <div className="admin-form-title">
                   <h4>新增通知渠道</h4>
@@ -2449,6 +2816,23 @@ export default function AdminPanel({
                       {sites.map((site) => (
                         <option key={site.id} value={site.id}>
                           {site.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>消息模板</span>
+                    <select
+                      className="settings-input"
+                      value={notifyForm.templateId}
+                      onChange={(event) =>
+                        setNotifyForm((prev) => ({ ...prev, templateId: event.target.value }))
+                      }
+                    >
+                      <option value="">默认文案</option>
+                      {notifyTemplates.map((tpl) => (
+                        <option key={tpl.id} value={tpl.id}>
+                          {tpl.name}
                         </option>
                       ))}
                     </select>
@@ -2514,6 +2898,9 @@ export default function AdminPanel({
                           {NOTIFY_KIND_LABELS[channel.kind]} ·{' '}
                           {channel.siteName ?? '全部站点'} · {channel.urlHint}
                           {channel.hasSecret ? ' · 已配置签名' : ''}
+                          {channel.templateId
+                            ? ` · 模板：${notifyTemplates.find((t) => t.id === channel.templateId)?.name ?? '已删除'}`
+                            : ''}
                         </span>
                       </div>
                       <div className="point-actions">

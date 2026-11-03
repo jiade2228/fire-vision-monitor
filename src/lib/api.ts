@@ -165,6 +165,7 @@ export interface NotifyChannel {
   urlHint: string;
   hasSecret: boolean;
   enabled: boolean;
+  templateId: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -176,6 +177,23 @@ export interface NotifyChannelInput {
   url: string;
   secret?: string;
   enabled?: boolean;
+  templateId?: string | null;
+}
+
+export interface NotifyTemplate {
+  id: string;
+  name: string;
+  body: string;
+  builtin: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface BatchCameraResult {
+  updated?: number;
+  deleted?: number;
+  errors: Array<{ id: string; error: string }>;
+  cameras?: ManagedCamera[];
 }
 
 export interface NotificationLog {
@@ -582,6 +600,37 @@ export const api = {
   deleteNotifyChannel: (id: string) =>
     request<{ ok: boolean }>(`/api/notify/channels/${encodeURIComponent(id)}`, {
       method: 'DELETE',
+    }),
+  notifyTemplates: () =>
+    request<{ templates: NotifyTemplate[] }>('/api/notify/templates'),
+  createNotifyTemplate: (body: { name: string; body: string }) =>
+    request<{ template: NotifyTemplate }>('/api/notify/templates', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateNotifyTemplate: (id: string, body: { name?: string; body?: string }) =>
+    request<{ template: NotifyTemplate }>(
+      `/api/notify/templates/${encodeURIComponent(id)}`,
+      { method: 'PATCH', body: JSON.stringify(body) },
+    ),
+  deleteNotifyTemplate: (id: string) =>
+    request<{ ok: boolean }>(`/api/notify/templates/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  batchUpdateCameras: (body: {
+    ids: string[];
+    detectEnabled?: boolean;
+    detectSensitivity?: CameraSensitivity | null;
+    siteId?: string | null;
+  }) =>
+    request<BatchCameraResult>('/api/cameras/batch-update', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  batchDeleteCameras: (ids: string[]) =>
+    request<BatchCameraResult>('/api/cameras/batch-delete', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
     }),
   testNotifyChannel: (id: string) =>
     request<{ ok: boolean }>(`/api/notify/channels/${encodeURIComponent(id)}/test`, {

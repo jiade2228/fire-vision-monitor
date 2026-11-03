@@ -51,7 +51,34 @@ export function formatTime(timestamp) {
 }
 
 /** 生成 markdown 文本；同一份内容同时用于企业微信/钉钉/Webhook 的 message 字段。 */
+/**
+ * 按模板渲染告警文案。变量：{site} {camera} {zone} {level} {confidence}
+ * {time} {hotspot} {link}。未识别的占位符原样保留，便于排查。
+ * 模板仅在「告警产生（created）」事件生效；确认/误报/恢复/升级等事件
+ * 沿用内置文案，避免不同语义下变量缺失造成歧义。
+ */
+export function renderTemplate(template, alarm, extra = {}) {
+  const levelLabel = LEVEL_LABELS[alarm.level] ?? '告警';
+  const link = extra.link || '监控平台告警页';
+  const vars = {
+    site: extra.siteName || '',
+    camera: alarm.cameraName,
+    zone: alarm.zone,
+    level: levelLabel,
+    confidence: String(Math.round(alarm.confidence ?? 0)),
+    time: formatTime(alarm.createdAt),
+    hotspot: `${Math.round(alarm.hotspot?.x ?? 0)}% / ${Math.round(alarm.hotspot?.y ?? 0)}%`,
+    link,
+  };
+  return template.replace(/\{(\w+)\}/g, (match, key) =>
+    Object.prototype.hasOwnProperty.call(vars, key) ? String(vars[key]) : match,
+  );
+}
+
 export function buildAlarmMessage(alarm, event = 'created', extra = {}) {
+  if (extra.template && event === 'created') {
+    return renderTemplate(extra.template, alarm, extra);
+  }
   const levelLabel = LEVEL_LABELS[alarm.level] ?? '告警';
   const lines = [];
   if (event === 'recovered') {
@@ -125,6 +152,12 @@ export class Notifier {
     return `${channel.name}（${KIND_LABELS[channel.kind] ?? channel.kind}）`;
   }
 
+  /** 处置链接：由 PUBLIC_BASE_URL 拼出告警页，未配置则回退为提示文案。 */
+  resolveLink() {
+    const base = (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
+    return base ? `${base}/alarms` : '监控平台告警页';
+  }
+
   async post(url, body, headers = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -171,7 +204,8 @@ export class Notifier {
   }
 
   buildBody(channel, alarm, event, extra = {}) {
-    const message = buildAlarmMessage(alarm, event, extra);
+    const enriched = { ...extra, link: this.resolveLink() };
+    const message = buildAlarmMessage(alarm, event, enriched);
     if (channel.kind === 'wecom') {
       return {
         body: JSON.stringify({ msgtype: 'markdown', markdown: { content: message } }),
@@ -245,7 +279,12 @@ export class Notifier {
     if (!channel?.url) return 'skipped';
     if (!this.store.claimNotification(alarm.id, channel.id, event)) return 'skipped';
     try {
-      const { body, headers } = this.buildBody(channel, alarm, event, context);
+      // 渠道自带模板优先于全局默认正文。
+      const enrichedContext = {
+        ...context,
+        template: channel.templateBody ?? context.template,
+      };
+      const { body, headers } = this.buildBody(channel, alarm, event, enrichedContext);
       await this.postWithRetry(channel.url, body, headers);
       this.store.finishNotification(alarm.id, channel.id, event, { status: 'sent' });
       return 'sent';
