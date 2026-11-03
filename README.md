@@ -12,11 +12,12 @@
 |---|---|
 | 接入 | RTSP 转 HLS 低延迟播放；ONVIF 自动发现与导入；WS-Discovery 一键扫描全网段；13+ 品牌 NVR 批量导入（海康 / 大华 / 宇视 / Axis 等）；边缘网关隧道（现场无公网时主动外连） |
 | 识别 | 服务端 7×24 检测引擎（每路一个 FFmpeg 抽帧进程，160×90@1fps，ROI 屏蔽、亮度闪烁判据、分点位灵敏度）；浏览器本地识别兜底；两者自动去重（服务端接管时浏览器让位） |
-| 告警 | SSE 实时推送；超时未确认自动升级；设备离线告警与恢复归档；抓拍 + H.264 短视频；每日值守摘要（滚动 24h） |
-| 通知 | 企业微信 / 钉钉 / 通用 Webhook（HMAC-SHA256 签名）；渠道密钥加密落库；推送按「告警+渠道+事件」去重；连续失败自动停用并广播提醒（渠道自愈） |
+| 告警 | SSE 实时推送；超时未确认自动升级；设备离线告警与恢复归档；抓拍 + H.264 短视频；告警短视频按时间轴回放（点击播放、前后跳转、自动连播）；每日值守摘要（滚动 24h） |
+| 通知 | 企业微信 / 钉钉 / 通用 Webhook（HMAC-SHA256 签名）；告警文案模板可配（站点/点位/时间/置信度/处置链接变量）；渠道密钥加密落库；推送按「告警+渠道+事件」去重；连续失败自动停用并广播提醒（渠道自愈） |
 | 权限 | 全局管理员 / 站点管理员 / 值班员 / 只读；站点级数据隔离，逐请求校验；SSE 按站点投递 |
 | 观测 | 告警趋势看板（按天 / 分站点 / 误报率）；审计日志（筛选 + 分页 + 导出）；磁盘水位保护（按天数 + 按容量双保险） |
 | 值守 | 大屏自动轮巡（已接入点位逐路全屏，10/15/30/60 秒可调，支持暂停、上一路/下一路、无源自动跳过） |
+| 管理 | 点位批量操作（批量启停检测 / 批量灵敏度 / 批量删除）；新用户空状态三步引导（看演示 → 接摄像头 → 配通知） |
 | 演示 | 演示模式：FFmpeg 合成火焰流，无硬件跑通播放→识别→告警→抓拍→推送→统计；演示数据一键清除 |
 
 ## 2. 系统要求
@@ -149,10 +150,11 @@ node scripts/detect-file.mjs test-videos/火灾-酒精壁炉明火.webm standard
 | `OFFLINE_TIMEOUT_MS` / `OFFLINE_CHECK_INTERVAL_MS` | 60000 / 15000 | 离线判定与巡检间隔 |
 | `ESCALATION_MINUTES` / `ESCALATION_CHECK_INTERVAL_MS` | 5 / 60000 | 告警超时升级（≤0 关闭） |
 | `ALARM_CLIP_SECONDS` | 10 | 告警短视频时长（2-60） |
-| `ALARM_RETENTION_DAYS` / `NOTIFY_RETENTION_DAYS` | 180 / 30 | 数据保留天数 |
+| `ALARM_RETENTION_DAYS` / `NOTIFY_RETENTION_DAYS` / `AUDIT_RETENTION_DAYS` | 180 / 30 / 180 | 数据保留天数（告警 / 推送日志 / 审计日志） |
 | `MEDIA_MAX_BYTES` | 2GB（0 关闭） | 媒体磁盘水位 |
 | `DAILY_SUMMARY_AT` / `DAILY_SUMMARY_FORCE` | 08:00（上海时区）/ 关 | 每日摘要推送时间；`FORCE=1` 启动即跑一次（演练用） |
 | `NOTIFY_MAX_FAILURES` | 5（0 关闭） | 渠道连续失败自动停用阈值 |
+| `NOTIFY_BLOCK_PRIVATE` | 关（`1` 开启） | 公网部署建议开启：Webhook 额外拦截环回、私网与 `.local` 目标（防 SSRF 打内网） |
 | `DEMO_WIDTH` / `DEMO_HEIGHT` / `DEMO_FPS` | 640 / 360 / 15 | 演示流画面规格 |
 | `DEMO_SEGMENT_SECONDS` / `DEMO_PLAYLIST_SIZE` | 2 / 6 | 演示流分片参数 |
 | `EDGE_GATEWAY_TOKEN` | 空（未启用） | ≥16 位；配置后中心接受现场网关连接，配对令牌在管理端「系统/边缘」状态条查看 |
@@ -160,6 +162,7 @@ node scripts/detect-file.mjs test-videos/火灾-酒精壁炉明火.webm standard
 | `SESSION_SECRET` / `CREDENTIALS_KEY` | 自动生成并落盘 | 会话签名密钥 / 渠道加密密钥；外部注入需与既有数据一致 |
 | `TRUST_PROXY` | 关 | 反代后按层数信任 `X-Forwarded-For` |
 | `CHROME_PATH` / `E2E_PORT` / `E2E_HEADED` | — | E2E 测试专用 |
+| `E2E_ADMIN_PASSWORD` | 内置测试默认值 | E2E/集成测试临时实例的管理员密码覆盖（仅测试用，不影响生产） |
 
 ## 10. 目录结构
 
