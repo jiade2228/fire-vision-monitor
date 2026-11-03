@@ -28,6 +28,7 @@ import {
 } from './demo-source.mjs';
 import { Notifier } from './notify.mjs';
 import { createGuards } from './http/guards.mjs';
+import { createSession } from './http/session.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -1119,75 +1120,23 @@ async function main() {
     });
     app.use(express.json({ limit: '2mb' }));
 
-    function sessionSignature(payload) {
-      return crypto
-        .createHmac('sha256', sessionSecret)
-        .update(payload)
-        .digest('base64url');
-    }
-
-    function createSessionToken(user) {
-      const payload = Buffer.from(
-        JSON.stringify({
-          uid: user.id,
-          v: user.tokenVersion ?? 0,
-          exp: Date.now() + sessionLifetimeSeconds * 1000,
-        }),
-      ).toString('base64url');
-      return `${payload}.${sessionSignature(payload)}`;
-    }
-
-    function readSessionToken(token) {
-      if (typeof token !== 'string' || !token.includes('.')) return null;
-      const [payload, signature] = token.split('.');
-      if (!payload || !signature) return null;
-      const expected = sessionSignature(payload);
-      const providedBuffer = Buffer.from(signature);
-      const expectedBuffer = Buffer.from(expected);
-      if (
-        providedBuffer.length !== expectedBuffer.length ||
-        !crypto.timingSafeEqual(providedBuffer, expectedBuffer)
-      ) {
-        return null;
-      }
-      try {
-        const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-        if (typeof parsed.uid !== 'string' || typeof parsed.exp !== 'number') {
-          return null;
-        }
-        if (parsed.exp < Date.now()) return null;
-        return parsed;
-      } catch {
-        return null;
-      }
-    }
-
-    function currentUser(req) {
-      const token = parseCookies(req.headers.cookie)[sessionCookie];
-      const session = readSessionToken(token);
-      if (!session) return null;
-      const user = store.getUser(session.uid);
-      if (!user || user.disabled) return null;
-      if ((session.v ?? 0) !== (user.tokenVersion ?? 0)) return null;
-      return user;
-    }
-
-    function setSessionCookie(req, res, user) {
-      const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
-      res.setHeader(
-        'Set-Cookie',
-        `${sessionCookie}=${encodeURIComponent(createSessionToken(user))}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${sessionLifetimeSeconds}${
-          secure ? '; Secure' : ''
-        }`,
-      );
-    }
-
-    function clearSessionCookie(res) {
-      res.setHeader(
-        'Set-Cookie',
-        `${sessionCookie}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`,
-      );
-    }
+    const {
+      sessionSignature,
+      createSessionToken,
+      readSessionToken,
+      currentUser,
+      setSessionCookie,
+      clearSessionCookie,
+      checkLoginBlocked,
+      recordLoginFailure,
+    } = createSession({
+      store,
+      sessionSecret,
+      sessionCookie,
+      sessionLifetimeSeconds,
+      metrics,
+      parseCookies,
+    });
 
     const {
       requireAuth,
@@ -1199,61 +1148,6 @@ async function main() {
       isManager,
       fallbackSiteIdFor,
     } = createGuards(store, currentUser);
-
-    const loginAttempts = new Map();
-    const ipAttempts = new Map();
-    const windowMs = 10 * 60 * 1000;
-
-    // 简单、可清理的双维度登录限流。
-    function checkLoginBlocked(ip, username) {
-      const now = Date.now();
-      const account = loginAttempts.get(`${ip}:${username}`);
-      const address = ipAttempts.get(ip);
-      return Boolean(
-        (account && account.count >= 8 && now - account.started < windowMs) ||
-          (address && address.count >= 30 && now - address.started < windowMs),
-      );
-    }
-
-    function recordLoginFailure(ip, username) {
-      const now = Date.now();
-      metrics.loginFailures += 1;
-      const accountKey = `${ip}:${username}`;
-      const account = loginAttempts.get(accountKey);
-      if (!account || now - account.started > windowMs) {
-        loginAttempts.set(accountKey, { count: 1, started: now });
-      } else {
-        account.count += 1;
-      }
-      const address = ipAttempts.get(ip);
-      if (!address || now - address.started > windowMs) {
-        ipAttempts.set(ip, { count: 1, started: now });
-      } else {
-        address.count += 1;
-      }
-    }
-
-    setInterval(() => {
-      const now = Date.now();
-      for (const [key, record] of loginAttempts) {
-        if (now - record.started > windowMs) loginAttempts.delete(key);
-      }
-      for (const [key, record] of ipAttempts) {
-        if (now - record.started > windowMs) ipAttempts.delete(key);
-      }
-      // 超量时淘汰最旧记录而非整体清空——整表 clear 会给攻击者制造限流重置窗口。
-      const evictOldest = (map) => {
-        const overflow = map.size - 10_000;
-        if (overflow <= 0) return;
-        let removed = 0;
-        for (const key of map.keys()) {
-          map.delete(key);
-          if (++removed >= overflow) break;
-        }
-      };
-      evictOldest(loginAttempts);
-      evictOldest(ipAttempts);
-    }, 5 * 60 * 1000).unref();
 
     let setupInFlight = false;
 
