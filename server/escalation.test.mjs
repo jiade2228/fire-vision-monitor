@@ -1,3 +1,4 @@
+import { E2E_ADMIN_PASSWORD } from './test-password.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -111,7 +112,7 @@ test('pending alarm escalates once and stops after confirmation', async (t) => {
 
   const setup = await request('/api/setup', {
     method: 'POST',
-    body: { username: 'admin', displayName: '升级管理员', password: 'Admin12345!' },
+    body: { username: 'admin', displayName: '升级管理员', password: E2E_ADMIN_PASSWORD },
   });
   assert.equal(setup.status, 201);
   const adminCookie = setup.cookie;

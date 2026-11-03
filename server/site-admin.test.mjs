@@ -1,3 +1,4 @@
+import { E2E_ADMIN_PASSWORD } from './test-password.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -88,7 +89,7 @@ test('site admin manages only assigned sites and cannot touch global settings', 
 
   const setup = await request('/api/setup', {
     method: 'POST',
-    body: { username: 'admin', displayName: '平台管理员', password: 'Admin12345!' },
+    body: { username: 'admin', displayName: '平台管理员', password: E2E_ADMIN_PASSWORD },
   });
   assert.equal(setup.status, 201);
   const adminCookie = setup.cookie;
@@ -135,7 +136,7 @@ test('site admin manages only assigned sites and cannot touch global settings', 
     body: {
       username: 'siteop',
       displayName: 'A 区管理员',
-      password: 'Admin12345!',
+      password: E2E_ADMIN_PASSWORD,
       role: 'operator',
       siteAdmin: true,
     },
@@ -152,7 +153,7 @@ test('site admin manages only assigned sites and cannot touch global settings', 
 
   const login = await request('/api/auth/login', {
     method: 'POST',
-    body: { username: 'siteop', password: 'Admin12345!' },
+    body: { username: 'siteop', password: E2E_ADMIN_PASSWORD },
   });
   assert.equal(login.status, 200);
   assert.equal(login.body.user.siteAdmin, true);
@@ -299,7 +300,7 @@ test('site admin manages only assigned sites and cannot touch global settings', 
       body: {
         username: 'hacker',
         displayName: '越权',
-        password: 'Admin12345!',
+        password: E2E_ADMIN_PASSWORD,
         role: 'admin',
       },
     })).status,

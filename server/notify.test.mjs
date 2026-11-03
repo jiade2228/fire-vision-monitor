@@ -1,3 +1,4 @@
+import { E2E_ADMIN_PASSWORD } from './test-password.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -114,7 +115,7 @@ test('alarm notifications reach webhook and wecom channels with signature', asyn
 
   const setup = await request('/api/setup', {
     method: 'POST',
-    body: { username: 'admin', displayName: '通知管理员', password: 'Admin12345!' },
+    body: { username: 'admin', displayName: '通知管理员', password: E2E_ADMIN_PASSWORD },
   });
   assert.equal(setup.status, 201);
   const adminCookie = setup.cookie;
@@ -263,14 +264,14 @@ test('alarm notifications reach webhook and wecom channels with signature', asyn
     body: {
       username: 'operator1',
       displayName: '值班员',
-      password: 'Admin12345!',
+      password: E2E_ADMIN_PASSWORD,
       role: 'operator',
     },
   });
   assert.equal(operator.status, 201);
   const login = await request('/api/auth/login', {
     method: 'POST',
-    body: { username: 'operator1', password: 'Admin12345!' },
+    body: { username: 'operator1', password: E2E_ADMIN_PASSWORD },
   });
   assert.equal(login.status, 200);
   const forbidden = await request('/api/notify/channels', {

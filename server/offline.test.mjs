@@ -1,3 +1,4 @@
+import { E2E_ADMIN_PASSWORD } from './test-password.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
@@ -88,7 +89,7 @@ test('unreachable camera raises and keeps a single offline alarm', async (t) => 
 
   const setup = await request('/api/setup', {
     method: 'POST',
-    body: { username: 'admin', displayName: '离线管理员', password: 'Admin12345!' },
+    body: { username: 'admin', displayName: '离线管理员', password: E2E_ADMIN_PASSWORD },
   });
   assert.equal(setup.status, 201);
   const adminCookie = setup.cookie;

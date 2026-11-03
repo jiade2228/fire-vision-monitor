@@ -1,3 +1,4 @@
+import { E2E_ADMIN_PASSWORD } from './test-password.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -99,7 +100,7 @@ test('multi-site isolation, scoping and site lifecycle', async (t) => {
     body: {
       username: 'admin',
       displayName: '站点管理员',
-      password: 'Admin12345!',
+      password: E2E_ADMIN_PASSWORD,
     },
   });
   assert.equal(setup.status, 201);
@@ -204,7 +205,7 @@ test('multi-site isolation, scoping and site lifecycle', async (t) => {
     body: {
       username: 'operator1',
       displayName: '值班员一',
-      password: 'Admin12345!',
+      password: E2E_ADMIN_PASSWORD,
       role: 'operator',
     },
   });
@@ -221,7 +222,7 @@ test('multi-site isolation, scoping and site lifecycle', async (t) => {
 
   const operatorLogin = await request('/api/auth/login', {
     method: 'POST',
-    body: { username: 'operator1', password: 'Admin12345!' },
+    body: { username: 'operator1', password: E2E_ADMIN_PASSWORD },
   });
   assert.equal(operatorLogin.status, 200);
   const operatorCookie = operatorLogin.cookie;

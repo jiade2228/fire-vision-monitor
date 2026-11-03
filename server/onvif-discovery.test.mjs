@@ -1,3 +1,4 @@
+import { E2E_ADMIN_PASSWORD } from './test-password.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import dgram from 'node:dgram';
@@ -141,7 +142,7 @@ test('ONVIF 全网段扫描 API 鉴权并返回设备列表', async (t) => {
 
   const setup = await call('/api/setup', {
     method: 'POST',
-    body: { username: 'admin', displayName: '扫描管理员', password: 'Admin12345!' },
+    body: { username: 'admin', displayName: '扫描管理员', password: E2E_ADMIN_PASSWORD },
   });
   assert.equal(setup.status, 201);
 

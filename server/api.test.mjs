@@ -1,3 +1,4 @@
+import { E2E_ADMIN_PASSWORD } from './test-password.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -93,7 +94,7 @@ test('API auth, roles, alarms, audit and backup', async (t) => {
   const missingCsrf = await fetch(`${base}/api/setup`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'admin', password: 'Admin12345!' }),
+    body: JSON.stringify({ username: 'admin', password: E2E_ADMIN_PASSWORD }),
   });
   assert.equal(missingCsrf.status, 403);
 
@@ -102,7 +103,7 @@ test('API auth, roles, alarms, audit and backup', async (t) => {
     body: {
       username: 'admin',
       displayName: '测试管理员',
-      password: 'Admin12345!',
+      password: E2E_ADMIN_PASSWORD,
     },
   });
   assert.equal(setup.status, 201);

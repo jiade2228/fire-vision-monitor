@@ -14,12 +14,13 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { getFreePort } from '../server/test-port.mjs';
+import { E2E_ADMIN_PASSWORD } from '../server/test-password.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const port = Number(process.env.E2E_PORT) || (await getFreePort());
 const base = `http://127.0.0.1:${port}`;
 const csrf = { 'X-Requested-With': 'flame-vision' };
-const password = 'Admin12345!';
+const password = E2E_ADMIN_PASSWORD;
 
 const fsSyncExists = (candidate) => {
   try {
