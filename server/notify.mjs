@@ -32,6 +32,13 @@ const EVENT_LABELS = {
   escalated: '告警升级（超时未确认）',
 };
 
+/**
+ * 上海时区（Asia/Shanghai）的「YYYY/MM/DD HH:mm:ss」时间文案；非法时间戳
+ * 回退当前时间，Intl 不可用时回退 ISO 字符串。
+ *
+ * @param {number|string} timestamp 毫秒时间戳。
+ * @returns {string}
+ */
 export function formatTime(timestamp) {
   const value = Number(timestamp) || Date.now();
   try {
@@ -50,12 +57,16 @@ export function formatTime(timestamp) {
   }
 }
 
-/** 生成 markdown 文本；同一份内容同时用于企业微信/钉钉/Webhook 的 message 字段。 */
 /**
  * 按模板渲染告警文案。变量：{site} {camera} {zone} {level} {confidence}
  * {time} {hotspot} {link}。未识别的占位符原样保留，便于排查。
  * 模板仅在「告警产生（created）」事件生效；确认/误报/恢复/升级等事件
  * 沿用内置文案，避免不同语义下变量缺失造成歧义。
+ *
+ * @param {string} template 模板正文（支持 {占位符}）。
+ * @param {import('./types.mjs').Alarm} alarm 告警对象。
+ * @param {{siteName?: string, link?: string}} [extra] 渲染上下文。
+ * @returns {string} 渲染后的 markdown 文本。
  */
 export function renderTemplate(template, alarm, extra = {}) {
   const levelLabel = LEVEL_LABELS[alarm.level] ?? '告警';
@@ -75,6 +86,15 @@ export function renderTemplate(template, alarm, extra = {}) {
   );
 }
 
+/**
+ * 生成告警事件的 markdown 推送文案：created 优先用绑定模板，其余事件
+ * （recovered/escalated/confirmed/false）用内置结构化文案。
+ *
+ * @param {import('./types.mjs').Alarm} alarm 告警对象。
+ * @param {'created'|'recovered'|'escalated'|'confirmed'|'false'} [event] 事件类型，默认 'created'。
+ * @param {{template?: string, siteName?: string, actorName?: string, minutes?: number, link?: string}} [extra] 上下文。
+ * @returns {string} markdown 文案。
+ */
 export function buildAlarmMessage(alarm, event = 'created', extra = {}) {
   if (extra.template && event === 'created') {
     return renderTemplate(extra.template, alarm, extra);
@@ -133,7 +153,21 @@ function sleep(ms) {
   });
 }
 
+/**
+ * 告警通知器：按站点聚合渠道，推送企微/钉钉/Webhook 消息，
+ * 并维护推送去重、重试与连续失败自动停用。
+ *
+ * @typedef {object} NotifierOptions
+ * @property {import('./store.mjs').Store} store 数据存储（读渠道/模板，写推送日志）。
+ * @property {Console} [logger] 日志对象。
+ * @property {typeof fetch} [fetchImpl] HTTP 实现（测试注入用）。
+ * @property {number} [timeoutMs] 单次推送超时毫秒数（默认 8000）。
+ * @property {number} [maxFailures] 连续失败自动停用阈值（0 表示不停用，默认取 NOTIFY_MAX_FAILURES）。
+ */
 export class Notifier {
+  /**
+   * @param {NotifierOptions} [options]
+   */
   constructor({
     store,
     logger = console,
@@ -148,6 +182,12 @@ export class Notifier {
     this.maxFailures = Math.max(Number(maxFailures) || 0, 0);
   }
 
+  /**
+   * 渠道展示名：「名称（类型标签）」。
+   *
+   * @param {import('./types.mjs').NotifyChannel} channel
+   * @returns {string}
+   */
   channelLabel(channel) {
     return `${channel.name}（${KIND_LABELS[channel.kind] ?? channel.kind}）`;
   }
@@ -158,6 +198,14 @@ export class Notifier {
     return base ? `${base}/alarms` : '监控平台告警页';
   }
 
+  /**
+   * 单次 JSON POST：非 2xx 或业务 errcode 非零都视为失败抛错。
+   *
+   * @param {string} url 推送地址。
+   * @param {string} body JSON 字符串请求体。
+   * @param {Record<string, string>} [headers] 附加请求头（如签名）。
+   * @returns {Promise<string>} 上游响应文本。
+   */
   async post(url, body, headers = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -190,6 +238,14 @@ export class Notifier {
     }
   }
 
+  /**
+   * 带一次重试的推送（首次失败后等 600ms 重试一次，仍失败抛最后错误）。
+   *
+   * @param {string} url 推送地址。
+   * @param {string} body JSON 字符串请求体。
+   * @param {Record<string, string>} [headers] 附加请求头。
+   * @returns {Promise<string>} 上游响应文本。
+   */
   async postWithRetry(url, body, headers = {}) {
     let lastError;
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -203,6 +259,16 @@ export class Notifier {
     throw lastError;
   }
 
+  /**
+   * 按渠道类型构造请求体与请求头：企微/钉钉为 markdown 消息，
+   * Webhook 为结构化载荷（带 HMAC-SHA256 签名头）。
+   *
+   * @param {import('./types.mjs').NotifyChannel} channel 渠道。
+   * @param {import('./types.mjs').Alarm} alarm 告警。
+   * @param {string} event 事件名。
+   * @param {{camera?: object|null, siteName?: string}} [extra] 上下文。
+   * @returns {{body: string, headers: Record<string, string>}}
+   */
   buildBody(channel, alarm, event, extra = {}) {
     const enriched = { ...extra, link: this.resolveLink() };
     const message = buildAlarmMessage(alarm, event, enriched);
@@ -241,7 +307,14 @@ export class Notifier {
     return { body, headers };
   }
 
-  /** 推送一条告警事件；返回 { sent, failed, skipped }。 */
+  /**
+   * 推送一条告警事件到站点渠道集合（含全局渠道），返回计数汇总。
+   *
+   * @param {import('./types.mjs').Alarm} alarm 告警对象。
+   * @param {string} [event] 事件名，默认 'created'。
+   * @param {{camera?: object|null, siteName?: string, template?: string}} [extra] 上下文。
+   * @returns {Promise<{sent: number, failed: number, skipped: number}>}
+   */
   async notifyAlarm(alarm, event = 'created', extra = {}) {
     if (!alarm?.id) return { sent: 0, failed: 0, skipped: 0 };
     const siteId = alarm.siteId || this.store.defaultSiteId;
@@ -275,6 +348,15 @@ export class Notifier {
     );
   }
 
+  /**
+   * 向单个渠道推送（去重抢占 → 构造请求 → 重试 → 回写结果）。
+   *
+   * @param {import('./types.mjs').NotifyChannel} channel 渠道。
+   * @param {import('./types.mjs').Alarm} alarm 告警。
+   * @param {string} event 事件名。
+   * @param {{siteName?: string, camera?: object|null}} context 上下文。
+   * @returns {Promise<'sent'|'failed'|'skipped'>} 单渠道投递结果。
+   */
   async deliver(channel, alarm, event, context) {
     if (!channel?.url) return 'skipped';
     if (!this.store.claimNotification(alarm.id, channel.id, event)) return 'skipped';
@@ -300,7 +382,12 @@ export class Notifier {
     }
   }
 
-  /** 连续失败超过阈值时自动停用渠道，并提醒其余启用渠道。 */
+  /**
+   * 连续失败超过阈值时自动停用渠道，并提醒其余启用渠道。
+   *
+   * @param {import('./types.mjs').NotifyChannel} channel 渠道。
+   * @returns {Promise<void>}
+   */
   async maybeDisableChannel(channel) {
     if (!this.maxFailures || !this.store) return;
     try {
@@ -340,7 +427,14 @@ export class Notifier {
     }
   }
 
-  /** 广播非告警消息（如每日值守摘要）：key 用于按天去重。 */
+  /**
+   * 广播非告警消息（如每日值守摘要）：key 用于按天去重。
+   *
+   * @param {string} event 事件名（如 daily-summary）。
+   * @param {{key: string, message: string, data?: object}} payload 消息载荷（同 key 只投递一次）。
+   * @param {import('./types.mjs').NotifyChannel[]} channels 目标渠道列表。
+   * @returns {Promise<{sent: number, failed: number, skipped: number}>}
+   */
   async notifyBroadcast(event, { key, message, data = {} }, channels) {
     let sent = 0;
     let failed = 0;
@@ -391,7 +485,12 @@ export class Notifier {
     return { sent, failed, skipped };
   }
 
-  /** 管理端“测试发送”，不写告警去重记录。 */
+  /**
+   * 管理端「测试发送」：不写告警去重记录，直接推送一条测试消息。
+   *
+   * @param {import('./types.mjs').NotifyChannel} channel 渠道。
+   * @returns {Promise<boolean>} 推送成功返回 true，失败抛错。
+   */
   async testChannel(channel) {
     if (!channel?.url) throw new Error('渠道地址为空');
     const message = [

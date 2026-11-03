@@ -23,18 +23,28 @@ import {
   ensureDefaultSite,
 } from './schema.mjs';
 
-/** 屏蔽区一律按 0-100 的百分比矩形存储，最多 8 个。 */
-
-
-
-
-
-
-
-
-
-
+/**
+ * SQLite 数据存储（node:sqlite 同步驱动）。
+ *
+ * 本类只保留会话与基础设施方法；领域方法按模块拆分后经
+ * `Object.assign(Store.prototype, …)` 挂载：
+ * - 用户：./store/methods/users.mjs
+ * - 站点：./store/methods/sites.mjs
+ * - 点位：./store/methods/cameras.mjs
+ * - 告警：./store/methods/alarms.mjs
+ * - 通知：./store/methods/notify.mjs
+ * - 审计：./store/methods/audit.mjs
+ * - 保留期/演示清理：./store/methods/maintenance.mjs
+ *
+ * 行级辅助（ROI 编解码、行对象映射）见 ./store/helpers.mjs。
+ */
 export class Store {
+  /**
+   * @param {object} options
+   * @param {import('node:sqlite').DatabaseSync} options.db 已初始化的数据库连接。
+   * @param {string} options.dataDir 数据目录（数据库与备份所在）。
+   * @param {{encrypt(value:string):string, decrypt(value:string):string}} options.secretBox 对称加解密盒。
+   */
   constructor({ db, dataDir, secretBox }) {
     this.db = db;
     this.dataDir = dataDir;
@@ -42,6 +52,13 @@ export class Store {
     this.closed = false;
   }
 
+  /**
+   * IMMEDIATE 事务包装：同步执行 fn，异常时回滚后原样抛出。
+   *
+   * @template T
+   * @param {() => T} fn 事务体（同步函数，内部用 this.db 执行多条语句）。
+   * @returns {T} fn 的返回值。
+   */
   transaction(fn) {
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -58,11 +75,25 @@ export class Store {
     }
   }
 
+  /**
+   * 读取 meta 表键值。
+   *
+   * @param {string} key 键名。
+   * @param {string|null} [fallback] 无记录时的回退值。
+   * @returns {string|null} 键值（恒为字符串）或回退值。
+   */
   getMeta(key, fallback = null) {
     const row = this.db.prepare('SELECT value FROM meta WHERE key = ?').get(key);
     return row?.value ?? fallback;
   }
 
+  /**
+   * 写入 meta 表键值（UPSERT）。
+   *
+   * @param {string} key 键名。
+   * @param {string|number|boolean} value 值（存储前转为字符串）。
+   * @returns {void}
+   */
   setMeta(key, value) {
     this.db
       .prepare(
@@ -71,188 +102,37 @@ export class Store {
       .run(key, String(value));
   }
 
+  /** @returns {number} 当前 schema 版本号。 */
   get schemaVersion() {
     return Number(this.getMeta('schema_version', SCHEMA_VERSION));
   }
 
+  /** @returns {boolean} 是否尚未完成初始化（无用户且未标记 setup_complete）。 */
   get needsSetup() {
     const count = this.db.prepare('SELECT COUNT(*) AS count FROM users').get().count;
     return this.getMeta('setup_complete', '0') !== '1' && Number(count) === 0;
   }
 
+  /** @returns {boolean} 是否已完成初始化。 */
   get setupComplete() {
     return this.getMeta('setup_complete', '0') === '1';
   }
 
+  /** @returns {void} 标记初始化完成（创建超管后调用）。 */
   completeSetup() {
     this.setMeta('setup_complete', '1');
   }
 
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
+  /** @returns {string} 默认站点 ID（未自定义时回退到 DEFAULT_SITE_ID）。 */
   get defaultSiteId() {
     return this.getMeta('default_site_id', DEFAULT_SITE_ID);
   }
 
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  /** 站点管理员可管理的站点；普通用户返回空数组。 */
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  /** 超过指定时间仍未确认的告警，用于升级提醒。 */
-  
-
-  
-
-  /** 按站点/级别/状态聚合时间段内的告警数量，供每日摘要使用。 */
-  
-
-  /** 按上海时区按天聚合告警（含空缺的日期无行），供趋势看板使用。 */
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  /** 仅取模板正文（供渠道对象内联解析）。 */
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  /** 站点渠道 + 全局渠道（site_id IS NULL）。 */
-  
-
-  /** 抢占一次推送（唯一索引去重）：返回 true 表示本次应发送。 */
-  
-
-  
-
-  /** 某渠道自 sinceTs 以来连续失败的次数（遇到一次成功即停止计数）。 */
-  
-
-  
-
-  
-
-  /** 清理超期的已关闭告警，返回需要删除的媒体文件名。 */
-  
-
   /**
-   * 演示数据清理：删除演示点位产生的告警及其事件、推送日志与媒体文件引用。
-   * 口径为「camera_id 命中历史演示点位」或「camera_name 等于演示点位名」双取，
-   * 避免演示点位删除后（camera_id 变孤儿）漏清；真实告警不受影响。
-   * 审计日志保留（操作留痕不因清理而消失）。调用方负责删物理媒体文件。
+   * 库内总量统计（登录后首页/系统页展示）。
+   *
+   * @returns {import('./types.mjs').StoreStats}
    */
-  
-
-  /** 统计演示告警数量与媒体文件数，供前端按钮展示「将清除什么」。 */
-  
-
-  /**
-   * 磁盘水位：从最老的已关闭告警开始清掉媒体文件（保留告警记录本身），
-   * 返回被清空的文件名，调用方负责删除物理文件。
-   */
-  
-
-  
-
-  
-
-  /**
-   * 审计日志筛选查询（审计界面用）。
-   * action 支持前缀匹配（如 'camera' 命中 camera.create/update/delete/test/import）；
-   * q 匹配 username/detail/target_id；from/to 为毫秒时间戳（含头含尾）。
-   */
-  
-
-  
-
-  
-
-  /**
-   * 审计日志按天数清理（与告警/推送日志的保留语义对齐）。
-   * 与上面的「按条数上限」互补：条数上限防无限膨胀，天数清理满足保留期约定。
-   */
-  
-
   stats() {
     return {
       users: Number(this.db.prepare('SELECT COUNT(*) AS count FROM users').get().count),
@@ -270,6 +150,13 @@ export class Store {
     };
   }
 
+  /**
+   * 在线备份数据库：VACUUM INTO 导出快照并按份数滚动清理旧备份。
+   *
+   * @param {string} [backupDir] 备份目录，默认 dataDir/backups。
+   * @param {number} [retain] 保留份数，默认 14。
+   * @returns {Promise<string>} 本次备份文件绝对路径。
+   */
   async backup(backupDir = path.join(this.dataDir, 'backups'), retain = 14) {
     await fsp.mkdir(backupDir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -288,11 +175,13 @@ export class Store {
     return destination;
   }
 
+  /** @returns {boolean} 数据库连通性（SELECT 1 探测）。 */
   health() {
     const row = this.db.prepare('SELECT 1 AS ok').get();
     return row?.ok === 1;
   }
 
+  /** @returns {void} 关闭数据库连接（幂等）。 */
   close() {
     if (!this.closed) {
       this.closed = true;
@@ -317,6 +206,17 @@ function backupCorruptFiles(dataDir) {
   }
 }
 
+/**
+ * 打开并初始化数据存储：建目录、建库、跑建表与全部版本迁移，
+ * 损坏时把旧库文件备份为 *.corrupt-* 再抛错（不掩盖原始故障现场）。
+ *
+ * @param {object} options
+ * @param {string} options.dataDir 数据目录（自动创建，权限 0o700）。
+ * @param {{encrypt(value:string):string, decrypt(value:string):string}} options.secretBox 对称加解密盒。
+ * @param {object|null} [options.legacyData] 旧版 JSON 存量数据（首次迁移用）。
+ * @returns {Promise<Store>} 就绪的 Store 实例。
+ * @throws {Error} SQLite 初始化失败（已保留损坏文件备份）。
+ */
 export async function openStore({ dataDir, secretBox, legacyData = null }) {
   await fsp.mkdir(dataDir, { recursive: true, mode: 0o700 });
   const databasePath = path.join(dataDir, 'app.db');
@@ -354,4 +254,3 @@ export async function openStore({ dataDir, secretBox, legacyData = null }) {
   }
   return new Store({ db, dataDir, secretBox });
 }
-

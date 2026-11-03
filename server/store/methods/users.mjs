@@ -2,17 +2,29 @@ import { now } from '../../schema.mjs';
 import { userRowToObject } from '../helpers.mjs';
 
 export const userMethods = {
+/**
+ * 全部用户列表（按创建时间升序）。
+ * @returns {import('../../types.mjs').User[]}
+ */
 listUsers() {
     return this.db
       .prepare('SELECT * FROM users ORDER BY created_at ASC')
       .all()
       .map(userRowToObject);
   },
+/**
+ * @param {string} id 用户 ID。
+ * @returns {import('../../types.mjs').User|null}
+ */
 getUser(id) {
     return userRowToObject(
       this.db.prepare('SELECT * FROM users WHERE id = ?').get(id),
     );
   },
+/**
+ * @param {string} username 登录名。
+ * @returns {import('../../types.mjs').User|null}
+ */
 getUserByUsername(username) {
     return userRowToObject(
       this.db
@@ -20,6 +32,10 @@ getUserByUsername(username) {
         .get(username),
     );
   },
+/**
+ * 未停用的超级管理员数量（防止删停最后一个可用超管）。
+ * @returns {number}
+ */
 countActiveAdmins() {
     return Number(
       this.db
@@ -29,6 +45,11 @@ countActiveAdmins() {
         .get().count,
     );
   },
+/**
+ * 新建用户（调用方先完成用户名/密码校验与哈希）。
+ * @param {import('../../types.mjs').User} user 完整用户对象（含 id/salt/passwordHash）。
+ * @returns {import('../../types.mjs').User}
+ */
 createUser(user) {
     this.db
       .prepare(`
@@ -51,6 +72,12 @@ createUser(user) {
       );
     return this.getUser(user.id);
   },
+/**
+ * 更新用户资料/角色/停用状态/凭据（仅处理传入的字段）。
+ * @param {string} id 用户 ID。
+ * @param {Partial<import('../../types.mjs').User>} changes 变更字段。
+ * @returns {import('../../types.mjs').User|null}
+ */
 updateUser(id, changes) {
     const user = this.getUser(id);
     if (!user) return null;
@@ -87,6 +114,11 @@ updateUser(id, changes) {
     this.db.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).run(...values);
     return this.getUser(id);
   },
+/**
+ * 删除用户及其站点归属记录。
+ * @param {string} id 用户 ID。
+ * @returns {boolean} 是否删除成功。
+ */
 deleteUser(id) {
     this.db.prepare('DELETE FROM site_members WHERE user_id = ?').run(id);
     return this.db.prepare('DELETE FROM users WHERE id = ?').run(id).changes > 0;

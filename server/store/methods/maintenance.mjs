@@ -1,6 +1,11 @@
 import { now } from '../../schema.mjs';
 
 export const maintenanceMethods = {
+/**
+ * 清理超期的已关闭告警，返回需要删除的媒体文件名。
+ * @param {{retainDays?: number, at?: number}} [options]
+ * @returns {{deleted: number, snapshots: string[], clips: string[], events: number, notifications: number}}
+ */
 pruneAlarms({ retainDays = 180, at = now() } = {}) {
     const cutoff = at - retainDays * 24 * 60 * 60 * 1000;
     const rows = this.db
@@ -36,6 +41,14 @@ pruneAlarms({ retainDays = 180, at = now() } = {}) {
       notifications,
     };
   },
+/**
+ * 演示数据清理：删除演示点位产生的告警及其事件、推送日志与媒体文件引用。
+ * 口径为「camera_id 命中历史演示点位」或「camera_name 等于演示点位名」双取，
+ * 避免演示点位删除后（camera_id 变孤儿）漏清；真实告警不受影响。
+ * 审计日志保留（操作留痕不因清理而消失）。调用方负责删物理媒体文件。
+ * @param {{cameraIds?: string[], cameraName?: string}} [options]
+ * @returns {{deleted: number, snapshots: string[], clips: string[], events: number, notifications: number}}
+ */
 purgeDemoAlarms({ cameraIds = [], cameraName = '' } = {}) {
     const ids = [...new Set(cameraIds.filter((id) => typeof id === 'string' && id))];
     const where = [];
@@ -81,6 +94,11 @@ purgeDemoAlarms({ cameraIds = [], cameraName = '' } = {}) {
       events,
     };
   },
+/**
+ * 统计演示告警数量与媒体文件数，供前端按钮展示「将清除什么」。
+ * @param {{cameraIds?: string[], cameraName?: string}} [options]
+ * @returns {{alarms: number, snapshots: number, clips: number}}
+ */
 countDemoAlarms({ cameraIds = [], cameraName = '' } = {}) {
     const ids = [...new Set(cameraIds.filter((id) => typeof id === 'string' && id))];
     const where = [];
@@ -108,6 +126,12 @@ countDemoAlarms({ cameraIds = [], cameraName = '' } = {}) {
       clips: Number(row?.clips ?? 0),
     };
   },
+/**
+ * 磁盘水位：从最老的已关闭告警开始清掉媒体文件（保留告警记录本身），
+ * 返回被清空的文件名，调用方负责删除物理文件。
+ * @param {number} [limit] 单次清理上限（1-1000），默认 100。
+ * @returns {{alarms: number, files: string[]}}
+ */
 clearOldestAlarmMedia(limit = 100) {
     const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 1000);
     const rows = this.db

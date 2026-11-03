@@ -3,6 +3,11 @@ import { now, sourceFingerprint } from '../../schema.mjs';
 import { serializeRoi, cameraRowToObject } from '../helpers.mjs';
 
 export const cameraMethods = {
+/**
+ * 点位列表（按创建时间升序），支持按站点/可见站点集合过滤。
+ * @param {{siteId?: string|null, allowedSiteIds?: string[]|null}} [query]
+ * @returns {import('../../types.mjs').Camera[]}
+ */
 listCameras({ siteId = null, allowedSiteIds = null } = {}) {
     const clauses = [];
     const values = [];
@@ -23,12 +28,21 @@ listCameras({ siteId = null, allowedSiteIds = null } = {}) {
       .all(...values)
       .map((row) => cameraRowToObject(row, this.secretBox));
   },
+/**
+ * @param {string} id 点位 ID。
+ * @returns {import('../../types.mjs').Camera|null}
+ */
 getCamera(id) {
     return cameraRowToObject(
       this.db.prepare('SELECT * FROM cameras WHERE id = ?').get(id),
       this.secretBox,
     );
   },
+/**
+ * 按源指纹查点位（同源去重）。
+ * @param {string|null} sourceKey 源指纹。
+ * @returns {import('../../types.mjs').Camera|null}
+ */
 cameraBySourceKey(sourceKey) {
     if (!sourceKey) return null;
     return cameraRowToObject(
@@ -36,6 +50,10 @@ cameraBySourceKey(sourceKey) {
       this.secretBox,
     );
   },
+/**
+ * 生成下一个可用点位编码（CAM-xxx 递增）。
+ * @returns {string}
+ */
 nextCameraCode() {
     const codes = this.db.prepare('SELECT code FROM cameras').all();
     const numeric = codes
@@ -43,6 +61,11 @@ nextCameraCode() {
       .filter((value) => Number.isFinite(value));
     return `CAM-${String((numeric.length ? Math.max(...numeric) : 0) + 1).padStart(2, '0')}`;
   },
+/**
+ * 直接插入点位记录（不做同源唯一性检查，导入场景内部使用）。
+ * @param {import('../../types.mjs').Camera} camera
+ * @returns {import('../../types.mjs').Camera}
+ */
 insertCamera(camera) {
     const storedUrl =
       camera.protocol === 'rtsp' && camera.sourceUrl
@@ -76,6 +99,12 @@ insertCamera(camera) {
       );
     return this.getCamera(camera.id);
   },
+/**
+ * 新建点位；同源指纹已存在时抛错。
+ * @param {import('../../types.mjs').Camera} camera
+ * @returns {import('../../types.mjs').Camera}
+ * @throws {Error} 同源点位已存在。
+ */
 createCamera(camera) {
     const key = sourceFingerprint(camera.protocol, camera.sourceUrl);
     if (key && this.cameraBySourceKey(key)) {
@@ -91,6 +120,12 @@ createCamera(camera) {
       }),
     );
   },
+/**
+ * 更新点位（源地址变更会重算指纹并做同源冲突检查）。
+ * @param {string} id 点位 ID。
+ * @param {Partial<import('../../types.mjs').Camera>} changes 变更字段。
+ * @returns {import('../../types.mjs').Camera|null}
+ */
 updateCamera(id, changes) {
     const current = this.getCamera(id);
     if (!current) return null;
@@ -137,9 +172,18 @@ updateCamera(id, changes) {
       );
     return this.getCamera(id);
   },
+/**
+ * @param {string} id 点位 ID。
+ * @returns {boolean} 是否删除成功。
+ */
 deleteCamera(id) {
     return this.db.prepare('DELETE FROM cameras WHERE id = ?').run(id).changes > 0;
   },
+/**
+ * 批量导入点位（事务内逐条处理，同源重复跳过）。
+ * @param {Array<Partial<import('../../types.mjs').Camera>>} items
+ * @returns {Promise<{created: import('../../types.mjs').Camera[], skipped: number}>}
+ */
 importCameras(items) {
     return this.transaction(() => {
       const created = [];

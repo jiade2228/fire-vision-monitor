@@ -16,7 +16,13 @@ import { FlameDetector, buildRoiMask } from './detector.mjs';
 
 const SUPPORTED_PROTOCOLS = new Set(['rtsp', 'hls', 'http']);
 
-/** 从缓冲区中切出完整帧，返回帧列表与剩余不完整字节。 */
+/**
+ * 从缓冲区中切出完整帧，返回帧列表与剩余不完整字节。
+ *
+ * @param {Buffer} buffer FFmpeg rawvideo/RGBA 输出流累积缓冲。
+ * @param {number} frameBytes 单帧字节数（width × height × 4）。
+ * @returns {{frames: Buffer[], rest: Buffer}} 完整帧列表与未成帧的剩余字节。
+ */
 export function extractFrames(buffer, frameBytes) {
   if (!frameBytes || frameBytes <= 0) return { frames: [], rest: buffer };
   const frames = [];
@@ -28,6 +34,10 @@ export function extractFrames(buffer, frameBytes) {
   return { frames, rest: buffer.subarray(offset) };
 }
 
+/**
+ * 单点位常驻抽帧工作进程（内部类）：一个点位一个 FFmpeg 子进程，
+ * 负责拉流抽帧、断流自动重启与帧回调；生命周期由 DetectionEngine 管理。
+ */
 class CameraWorker {
   constructor(engine, camera) {
     this.engine = engine;
@@ -154,7 +164,38 @@ class CameraWorker {
   }
 }
 
+/**
+ * @typedef {object} DetectionEngineOptions
+ * @property {import('./store.mjs').Store} store 数据存储（读点位配置、写告警）。
+ * @property {string|null} [snapshotDir] 抓拍输出目录（null 表示不抓拍）。
+ * @property {string|null} [recordingsDir] 短视频输出目录（null 表示不补录）。
+ * @property {((alarm: object) => void)|null} [onAlarm] 告警命中回调（上层做审计与 SSE 推送）。
+ * @property {((alarm: object, file: string) => void)|null} [onClip] 短视频就绪回调。
+ * @property {string} [ffmpegPath] FFmpeg 可执行文件路径（默认取 FFMPEG_PATH 或 'ffmpeg'）。
+ * @property {boolean} [enabled] 是否启用服务端识别。
+ * @property {number} [width] 检测画布宽（32-640，默认 160）。
+ * @property {number} [height] 检测画布高（32-640，默认 90）。
+ * @property {number} [fps] 抽帧帧率（0.2-10，默认 1）。
+ * @property {string} [sensitivity] 全局默认灵敏度（low/standard/high）。
+ * @property {number} [cooldownMs] 同点位告警冷却毫秒数（默认 12000）。
+ * @property {number} [snapshotTimeoutMs] 抓拍超时毫秒数（默认 5000）。
+ * @property {number} [clipSeconds] 补录时长秒（2-60，默认 10）。
+ * @property {number} [clipTimeoutMs] 补录超时毫秒数（默认 25000）。
+ * @property {number} [maxCameras] 最大并发检测点位数（1-256，默认 24）。
+ * @property {boolean} [keyframesOnly] 是否只按关键帧抽帧。
+ * @property {((url: string, camera: object) => string)|null} [resolveSourceUrl] 相对源地址解析器（演示流用）。
+ * @property {Console} [logger] 日志对象。
+ * @property {typeof import('node:child_process').spawn} [spawnImpl] 进程拉起函数（测试注入用）。
+ */
+
+/**
+ * 服务端识别引擎（对外公共接口）：点位对齐、帧处理、告警生成、
+ * 抓拍/补录与状态查询。内部通过 CameraWorker 管理每点位的 FFmpeg 进程。
+ */
 export class DetectionEngine {
+  /**
+   * @param {DetectionEngineOptions} [options]
+   */
   constructor({
     store,
     snapshotDir = null,
@@ -208,6 +249,11 @@ export class DetectionEngine {
     this.stats = { frames: 0, alarms: 0, duplicates: 0, errors: 0, clips: 0 };
   }
 
+  /**
+   * 探测 FFmpeg 可用性（启动时调用一次）；不可用时引擎自动停用。
+   *
+   * @returns {boolean} FFmpeg 是否可用。
+   */
   init() {
     const result = spawnSync(this.ffmpegPath, ['-version'], {
       encoding: 'utf8',
@@ -220,11 +266,17 @@ export class DetectionEngine {
     return this.ffmpegOk;
   }
 
+  /** @returns {boolean} 引擎是否处于可用状态（已启用且 FFmpeg 就绪）。 */
   get active() {
     return Boolean(this.enabled && this.ffmpegOk);
   }
 
-  /** 实际喂给 FFmpeg 的地址：相对路径（如站内演示流）先交给上层解析。 */
+  /**
+   * 实际喂给 FFmpeg 的地址：相对路径（如站内演示流）先交给上层解析。
+   *
+   * @param {import('./types.mjs').Camera} camera 点位。
+   * @returns {string} FFmpeg 可访问的绝对地址。
+   */
   sourceFor(camera) {
     const raw = camera?.sourceUrl ?? '';
     try {
@@ -234,6 +286,12 @@ export class DetectionEngine {
     }
   }
 
+  /**
+   * 点位是否受服务端识别支持（协议在支持列表内且已启用识别）。
+   *
+   * @param {import('./types.mjs').Camera} camera 点位。
+   * @returns {boolean}
+   */
   supports(camera) {
     return Boolean(
       camera &&
@@ -244,7 +302,12 @@ export class DetectionEngine {
     );
   }
 
-  /** 按当前点位列表对齐 worker：新增的启动、移除的停止。 */
+  /**
+   * 按当前点位列表对齐 worker：新增的启动、移除的停止。
+   *
+   * @param {import('./types.mjs').Camera[]} [cameras] 启用识别的点位列表。
+   * @returns {object} 对齐后的引擎状态快照（同 status()）。
+   */
   sync(cameras = []) {
     if (!this.active) {
       this.stopAll();
@@ -281,6 +344,12 @@ export class DetectionEngine {
     return this.status();
   }
 
+  /**
+   * 停止指定点位的检测进程并清理其检测器/掩码缓存。
+   *
+   * @param {string} cameraId 点位 ID。
+   * @returns {void}
+   */
   stop(cameraId) {
     const worker = this.workers.get(cameraId);
     if (worker) {
@@ -292,11 +361,17 @@ export class DetectionEngine {
     this.pending.delete(cameraId);
   }
 
+  /** 停止全部检测进程（关机/重载时调用）。 @returns {void} */
   stopAll() {
     for (const id of [...this.workers.keys()]) this.stop(id);
   }
 
-  /** 按点位灵敏度缓存检测器；灵敏度变更时自动重建。 */
+  /**
+   * 按点位灵敏度缓存检测器；灵敏度变更时自动重建。
+   *
+   * @param {import('./types.mjs').Camera} camera 点位。
+   * @returns {import('./detector.mjs').FlameDetector} 该点位当前可用的检测器。
+   */
   detectorFor(camera) {
     const sensitivity = camera.detectSensitivity || this.sensitivity;
     const signature = `${sensitivity}:${this.cooldownMs}`;
@@ -307,7 +382,12 @@ export class DetectionEngine {
     return detector;
   }
 
-  /** 按点位屏蔽区缓存掩码；ROI 变更时自动重建。 */
+  /**
+   * 按点位屏蔽区缓存掩码；ROI 变更时自动重建。
+   *
+   * @param {import('./types.mjs').Camera} camera 点位。
+   * @returns {Uint8Array|null} 逐像素掩码（无屏蔽区时为 null）。
+   */
   maskFor(camera) {
     const roi = Array.isArray(camera.detectRoi) ? camera.detectRoi : [];
     const signature = JSON.stringify(roi);
@@ -318,7 +398,13 @@ export class DetectionEngine {
     return mask;
   }
 
-  /** 处理一帧 RGBA 画面；命中则写入告警并返回告警对象。 */
+  /**
+   * 处理一帧 RGBA 画面；命中则写入告警并返回告警对象。
+   *
+   * @param {import('./types.mjs').Camera} camera 点位。
+   * @param {Buffer} frame RGBA 帧数据（width × height × 4 字节）。
+   * @returns {Promise<import('./types.mjs').Alarm|null>} 新建告警（未命中/冷却中/并发受限为 null）。
+   */
   async handleFrame(camera, frame) {
     if (!this.active || !camera) return null;
     const detector = this.detectorFor(camera);
@@ -402,7 +488,13 @@ export class DetectionEngine {
     }
   }
 
-  /** 命中时补一张抓拍，失败不影响告警落库。 */
+  /**
+   * 命中时补一张抓拍，失败不影响告警落库。
+   *
+   * @param {import('./types.mjs').Camera} camera 点位。
+   * @param {string} id 告警 ID。
+   * @returns {Promise<string|null>} 抓拍文件名（未配置目录或失败为 null）。
+   */
   async captureSnapshot(camera, id) {
     if (!this.snapshotDir) return null;
     const file = `${id}.jpg`;
@@ -458,7 +550,13 @@ export class DetectionEngine {
     });
   }
 
-  /** 命中后补录一段短视频，转成浏览器可播放的 H.264 MP4。 */
+  /**
+   * 命中后补录一段短视频，转成浏览器可播放的 H.264 MP4。
+   *
+   * @param {import('./types.mjs').Camera} camera 点位。
+   * @param {string} id 告警 ID。
+   * @returns {Promise<string|null>} 短视频文件名（未配置目录或失败为 null）。
+   */
   async captureClip(camera, id) {
     if (!this.recordingsDir) return null;
     const file = `${id}.mp4`;
@@ -530,6 +628,18 @@ export class DetectionEngine {
     });
   }
 
+  /**
+   * 引擎运行状态快照（/api/detection/status 用）。
+   *
+   * @returns {{enabled: boolean, ffmpegAvailable: boolean, active: boolean,
+   *   width: number, height: number, fps: number, sensitivity: string,
+   *   cooldownMs: number, maxCameras: number, skipped: number,
+   *   keyframesOnly: boolean, clipSeconds: number,
+   *   stats: {frames: number, alarms: number, duplicates: number, errors: number, clips: number},
+   *   cameras: Array<{cameraId: string, code: string, name: string, siteId: string|null,
+   *     sensitivity: string, roiCount: number, running: boolean, frames: number,
+   *     startedAt: number, lastFrameAt: number|null, lastError: string|null}>}}
+   */
   status() {
     return {
       enabled: this.enabled,
