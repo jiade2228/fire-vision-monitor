@@ -32,6 +32,7 @@ import { createSession } from './http/session.mjs';
 import { registerNotifyRoutes } from './routes/notify.mjs';
 import { registerCameraRoutes } from './routes/cameras.mjs';
 import { registerAlarmRoutes } from './routes/alarms.mjs';
+import { registerSiteRoutes } from './routes/sites.mjs';
 import { registerAdminRoutes } from './routes/admin.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1737,84 +1738,16 @@ async function main() {
     });
 
     // ---------------- 站点（多租户/分组） ----------------
-    app.get('/api/sites', requireAuth, (req, res) => {
-      const allSites = store.listSites();
-      const allowed = allowedSiteIdsFor(req.user, store);
-      // 非全局管理员只返回自己可见的站点，避免暴露其他租户的站点名称。
-      const sites =
-        allowed === null
-          ? allSites
-          : allSites.filter((site) => allowed.includes(site.id));
-      const mine = allowed ?? allSites.map((site) => site.id);
-      res.json({ sites, defaultSiteId: store.defaultSiteId, mySiteIds: mine });
+    registerSiteRoutes(app, {
+      store,
+      allowedSiteIdsFor,
+      requireAuth,
+      requireRole,
+      requireManager,
+      canManageSite,
+      normalizeText,
+      clientIp,
     });
-
-    app.post('/api/sites', requireAuth, requireRole('admin'), (req, res) => {
-      const name = normalizeText(String(req.body.name ?? ''), 48);
-      if (!name) return res.status(400).json({ error: '站点名称不能为空' });
-      const code = normalizeText(String(req.body.code ?? name), 24) || name;
-      const existing = store.listSites().find((site) => site.code === code);
-      if (existing) return res.status(409).json({ error: '站点编码已存在' });
-      const site = store.createSite({
-        id: crypto.randomUUID(),
-        name,
-        code,
-        createdAt: Date.now(),
-      });
-      store.recordAudit({
-        user: req.user,
-        action: 'site.create',
-        targetType: 'site',
-        targetId: site.id,
-        detail: `${site.code} ${site.name}`,
-        ip: clientIp(req),
-      });
-      res.status(201).json({ site });
-    });
-
-    app.patch('/api/sites/:id', requireAuth, requireManager, (req, res) => {
-      const site = store.getSite(req.params.id);
-      if (!site) return res.status(404).json({ error: '站点不存在' });
-      if (!canManageSite(req.user, site.id)) {
-        return res.status(403).json({ error: '无权管理该站点' });
-      }
-      const name = normalizeText(String(req.body.name ?? ''), 48);
-      if (!name) return res.status(400).json({ error: '站点名称不能为空' });
-      const updated = store.updateSite(site.id, { name });
-      store.recordAudit({
-        user: req.user,
-        action: 'site.update',
-        targetType: 'site',
-        targetId: site.id,
-        detail: updated.name,
-        ip: clientIp(req),
-      });
-      res.json({ site: updated });
-    });
-
-    app.delete('/api/sites/:id', requireAuth, requireRole('admin'), (req, res) => {
-      try {
-        const ok = store.deleteSite(req.params.id);
-        if (!ok) return res.status(404).json({ error: '站点不存在' });
-        store.recordAudit({
-          user: req.user,
-          action: 'site.delete',
-          targetType: 'site',
-          targetId: req.params.id,
-          ip: clientIp(req),
-        });
-        res.json({ ok: true });
-      } catch (error) {
-        if (error?.code === 'SITE_DEFAULT') {
-          return res.status(400).json({ error: error.message });
-        }
-        if (error?.code === 'SITE_HAS_CAMERAS') {
-          return res.status(409).json({ error: error.message });
-        }
-        throw error;
-      }
-    });
-
     app.get('/api/users/:id/sites', requireAuth, requireRole('admin'), (req, res) => {
       const user = store.getUser(req.params.id);
       if (!user) return res.status(404).json({ error: '账号不存在' });
