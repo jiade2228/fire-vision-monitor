@@ -259,6 +259,11 @@ function validateCameraInput(body) {
   const detectRoi = parseRoi(
     Array.isArray(body.detectRoi) ? JSON.stringify(body.detectRoi) : body.detectRoi,
   );
+  // 布防时间表：非法输入由 parseSchedule 回退为全天候布防（serializeSchedule 落库时归一化）。
+  const scheduleInput =
+    body.schedule && typeof body.schedule === 'object' && !Array.isArray(body.schedule)
+      ? body.schedule
+      : null;
   return {
     value: {
       name,
@@ -269,6 +274,7 @@ function validateCameraInput(body) {
       detectEnabled: body.detectEnabled !== false,
       detectSensitivity,
       detectRoi,
+      schedule: scheduleInput,
     },
   };
 }
@@ -287,6 +293,7 @@ function cameraForClient(camera, user) {
     detectEnabled: camera.detectEnabled !== false,
     detectSensitivity: camera.detectSensitivity ?? null,
     detectRoi: camera.detectRoi ?? [],
+    schedule: camera.schedule ?? null,
     protocol: camera.protocol,
     sourceUrl: hideUrl ? '' : camera.sourceUrl,
     hasSource: Boolean(camera.sourceUrl),
@@ -699,6 +706,7 @@ async function main() {
         typeof url === 'string' && url.startsWith('/')
           ? `http://127.0.0.1:${port}${url}`
           : url,
+      onQualityEvent: handleQualityEvent,
       logger: {
         warn: (message) => log('warn', 'server_detection', { message }),
         info: (message) => log('info', 'server_detection', { message }),
@@ -821,6 +829,74 @@ async function main() {
     offlineTimer = setInterval(offlineCheck, offlineCheckEveryMs);
     offlineTimer.unref?.();
     setTimeout(offlineCheck, Math.min(8_000, offlineCheckEveryMs)).unref?.();
+
+    // 画面异常巡检：流在线但画面无效（遮挡/过暗/过曝）持续超阈值即告警，恢复自动归档。
+    // 函数声明（非 const 箭头函数）：引擎在上方构造时就引用此回调，依赖提升。
+    const qualityReasonText = {
+      dark: '画面过暗或无光',
+      bright: '画面过曝（强光直射）',
+      covered: '疑似镜头被遮挡或严重失焦',
+    };
+    function handleQualityEvent(camera, event) {
+      const actor = offlineActor;
+      try {
+        if (event.kind === 'abnormal') {
+          const active = store.activeAlarmForCamera(camera.id);
+          if (active) return; // 已有未处置告警（离线/火情）时不叠加画面异常
+          const reasonText = qualityReasonText[event.reason] ?? '画面异常';
+          const alarm = store.createAlarm({
+            id: crypto.randomUUID(),
+            cameraId: camera.id,
+            cameraName: camera.name,
+            zone: camera.zone,
+            siteId: camera.siteId || store.defaultSiteId,
+            level: 'camera_abnormal',
+            confidence: 88,
+            hotspot: { x: 50, y: 50 },
+            actor,
+            eventDetail: `${reasonText}，持续 ${Math.round(event.durationMs / 1000)}s`,
+          });
+          store.recordAudit({
+            action: 'alarm.create',
+            targetType: 'alarm',
+            targetId: alarm.id,
+            detail: `${camera.code} camera_abnormal（${event.reason}）`,
+            ip: 'server-monitor',
+          });
+          broadcastEvent('alarm.created', { alarm }, alarm.siteId);
+          void notifier
+            ?.notifyAlarm(alarm, 'created', { camera })
+            .catch(() => undefined);
+          log('warn', 'camera_quality_abnormal', {
+            cameraId: camera.id,
+            code: camera.code,
+            reason: event.reason,
+          });
+        } else {
+          const active = store.activeAlarmForCamera(camera.id);
+          if (!active || active.level !== 'camera_abnormal') return;
+          const updated = store.updateAlarm(
+            active.id,
+            { status: 'archived', archivedAt: Date.now() },
+            actor,
+          );
+          store.addAlarmEvent(active.id, actor, 'archived', '画面恢复正常，自动归档');
+          broadcastEvent('alarm.updated', { alarm: updated }, updated.siteId);
+          void notifier
+            ?.notifyAlarm(updated, 'recovered', { camera })
+            .catch(() => undefined);
+          log('info', 'camera_quality_recovered', {
+            cameraId: camera.id,
+            code: camera.code,
+          });
+        }
+      } catch (error) {
+        log('warn', 'camera_quality_event_failed', {
+          cameraId: camera.id,
+          error: error.message,
+        });
+      }
+    };
 
     // 数据保留：清理超期的已关闭告警、抓拍/短视频、推送日志与审计日志。
     const alarmRetentionDays = Number(process.env.ALARM_RETENTION_DAYS) || 180;
@@ -963,7 +1039,12 @@ async function main() {
     };
     const shanghaiDayStart = (parts) =>
       Date.UTC(parts.y, parts.m - 1, parts.d) - 8 * 3600 * 1000;
-    const summaryLevelNames = { fire: '火焰', smoke: '烟雾', offline: '设备离线' };
+    const summaryLevelNames = {
+      fire: '火焰',
+      smoke: '烟雾',
+      offline: '设备离线',
+      camera_abnormal: '画面异常',
+    };
     const dailySummaryCheck = () => {
       if (!summaryAt || !notifier) return;
       const nowParts = shanghaiParts(Date.now());

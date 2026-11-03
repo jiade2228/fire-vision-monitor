@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { now, sourceFingerprint } from '../../schema.mjs';
+import { serializeSchedule } from '../../schedule.mjs';
 import { serializeRoi, cameraRowToObject } from '../helpers.mjs';
 
 export const cameraMethods = {
@@ -78,8 +79,8 @@ insertCamera(camera) {
       .prepare(`
         INSERT INTO cameras
         (id, code, name, zone, protocol, source_url, source_key, site_id,
-         detect_enabled, detect_sensitivity, detect_roi, enabled, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         detect_enabled, detect_sensitivity, detect_roi, schedule, enabled, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         camera.id,
@@ -93,6 +94,7 @@ insertCamera(camera) {
         camera.detectEnabled === false ? 0 : 1,
         camera.detectSensitivity ?? null,
         serializeRoi(camera.detectRoi ?? null),
+        serializeSchedule(camera.schedule),
         camera.enabled === false ? 0 : 1,
         timestamp,
         camera.updatedAt ?? timestamp,
@@ -153,7 +155,7 @@ updateCamera(id, changes) {
         UPDATE cameras SET
           name = ?, zone = ?, protocol = ?, source_url = ?, source_key = ?,
           site_id = ?, detect_enabled = ?, detect_sensitivity = ?, detect_roi = ?,
-          enabled = ?, updated_at = ?
+          schedule = ?, enabled = ?, updated_at = ?
         WHERE id = ?
       `)
       .run(
@@ -166,6 +168,7 @@ updateCamera(id, changes) {
         next.detectEnabled === false ? 0 : 1,
         next.detectSensitivity ?? null,
         serializeRoi(next.detectRoi ?? null),
+        serializeSchedule(next.schedule),
         next.enabled ? 1 : 0,
         next.updatedAt,
         id,

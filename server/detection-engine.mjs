@@ -4,6 +4,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { FlameDetector, buildRoiMask } from './detector.mjs';
+import { analyzeFrameQuality } from './frame-quality.mjs';
+import { isArmedNow } from './schedule.mjs';
 
 /**
  * 服务端检测引擎（最小可行版）。
@@ -171,6 +173,9 @@ class CameraWorker {
  * @property {string|null} [recordingsDir] 短视频输出目录（null 表示不补录）。
  * @property {((alarm: object) => void)|null} [onAlarm] 告警命中回调（上层做审计与 SSE 推送）。
  * @property {((alarm: object, file: string) => void)|null} [onClip] 短视频就绪回调。
+ * @property {((camera: object, event: object) => void)|null} [onQualityEvent]
+ *   画面质量事件回调：{ kind: 'abnormal'|'recovered', reason, durationMs? }。
+ * @property {boolean} [qualityCheck] 是否启用画面异常检测（遮挡/过暗/过曝，默认开）。
  * @property {string} [ffmpegPath] FFmpeg 可执行文件路径（默认取 FFMPEG_PATH 或 'ffmpeg'）。
  * @property {boolean} [enabled] 是否启用服务端识别。
  * @property {number} [width] 检测画布宽（32-640，默认 160）。
@@ -192,6 +197,10 @@ class CameraWorker {
  * 服务端识别引擎（对外公共接口）：点位对齐、帧处理、告警生成、
  * 抓拍/补录与状态查询。内部通过 CameraWorker 管理每点位的 FFmpeg 进程。
  */
+// 画面异常去抖窗口：异常持续 45s 才告警，连续正常 10s 才恢复。
+const QUALITY_CONFIRM_MS = 45_000;
+const QUALITY_RECOVER_MS = 10_000;
+
 export class DetectionEngine {
   /**
    * @param {DetectionEngineOptions} [options]
@@ -202,6 +211,8 @@ export class DetectionEngine {
     recordingsDir = null,
     onAlarm = null,
     onClip = null,
+    onQualityEvent = null,
+    qualityCheck = process.env.CAMERA_QUALITY_CHECK !== '0',
     ffmpegPath = process.env.FFMPEG_PATH || 'ffmpeg',
     enabled = true,
     width = Number(process.env.DETECTION_WIDTH) || 160,
@@ -224,6 +235,9 @@ export class DetectionEngine {
     this.recordingsDir = recordingsDir;
     this.onAlarm = onAlarm;
     this.onClip = onClip;
+    this.onQualityEvent = onQualityEvent;
+    this.qualityCheck = qualityCheck;
+    this.qualityStates = new Map();
     this.ffmpegPath = ffmpegPath;
     this.enabled = enabled;
     this.clipSeconds = Math.min(Math.max(Number(clipSeconds) || 10, 2), 60);
@@ -246,7 +260,16 @@ export class DetectionEngine {
     this.pending = new Set();
     this.skipped = 0;
     this.lastSkipped = 0;
-    this.stats = { frames: 0, alarms: 0, duplicates: 0, errors: 0, clips: 0 };
+    this.stats = {
+      frames: 0,
+      alarms: 0,
+      duplicates: 0,
+      errors: 0,
+      clips: 0,
+      qualityAlarms: 0,
+      qualityRecovered: 0,
+      disarmedFrames: 0,
+    };
   }
 
   /**
@@ -359,6 +382,7 @@ export class DetectionEngine {
     this.detectors.delete(cameraId);
     this.masks.delete(cameraId);
     this.pending.delete(cameraId);
+    this.qualityStates.delete(cameraId);
   }
 
   /** 停止全部检测进程（关机/重载时调用）。 @returns {void} */
@@ -407,6 +431,12 @@ export class DetectionEngine {
    */
   async handleFrame(camera, frame) {
     if (!this.active || !camera) return null;
+    if (this.qualityCheck) this.trackFrameQuality(camera, frame);
+    // 撤防时段（布防时间表外）跳过火情检测，但画面质量监测与播放不受影响。
+    if (!isArmedNow(camera.schedule)) {
+      this.stats.disarmedFrames += 1;
+      return null;
+    }
     const detector = this.detectorFor(camera);
     const result = detector.analyze(frame, this.width, this.height, {
       mask: this.maskFor(camera),
@@ -485,6 +515,68 @@ export class DetectionEngine {
       return null;
     } finally {
       this.pending.delete(camera.id);
+    }
+  }
+
+  /**
+   * 画面质量状态机：连续异常持续超过确认窗口才上报，恢复需连续正常一段时长。
+   *
+   * 去抖设计针对两类误报场景：夜视低照度偶发低纹理帧（covered）、
+   * 车灯/闪光灯导致的瞬时过曝帧（bright）。持续时间是最强的判据。
+   *
+   * @param {import('./types.mjs').Camera} camera 点位。
+   * @param {Buffer} frame RGBA 帧数据。
+   * @returns {void}
+   */
+  trackFrameQuality(camera, frame) {
+    const assessment = analyzeFrameQuality(frame, this.width, this.height);
+    const now = Date.now();
+    const state = this.qualityStates.get(camera.id);
+
+    if (assessment.ok) {
+      if (!state) return;
+      // 恢复判定：连续正常保持 RECOVER_OK_MS 才算真正恢复。
+      if (!state.okSince) state.okSince = now;
+      if (state.reported && now - state.okSince >= QUALITY_RECOVER_MS) {
+        this.qualityStates.delete(camera.id);
+        this.stats.qualityRecovered += 1;
+        try {
+          this.onQualityEvent?.(camera, {
+            kind: 'recovered',
+            reason: state.reason,
+          });
+        } catch (error) {
+          this.logger?.warn?.(`[detection] 画面恢复回调失败：${error.message}`);
+        }
+      }
+      return;
+    }
+
+    // 异常帧：类别变化时重新计时（遮挡→过暗是两种不同故障）。
+    if (!state || state.reason !== assessment.reason) {
+      this.qualityStates.set(camera.id, {
+        reason: assessment.reason,
+        firstBadAt: now,
+        reported: false,
+        okSince: null,
+      });
+      return;
+    }
+    state.okSince = null;
+    if (!state.reported && now - state.firstBadAt >= QUALITY_CONFIRM_MS) {
+      state.reported = true;
+      this.stats.qualityAlarms += 1;
+      try {
+        this.onQualityEvent?.(camera, {
+          kind: 'abnormal',
+          reason: assessment.reason,
+          durationMs: now - state.firstBadAt,
+          meanLuma: Math.round(assessment.meanLuma * 10) / 10,
+          edgeStrength: Math.round(assessment.edgeStrength * 100) / 100,
+        });
+      } catch (error) {
+        this.logger?.warn?.(`[detection] 画面异常回调失败：${error.message}`);
+      }
     }
   }
 

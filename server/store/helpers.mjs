@@ -1,4 +1,5 @@
 import { bool, jsonSteps } from '../schema.mjs';
+import { parseSchedule } from '../schedule.mjs';
 
 export function parseRoi(value) {
   if (!value) return [];
@@ -45,6 +46,7 @@ export function cameraRowToObject(row, secretBox) {
     detectEnabled: row.detect_enabled === undefined ? true : bool(row.detect_enabled),
     detectSensitivity: row.detect_sensitivity ?? null,
     detectRoi: parseRoi(row.detect_roi),
+    schedule: parseSchedule(row.schedule),
     enabled: bool(row.enabled),
     createdAt: row.created_at,
     updatedAt: row.updated_at,

@@ -15,7 +15,7 @@ function AlarmCard({ alarm, expanded, handlers, readOnly = false }: Props) {
   const done = alarm.steps.filter(Boolean).length;
   const statusMeta = STATUS_META[alarm.status];
   const levelMeta = LEVEL_META[alarm.level];
-  const isOffline = alarm.level === 'offline';
+  const isDeviceHealth = alarm.level === 'offline' || alarm.level === 'camera_abnormal';
   const note = alarm.note ?? '';
   const [noteDraft, setNoteDraft] = useState(note);
   const [noteDirty, setNoteDirty] = useState(false);
@@ -41,14 +41,14 @@ function AlarmCard({ alarm, expanded, handlers, readOnly = false }: Props) {
         <span className={`level-dot level-dot--${alarm.level}`} aria-hidden="true" />
         <span className="alarm-main">
           <span className="alarm-title">
-            <strong>{isOffline ? levelMeta.label : `${levelMeta.label}识别`}</strong>
+            <strong>{isDeviceHealth ? levelMeta.label : `${levelMeta.label}识别`}</strong>
             <span className="alarm-zone">
               {alarm.zone} · {alarm.cameraName}
             </span>
           </span>
           <span className="alarm-meta">
             {formatDateTime(alarm.createdAt)}
-            {!isOffline && ` · 置信度 ${alarm.confidence}%`}
+            {!isDeviceHealth && ` · 置信度 ${alarm.confidence}%`}
           </span>
         </span>
         <span className={`status-chip status-chip--${statusMeta.tone}`}>{statusMeta.label}</span>
@@ -111,7 +111,7 @@ function AlarmCard({ alarm, expanded, handlers, readOnly = false }: Props) {
           )}
 
           <div className="alarm-content">
-          {!isOffline && (
+          {!isDeviceHealth && (
             <div className="conf-row">
               <span className="conf-label">识别置信度</span>
               <span className="conf-track">
@@ -156,28 +156,42 @@ function AlarmCard({ alarm, expanded, handlers, readOnly = false }: Props) {
           {alarm.status === 'pending' && (
             <>
               <p className="alarm-tip">
-                {isOffline
-                  ? '视频流超时未收到画面，请检查设备电源、网络与交换机端口；恢复后系统会自动归档。'
-                  : `${levelMeta.caption}在连续多帧画面中超过报警阈值，请核实画面后处置。`}
+                {alarm.level === 'camera_abnormal'
+                  ? '画面长时间无效（疑似遮挡、过暗或过曝），请现场检查镜头与供电；画面恢复后系统会自动归档。'
+                  : isDeviceHealth
+                    ? '视频流超时未收到画面，请检查设备电源、网络与交换机端口；恢复后系统会自动归档。'
+                    : `${levelMeta.caption}在连续多帧画面中超过报警阈值，请核实画面后处置。`}
               </p>
               {readOnly ? (
                 <p className="alarm-readonly">只读账号仅可查看告警，需由值班员或管理员处置。</p>
               ) : (
                 <div className="alarm-actions">
                   <button type="button" className="btn btn-danger" onClick={() => handlers.onConfirm(alarm.id)}>
-                    {isOffline ? '确认设备异常' : '确认火情'}
+                    {isDeviceHealth
+                      ? alarm.level === 'camera_abnormal'
+                        ? '确认画面异常'
+                        : '确认设备异常'
+                      : '确认火情'}
                   </button>
                   <button type="button" className="btn btn-ghost" onClick={() => handlers.onFalse(alarm.id)}>
-                    {isOffline ? '忽略本次离线' : '标记误报'}
+                    {isDeviceHealth
+                      ? alarm.level === 'camera_abnormal'
+                        ? '忽略本次异常'
+                        : '忽略本次离线'
+                      : '标记误报'}
                   </button>
                 </div>
               )}
             </>
           )}
 
-          {alarm.status === 'confirmed' && (isOffline ? (
+          {alarm.status === 'confirmed' && (isDeviceHealth ? (
             <>
-              <p className="alarm-tip">设备恢复后系统会自动归档；如已人工处理，可立即归档。</p>
+              <p className="alarm-tip">
+                {alarm.level === 'camera_abnormal'
+                  ? '画面恢复后系统会自动归档；如已人工处理，可立即归档。'
+                  : '设备恢复后系统会自动归档；如已人工处理，可立即归档。'}
+              </p>
               {readOnly ? (
                 <p className="alarm-readonly">只读账号不可修改告警状态。</p>
               ) : (
@@ -240,11 +254,15 @@ function AlarmCard({ alarm, expanded, handlers, readOnly = false }: Props) {
           {(alarm.status === 'false' || alarm.status === 'archived') && (
             <p className="alarm-closed">
               {alarm.status === 'false'
-                ? isOffline
-                  ? '本次离线已忽略，通道继续监测。'
+                ? isDeviceHealth
+                  ? alarm.level === 'camera_abnormal'
+                    ? '本次画面异常已忽略，通道继续监测。'
+                    : '本次离线已忽略，通道继续监测。'
                   : '已判定为误报，通道恢复正常监测。'
-                : isOffline
-                  ? '设备已恢复，离线告警已归档。'
+                : isDeviceHealth
+                  ? alarm.level === 'camera_abnormal'
+                    ? '画面已恢复，异常告警已归档。'
+                    : '设备已恢复，离线告警已归档。'
                   : '处置完成，告警已归档至处置记录。'}
               <span>{alarm.closedAt ? formatDateTime(alarm.closedAt) : ''}</span>
             </p>

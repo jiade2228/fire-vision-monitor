@@ -265,4 +265,28 @@ listAlarmEvents(alarmId) {
       )
       .all(alarmId);
   },
+
+/**
+ * 近 N 天误报计数（按点位聚合，降序）。误报治理用：热点点位提示调灵敏度/屏蔽区。
+ * @param {{days?: number, siteIds?: string[]|null}} [options]
+ * @returns {Array<{cameraId: string, cameraName: string, zone: string, count: number}>}
+ */
+listFalseAlarmCounts({ days = 7, siteIds = null } = {}) {
+    const since = now() - days * 24 * 60 * 60 * 1000;
+    const scope = Array.isArray(siteIds)
+      ? `AND a.site_id IN (${siteIds.map(() => '?').join(',')})`
+      : '';
+    return this.db
+      .prepare(
+        `
+        SELECT a.camera_id AS cameraId, MAX(a.camera_name) AS cameraName,
+               MAX(a.zone) AS zone, COUNT(*) AS count
+        FROM alarms a
+        WHERE a.status = 'false' AND a.created_at >= ? ${scope}
+        GROUP BY a.camera_id
+        ORDER BY count DESC
+      `,
+      )
+      .all(since, ...(Array.isArray(siteIds) ? siteIds : []));
+  },
 };

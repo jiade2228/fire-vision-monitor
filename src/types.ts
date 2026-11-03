@@ -14,7 +14,7 @@ export type CameraSource =
       label: string;
     };
 
-export type AlarmLevel = 'fire' | 'smoke' | 'offline';
+export type AlarmLevel = 'fire' | 'smoke' | 'offline' | 'camera_abnormal';
 export type DetectionSensitivity = 'low' | 'standard' | 'high';
 export type AlarmStatus = 'pending' | 'confirmed' | 'false' | 'archived';
 export type CameraStatus = 'normal' | 'smoke' | 'fire';

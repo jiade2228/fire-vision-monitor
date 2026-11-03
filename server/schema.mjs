@@ -3,7 +3,7 @@
 import crypto from 'node:crypto';
 
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export function now() {
   return Date.now();
@@ -166,6 +166,7 @@ export function createSchema(db) {
       detect_enabled INTEGER NOT NULL DEFAULT 1,
       detect_sensitivity TEXT,
       detect_roi TEXT,
+      schedule TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
@@ -198,7 +199,7 @@ export function createSchema(db) {
       camera_name TEXT NOT NULL,
       zone TEXT NOT NULL,
       site_id TEXT,
-      level TEXT NOT NULL CHECK(level IN ('fire','smoke','offline')),
+      level TEXT NOT NULL CHECK(level IN ('fire','smoke','offline','camera_abnormal')),
       confidence REAL NOT NULL,
       hotspot_x REAL NOT NULL,
       hotspot_y REAL NOT NULL,
@@ -592,5 +593,80 @@ export function ensureDefaultSite(db) {
   db.prepare("UPDATE cameras SET site_id = ? WHERE site_id IS NULL OR site_id = ''").run(
     DEFAULT_SITE_ID,
   );
+}
+
+/**
+ * V7：alarms.level 约束扩展 camera_abnormal（画面异常告警）；cameras 增加 schedule（布防时间表）。
+ * SQLite 无法修改 CHECK，只能重建表；索引跟随旧表，必须先删后建。
+ */
+export function migrateSchemaV7(db) {
+  const version = Number(
+    db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()?.value ?? 0,
+  );
+  if (version >= 7) return;
+  const cameraColumns = new Set(
+    db.prepare('PRAGMA table_info(cameras)').all().map((row) => row.name),
+  );
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    if (!cameraColumns.has('schedule')) {
+      db.exec('ALTER TABLE cameras ADD COLUMN schedule TEXT');
+    }
+    db.exec('DROP INDEX IF EXISTS idx_alarm_status_created');
+    db.exec('DROP INDEX IF EXISTS idx_alarm_camera_status');
+    db.exec('DROP INDEX IF EXISTS idx_alarm_active_camera');
+    db.exec('DROP INDEX IF EXISTS idx_alarm_site_created');
+    db.exec('ALTER TABLE alarms RENAME TO alarms_v6');
+    db.exec(`
+      CREATE TABLE alarms (
+        id TEXT PRIMARY KEY,
+        camera_id TEXT NOT NULL,
+        camera_name TEXT NOT NULL,
+        zone TEXT NOT NULL,
+        site_id TEXT,
+        level TEXT NOT NULL CHECK(level IN ('fire','smoke','offline','camera_abnormal')),
+        confidence REAL NOT NULL,
+        hotspot_x REAL NOT NULL,
+        hotspot_y REAL NOT NULL,
+        snapshot_file TEXT,
+        clip_file TEXT,
+        status TEXT NOT NULL CHECK(status IN ('pending','confirmed','false','archived')),
+        note TEXT NOT NULL DEFAULT '',
+        steps_json TEXT NOT NULL DEFAULT '[false,false,false,false]',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        confirmed_at INTEGER,
+        false_at INTEGER,
+        archived_at INTEGER,
+        created_by TEXT,
+        updated_by TEXT
+      )
+    `);
+    db.exec(`
+      INSERT INTO alarms
+      (id, camera_id, camera_name, zone, site_id, level, confidence, hotspot_x, hotspot_y,
+       snapshot_file, clip_file, status, note, steps_json, created_at, updated_at,
+       confirmed_at, false_at, archived_at, created_by, updated_by)
+      SELECT id, camera_id, camera_name, zone, site_id, level, confidence, hotspot_x, hotspot_y,
+             snapshot_file, clip_file, status, note, steps_json, created_at, updated_at,
+             confirmed_at, false_at, archived_at, created_by, updated_by
+      FROM alarms_v6
+    `);
+    db.exec('DROP TABLE alarms_v6');
+    db.exec(`
+      CREATE INDEX idx_alarm_status_created ON alarms(status, created_at DESC);
+      CREATE INDEX idx_alarm_camera_status ON alarms(camera_id, status, created_at DESC);
+      CREATE INDEX idx_alarm_site_created ON alarms(site_id, created_at DESC);
+      CREATE UNIQUE INDEX idx_alarm_active_camera
+        ON alarms(camera_id) WHERE status IN ('pending','confirmed');
+    `);
+    db.prepare(
+      "INSERT INTO meta(key, value) VALUES('schema_version', '7') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+    ).run();
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }
 

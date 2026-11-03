@@ -55,6 +55,16 @@ export function registerAlarmRoutes(app, deps) {
     res.json({ alarms });
   });
 
+  // 误报热点：近 N 天按点位聚合的误报计数（站点隔离），供「误报治理」调优提示。
+  app.get('/api/alarms/false-hotspots', requireAuth, (req, res) => {
+    const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 90);
+    const allowed = allowedSiteIdsFor(req.user, store);
+    const hotspots = store
+      .listFalseAlarmCounts({ days, siteIds: allowed === null ? null : allowed })
+      .map((row) => ({ ...row, count: Number(row.count) }));
+    res.json({ days, hotspots });
+  });
+
   // 趋势统计：按上海时区按天聚合，站点管理员只能看自己的站点。
   app.get('/api/alarms/stats', requireAuth, (req, res) => {
     const days = Math.min(Math.max(Number(req.query.days) || 30, 7), 90);

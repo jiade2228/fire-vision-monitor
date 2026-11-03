@@ -5,6 +5,7 @@ import type {
   AuditLog,
   AuditLogPage,
   CameraInput,
+  CameraSchedule,
   CameraSensitivity,
   DemoStatus,
   EdgeGatewayStatus,
@@ -203,7 +204,11 @@ const EMPTY_CAMERA: CameraInput = {
   detectEnabled: true,
   detectSensitivity: null,
   detectRoi: [],
+  schedule: null,
 };
+
+const DAY_LABELS = ['日', '一', '二', '三', '四', '五', '六'];
+const FALSE_ALARM_HOTSPOT_THRESHOLD = 5;
 
 export default function AdminPanel({
   cameras,
@@ -220,6 +225,7 @@ export default function AdminPanel({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showCameraForm, setShowCameraForm] = useState(false);
   const [cameraBusy, setCameraBusy] = useState(false);
+  const [falseHotspots, setFalseHotspots] = useState<Record<string, number>>({});
   const [showNvrForm, setShowNvrForm] = useState(false);
   const [nvrBusy, setNvrBusy] = useState(false);
   const [vendors, setVendors] = useState<VendorPreset[]>([]);
@@ -561,6 +567,18 @@ export default function AdminPanel({
   };
 
   useEffect(() => {
+    // 误报热点：面板打开时取一次近 7 天聚合，用于点位列表的调优提示徽标。
+    void api
+      .falseHotspots(7)
+      .then((result) =>
+        setFalseHotspots(
+          Object.fromEntries(result.hotspots.map((row) => [row.cameraId, row.count])),
+        ),
+      )
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
     const loadHealth = async () => {
       try {
         const result = await api.streamHealth();
@@ -676,9 +694,60 @@ export default function AdminPanel({
       detectEnabled: camera.detectEnabled !== false,
       detectSensitivity: camera.detectSensitivity ?? null,
       detectRoi: camera.detectRoi ?? [],
+      schedule: camera.schedule ?? null,
     });
     setShowCameraForm(true);
     setError('');
+  };
+
+  const updateScheduleWindow = (
+    index: number,
+    patch: Partial<CameraSchedule['windows'][number]>,
+  ) => {
+    setCameraForm((prev) => {
+      if (!prev.schedule) return prev;
+      const windows = prev.schedule.windows.map((win, i) =>
+        i === index ? { ...win, ...patch } : win,
+      );
+      return { ...prev, schedule: { windows } };
+    });
+  };
+
+  const toggleScheduleDay = (index: number, day: number) => {
+    setCameraForm((prev) => {
+      if (!prev.schedule) return prev;
+      const windows = prev.schedule.windows.map((win, i) => {
+        if (i !== index) return win;
+        const days = win.days.includes(day)
+          ? win.days.filter((d) => d !== day)
+          : [...win.days, day].sort();
+        return { ...win, days };
+      });
+      return { ...prev, schedule: { windows } };
+    });
+  };
+
+  const addScheduleWindow = () => {
+    setCameraForm((prev) => {
+      if (!prev.schedule) return prev;
+      return {
+        ...prev,
+        schedule: {
+          windows: [
+            ...prev.schedule.windows,
+            { days: [1, 2, 3, 4, 5], start: '08:00', end: '20:00' },
+          ],
+        },
+      };
+    });
+  };
+
+  const removeScheduleWindow = (index: number) => {
+    setCameraForm((prev) => {
+      if (!prev.schedule) return prev;
+      const windows = prev.schedule.windows.filter((_, i) => i !== index);
+      return { ...prev, schedule: windows.length ? { windows } : null };
+    });
   };
 
   const submitCamera = async (event: FormEvent) => {
@@ -2160,6 +2229,14 @@ export default function AdminPanel({
                               {camera.zone} · {PROTOCOL_LABELS[camera.protocol]}
                               {!camera.hasSource && ' · 待配置视频流'}
                             </span>
+                            {(falseHotspots[camera.id] ?? 0) >= FALSE_ALARM_HOTSPOT_THRESHOLD && (
+                              <span
+                                className="false-alarm-badge"
+                                title="近 7 天误报偏多，建议调整识别灵敏度或在屏蔽区中排除常亮干扰源"
+                              >
+                                7 天误报 {falseHotspots[camera.id]} 次 · 建议调优
+                              </span>
+                            )}
                           </div>
                           <span className="point-site" title="所属站点">
                             {siteName(camera.siteId)}
@@ -2343,6 +2420,83 @@ export default function AdminPanel({
                         </select>
                       </label>
                     </div>
+                    <label className="admin-form-roi">
+                      <span>布防时间表（撤防时段仅暂停火情检测，播放与画面异常监测不受影响）</span>
+                      <select
+                        className="settings-input"
+                        value={cameraForm.schedule ? 'custom' : 'always'}
+                        onChange={(event) =>
+                          setCameraForm((prev) => ({
+                            ...prev,
+                            schedule:
+                              event.target.value === 'custom'
+                                ? {
+                                    windows: [
+                                      { days: [1, 2, 3, 4, 5], start: '08:00', end: '20:00' },
+                                    ],
+                                  }
+                                : null,
+                          }))
+                        }
+                      >
+                        <option value="always">全天候布防（7×24 检测）</option>
+                        <option value="custom">按时段布防</option>
+                      </select>
+                      {cameraForm.schedule && (
+                        <div className="schedule-editor">
+                          {cameraForm.schedule.windows.map((win, index) => (
+                            <div key={index} className="schedule-row">
+                              <div className="schedule-days">
+                                {DAY_LABELS.map((label, day) => (
+                                  <button
+                                    type="button"
+                                    key={day}
+                                    className={`schedule-day ${win.days.includes(day) ? 'is-on' : ''}`}
+                                    onClick={() => toggleScheduleDay(index, day)}
+                                  >
+                                    {label}
+                                  </button>
+                                ))}
+                              </div>
+                              <input
+                                type="time"
+                                className="settings-input schedule-time"
+                                value={win.start}
+                                onChange={(event) =>
+                                  updateScheduleWindow(index, { start: event.target.value })
+                                }
+                              />
+                              <span className="schedule-sep">至</span>
+                              <input
+                                type="time"
+                                className="settings-input schedule-time"
+                                value={win.end}
+                                onChange={(event) =>
+                                  updateScheduleWindow(index, { end: event.target.value })
+                                }
+                              />
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-ghost"
+                                onClick={() => removeScheduleWindow(index)}
+                              >
+                                删除
+                              </button>
+                            </div>
+                          ))}
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-ghost"
+                            onClick={addScheduleWindow}
+                          >
+                            + 添加时段
+                          </button>
+                          <span className="schedule-hint">
+                            结束时间早于开始时间表示跨零点（如 22:00 至 06:00）。
+                          </span>
+                        </div>
+                      )}
+                    </label>
                     {(cameraForm.protocol === 'rtsp' ||
                       cameraForm.protocol === 'hls' ||
                       cameraForm.protocol === 'http') && (

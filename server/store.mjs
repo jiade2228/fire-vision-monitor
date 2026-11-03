@@ -20,6 +20,7 @@ import {
   migrateSchemaV4,
   migrateSchemaV5,
   migrateSchemaV6,
+  migrateSchemaV7,
   ensureDefaultSite,
 } from './schema.mjs';
 
@@ -242,6 +243,7 @@ export async function openStore({ dataDir, secretBox, legacyData = null }) {
     migrateSchemaV4(db);
     migrateSchemaV5(db);
     migrateSchemaV6(db);
+    migrateSchemaV7(db);
     ensureDefaultSite(db);
   } catch (error) {
     try {

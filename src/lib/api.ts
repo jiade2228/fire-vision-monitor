@@ -21,6 +21,11 @@ export interface RoiRect {
 
 export type CameraSensitivity = 'low' | 'standard' | 'high';
 
+/** 布防时间表：按星期 + 时段启用检测；null 表示 7×24 全天候布防。 */
+export interface CameraSchedule {
+  windows: Array<{ days: number[]; start: string; end: string }>;
+}
+
 export interface ManagedCamera {
   id: string;
   code: string;
@@ -35,6 +40,7 @@ export interface ManagedCamera {
   detectEnabled: boolean;
   detectSensitivity: CameraSensitivity | null;
   detectRoi: RoiRect[];
+  schedule: CameraSchedule | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -49,6 +55,7 @@ export interface CameraInput {
   detectEnabled?: boolean;
   detectSensitivity?: CameraSensitivity | null;
   detectRoi?: RoiRect[];
+  schedule?: CameraSchedule | null;
 }
 
 export interface UserInput {
@@ -529,6 +536,11 @@ export const api = {
     request<{ alarms: Alarm[] }>(`/api/alarms?limit=${encodeURIComponent(limit)}`),
   alarmStats: (days = 30) =>
     request<AlarmStats>(`/api/alarms/stats?days=${encodeURIComponent(days)}`),
+  falseHotspots: (days = 7) =>
+    request<{
+      days: number;
+      hotspots: Array<{ cameraId: string; cameraName: string; zone: string; count: number }>;
+    }>(`/api/alarms/false-hotspots?days=${encodeURIComponent(days)}`),
   createAlarm: (body: AlarmCreateInput) =>
     request<{ alarm: Alarm; duplicate?: boolean }>('/api/alarms', {
       method: 'POST',

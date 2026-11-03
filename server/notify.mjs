@@ -18,6 +18,7 @@ const LEVEL_LABELS = {
   fire: '火情告警',
   smoke: '烟雾告警',
   offline: '设备离线',
+  camera_abnormal: '画面异常',
 };
 
 function levelLabelFor(level) {

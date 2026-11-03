@@ -24,12 +24,14 @@ export const LEVEL_META: Record<AlarmLevel, { label: string; caption: string }> 
   fire: { label: '火焰', caption: '明火识别' },
   smoke: { label: '烟雾', caption: '早期烟雾识别' },
   offline: { label: '设备离线', caption: '视频流中断' },
+  camera_abnormal: { label: '画面异常', caption: '遮挡/过暗/过曝' },
 };
 
 export const LEVEL_LABELS: Record<AlarmLevel, string> = {
   fire: '火焰',
   smoke: '烟雾',
   offline: '设备离线',
+  camera_abnormal: '画面异常',
 };
 
 export function levelLabel(level: AlarmLevel): string {
