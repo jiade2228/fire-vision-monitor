@@ -29,6 +29,7 @@ import {
 import { Notifier } from './notify.mjs';
 import { createGuards } from './http/guards.mjs';
 import { createSession } from './http/session.mjs';
+import { registerAdminRoutes } from './routes/admin.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -2950,42 +2951,16 @@ async function main() {
     });
 
     // 审计日志：超管专属，支持按动作前缀/关键词/时间范围筛选与分页。
-    app.get('/api/audit', requireAuth, requireRole('admin'), (req, res) => {
-      const filter = {
-        limit: Number(req.query.limit) || 50,
-        offset: Number(req.query.offset) || 0,
-        action: normalizeText(String(req.query.action ?? ''), 32),
-        q: normalizeText(String(req.query.q ?? ''), 64),
-        from: Number(req.query.from) || null,
-        to: Number(req.query.to) || null,
-      };
-      res.json({
-        logs: store.listAuditFiltered(filter).map(mapAudit),
-        total: store.countAuditFiltered(filter),
-      });
-    });
-
-    app.get('/api/metrics', requireAuth, requireRole('admin'), (_req, res) => {
-      res.json({
-        ...metrics,
-        ...store.stats(),
-        streams: streamManager.health(),
-        activeStreams: streamManager.activeCount(),
-        maxConcurrentStreams: streamManager.maxStreams,
-        uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
-      });
-    });
-
-    app.post('/api/admin/backup', requireAuth, requireRole('admin'), async (req, res) => {
-      const file = await store.backup();
-      store.recordAudit({
-        user: req.user,
-        action: 'system.backup',
-        targetType: 'system',
-        detail: path.basename(file),
-        ip: clientIp(req),
-      });
-      res.json({ file: path.basename(file) });
+    registerAdminRoutes(app, {
+      store,
+      streamManager,
+      metrics,
+      startedAt,
+      requireAuth,
+      requireRole,
+      normalizeText,
+      mapAudit,
+      clientIp,
     });
 
     // 演示播放列表：一次性 token 鉴权（服务端解码没有会话 Cookie，
