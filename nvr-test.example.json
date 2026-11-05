@@ -1,11 +1,12 @@
 {
+  "_comment": "示例地址均为 RFC 5737 文档保留网段（192.0.2.0/24），不可路由；实际使用时替换 host/username，密码通过 passwordEnv 指定的环境变量注入，切勿写入文件。",
   "devices": [
     {
       "name": "海康 NVR 测试机",
       "vendorId": "hikvision",
-      "host": "192.168.1.64",
+      "host": "192.0.2.10",
       "port": 554,
-      "username": "admin",
+      "username": "REPLACE_WITH_NVR_USERNAME",
       "passwordEnv": "NVR_HIKVISION_PASSWORD",
       "startChannel": 1,
       "count": 4,
@@ -14,9 +15,9 @@
     {
       "name": "大华 NVR 测试机",
       "vendorId": "dahua",
-      "host": "192.168.1.108",
+      "host": "192.0.2.11",
       "port": 554,
-      "username": "admin",
+      "username": "REPLACE_WITH_NVR_USERNAME",
       "passwordEnv": "NVR_DAHUA_PASSWORD",
       "startChannel": 1,
       "count": 4,
