@@ -235,6 +235,7 @@ export function registerCameraRoutes(app, deps) {
         detectEnabled: parsed.value.detectEnabled,
         detectSensitivity: parsed.value.detectSensitivity,
         detectRoi: parsed.value.detectRoi,
+        schedule: parsed.value.schedule,
         createdAt: Date.now(),
         updatedAt: Date.now(),
       });
@@ -282,6 +283,9 @@ export function registerCameraRoutes(app, deps) {
           : camera.detectSensitivity,
       detectRoi:
         req.body.detectRoi !== undefined ? req.body.detectRoi : camera.detectRoi,
+      // 未显式下发时沿用当前布防配置（解析形态），避免普通编辑把时间表清空。
+      schedule:
+        req.body.schedule !== undefined ? req.body.schedule : camera.schedule,
     };
     if (req.body.siteId !== undefined) {
       const siteId = normalizeText(String(req.body.siteId ?? ''), 64);

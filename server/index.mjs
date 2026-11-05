@@ -19,6 +19,7 @@ import { EdgeHub, parseEdgeSource } from './edge-hub.mjs';
 import { discoverDevices } from './onvif.mjs';
 import { discoverOnvifDevices } from './onvif-discovery.mjs';
 import { DetectionEngine } from './detection-engine.mjs';
+import { toClientSchedule } from './schedule.mjs';
 import {
   DEMO_CAMERA_CODE,
   DEMO_CAMERA_NAME,
@@ -293,7 +294,7 @@ function cameraForClient(camera, user) {
     detectEnabled: camera.detectEnabled !== false,
     detectSensitivity: camera.detectSensitivity ?? null,
     detectRoi: camera.detectRoi ?? [],
-    schedule: camera.schedule ?? null,
+    schedule: toClientSchedule(camera.schedule),
     protocol: camera.protocol,
     sourceUrl: hideUrl ? '' : camera.sourceUrl,
     hasSource: Boolean(camera.sourceUrl),

@@ -99,6 +99,20 @@ function minutesToHHmm(minutes) {
 }
 
 /**
+ * 把解析后的时间表转成前端形态（start/end 为 "HH:mm" 字符串）。
+ *
+ * 存储层（cameraRowToObject）持有的是分钟数形态，供 isArmedNow 判断；
+ * 前端 input[type=time] 需要字符串形态，直接下发数字会导致编辑已有布防点位时输入框失效。
+ *
+ * @param {{always: true} | {always: false, windows: Array<object>} | null} schedule 解析后的时间表。
+ * @returns {{windows: Array<{days: number[], start: string, end: string}>} | null}
+ */
+export function toClientSchedule(schedule) {
+  const stored = serializeSchedule(schedule);
+  return stored ? JSON.parse(stored) : null;
+}
+
+/**
  * 判断点位在指定时刻是否处于布防状态。
  *
  * @param {{always: true} | {always: false, windows: Array<object>}} schedule parseSchedule 的返回值。

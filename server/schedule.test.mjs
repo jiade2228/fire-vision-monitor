@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSchedule, isArmedNow, serializeSchedule } from './schedule.mjs';
+import { parseSchedule, isArmedNow, serializeSchedule, toClientSchedule } from './schedule.mjs';
 
 test('parseSchedule：空/非法输入回退全天候布防，跨零点窗口归一化', () => {
   assert.deepEqual(parseSchedule(null), { always: true });
@@ -60,4 +60,16 @@ test('serializeSchedule：解析形态往返无损，全天候/非法回退 NULL
   assert.equal(reparsed.always, false);
   assert.equal(reparsed.windows[0].start, 1320);
   assert.equal(reparsed.windows[0].end, 360 + 1440);
+});
+
+test('toClientSchedule：解析形态转前端 HH:mm 形态，全天候回退 null', () => {
+  const parsed = parseSchedule('{"windows":[{"days":[1,5],"start":"22:00","end":"06:00"}]}');
+  const client = toClientSchedule(parsed);
+  assert.equal(client.windows.length, 1);
+  assert.deepEqual(client.windows[0].days, [1, 5]);
+  assert.equal(client.windows[0].start, '22:00');
+  assert.equal(client.windows[0].end, '06:00');
+  assert.equal(typeof client.windows[0].start, 'string');
+  assert.equal(toClientSchedule({ always: true }), null);
+  assert.equal(toClientSchedule(null), null);
 });
