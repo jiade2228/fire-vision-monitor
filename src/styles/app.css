@@ -4658,3 +4658,132 @@ button {
   background: rgba(251, 191, 36, 0.12);
   border: 1px solid rgba(251, 191, 36, 0.35);
 }
+
+/* 持续录像时间线 */
+.recording-panel {
+  margin-top: 16px;
+}
+
+.recording-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.recording-controls select,
+.recording-controls input {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  color-scheme: dark;
+}
+
+.recording-error {
+  color: var(--danger);
+  font-size: 12px;
+  margin: 8px 0;
+}
+
+.recording-track {
+  position: relative;
+  height: 46px;
+  margin: 16px 0 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.recording-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line-strong);
+}
+
+.recording-gap {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(150, 171, 193, 0.09) 0 4px,
+    transparent 4px 8px
+  );
+  pointer-events: none;
+}
+
+.recording-block {
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  min-width: 2px;
+  border: 0;
+  padding: 0;
+  border-radius: 3px;
+  cursor: pointer;
+  background: var(--info);
+  opacity: 0.85;
+}
+
+.recording-block:hover {
+  opacity: 1;
+  outline: 1px solid var(--text);
+}
+
+.recording-block.is-protected {
+  background: var(--danger);
+}
+
+.recording-scale {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-faint);
+  font: 11px var(--mono);
+}
+
+.recording-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  margin-top: 10px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.recording-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: -1px;
+}
+
+.recording-swatch.is-recorded { background: var(--info); }
+.recording-swatch.is-protected { background: var(--danger); }
+.recording-swatch.is-gap { background: rgba(150, 171, 193, 0.25); }
+
+.recording-summary {
+  margin-left: auto;
+  font-family: var(--mono);
+}
+
+.recording-hint {
+  font-size: 12px;
+  color: var(--text-faint);
+  margin: 10px 0 0;
+}
+
+@media (max-width: 760px) {
+  .recording-summary {
+    margin-left: 0;
+    width: 100%;
+  }
+}

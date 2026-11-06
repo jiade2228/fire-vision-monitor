@@ -1,7 +1,17 @@
 # 持续录像时间线回放 · 设计文档
 
-状态：设计定稿，待真机联调后实施（REVIEW 第三节判定为「暂缓·大」，依赖真机验证磁盘与 FFmpeg 行为）。
+状态：**第一阶段（索引与时间线）已实施，采集 worker / 按需转码 / 导出仍待真机联调**（REVIEW 第三节判定为「暂缓·大」，依赖真机验证磁盘与 FFmpeg 行为）。
 关联：`REVIEW.md` 第二节新功能优先级；现有告警短视频（`ALARM_CLIP_SECONDS`）与磁盘水位（`MEDIA_MAX_BYTES`）机制。
+
+> 2026-11-06 实施记录（第一阶段）
+> - 录像段目录改为 **`data/continuous/<cameraId>/<YYYYMMDD>/<HHmmss>.ts`**（全部按 UTC 解释）。
+>   原因：`data/recordings/` 已被告警短视频 mp4 与媒体水位扫描占用，混放会被误清理。
+> - 已落地：schema V8 `recording_segments` 表、`server/recording-index.mjs`（扫描/时长校准/对账/时间线）、
+>   `store/methods/recordings.mjs`、`GET /api/recordings/timeline` 与 `POST /api/recordings/reconcile`（超管）、
+>   5 分钟自动对账、`src/components/RecordingTimeline.tsx`（24h 时间条 + 缺口 + 保护段）。
+> - 未落地：FFmpeg copy 采集 worker、`play`/`export` 按需转码、告警保护段的自动联动、
+>   `RECORDING_RETENTION_DAYS` 配额淘汰。这些保留在 §8 真机验证清单之后实施。
+> - `RECORDING=1` 目前只影响时间线返回的 `enabled` 标记，不会启动任何录像进程。
 
 ---
 
@@ -20,13 +30,13 @@
 ## 2. 总体架构
 
 ```
-FFmpeg (copy, 60s/段 .ts) ──> data/recordings/<cameraId>/YYYYMMDD/*.ts
+FFmpeg (copy, 60s/段 .ts) ──> data/continuous/<cameraId>/YYYYMMDD/*.ts
                                     │
                         RecordingIndex（SQLite 表，每段一行）
                                     │
         ┌───────────────────────────┼──────────────────────┐
    时间线 API                  播放 API（按需转码 HLS）     水位清理
-/capi/recordings/timeline   /capi/recordings/play      沿用 MEDIA_MAX_BYTES
+/api/recordings/timeline    /api/recordings/play       沿用 MEDIA_MAX_BYTES
 ```
 
 与现有 `streams.mjs`（观看转码，8 路上限、90s 空闲停流）完全分离：录像进程独立生命周期，
@@ -44,7 +54,8 @@ FFmpeg (copy, 60s/段 .ts) ──> data/recordings/<cameraId>/YYYYMMDD/*.ts
 
 ## 4. 存储与索引
 
-**目录**：`data/recordings/<cameraId>/20261103/143000.ts`（按天分目录，段名=起始时刻）。
+**目录**：`data/continuous/<cameraId>/20261103/143000.ts`（按天分目录，段名=起始时刻，均按 UTC 解释）。
+独立于 `data/recordings/`：后者存放告警短视频 mp4 且受媒体水位扫描，混放会被误清理。
 
 **索引表**（schema V8 迁移新增）：
 
@@ -102,8 +113,9 @@ CREATE INDEX idx_recording_cam_start ON recording_segments(camera_id, started_at
 
 ## 9. 实施切分（真机验证通过后）
 
-1. 采集与索引（录像 worker、对账、V8 迁移）——1 天
+1. ✅ 索引层（V8 迁移、目录扫描、时长校准、5 分钟对账、时间线/对账 API、前端时间条）——已完成，纯文件系统可测
+   采集 worker（录像进程、断流补洞、布防联动）仍待真机
 2. 回放 API + 按需转码——1 天
-3. 前端时间线组件——1 天
+3. ~~前端时间线组件~~ 骨架已完成（24h 时间条 / gap / 保护段），播放器联动待第 2 步
 4. 水位/保护段/导出——0.5 天
 每步全量测试（`npm test`）+ 构建，遵循既有小步迁移约定。

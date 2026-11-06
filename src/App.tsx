@@ -5,6 +5,7 @@ import VideoWall from './components/VideoWall';
 import AlarmCard from './components/AlarmCard';
 import AlarmCenter from './components/AlarmCenter';
 import RecordsView from './components/RecordsView';
+import RecordingTimeline from './components/RecordingTimeline';
 import FocusViewer from './components/FocusViewer';
 import AdminPanel from './components/AdminPanel';
 import OnboardingGuide from './components/OnboardingGuide';
@@ -917,7 +918,12 @@ export default function App() {
             />
           )}
 
-          {view === 'records' && <RecordsView alarms={alarms} />}
+          {view === 'records' && (
+            <>
+              <RecordsView alarms={alarms} />
+              <RecordingTimeline cameras={cameras} />
+            </>
+          )}
         </main>
       </div>
 

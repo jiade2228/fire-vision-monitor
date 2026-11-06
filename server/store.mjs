@@ -5,6 +5,7 @@ import { alarmMethods } from './store/methods/alarms.mjs';
 import { notifyMethods } from './store/methods/notify.mjs';
 import { auditMethods } from './store/methods/audit.mjs';
 import { maintenanceMethods } from './store/methods/maintenance.mjs';
+import { recordingsMethods } from './store/methods/recordings.mjs';
 export { parseRoi } from './store/helpers.mjs';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -21,6 +22,7 @@ import {
   migrateSchemaV5,
   migrateSchemaV6,
   migrateSchemaV7,
+  migrateSchemaV8,
   ensureDefaultSite,
 } from './schema.mjs';
 
@@ -191,7 +193,7 @@ export class Store {
   }
 }
 
-Object.assign(Store.prototype, userMethods, siteMethods, cameraMethods, alarmMethods, notifyMethods, auditMethods, maintenanceMethods);
+Object.assign(Store.prototype, userMethods, siteMethods, cameraMethods, alarmMethods, notifyMethods, auditMethods, maintenanceMethods, recordingsMethods);
 
 const CORRUPT_BACKUP_FILES = ['app.db', 'app.db-wal', 'app.db-shm'];
 
@@ -311,6 +313,7 @@ export async function openStore({ dataDir, secretBox, legacyData = null }) {
     migrateSchemaV5(db);
     migrateSchemaV6(db);
     migrateSchemaV7(db);
+    migrateSchemaV8(db);
     ensureDefaultSite(db);
   } catch (error) {
     try {

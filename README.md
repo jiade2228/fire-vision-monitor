@@ -113,7 +113,7 @@ docker compose up -d     # 构建时自动跑 npm test，数据落命名卷 fire
 | 日志 | stdout JSON 单行（`event`/`level`/`time`），重定向到文件即可；关键事件：`demo_*`、`camera_offline`、`media_watermark_pruned`、`daily_summary_sent` |
 | 磁盘水位 | 抓拍 + 短视频超过 `MEDIA_MAX_BYTES`（默认 2GB）自动清最老已关闭告警的媒体；`/api/system` 可看当前占用 |
 | 数据保留 | 告警 180 天（`ALARM_RETENTION_DAYS`）、推送日志 30 天，每日清理 |
-| 升级部署 | `git pull` → `npm ci` → `npm run build` → 重启服务；schema 自动迁移（当前 V7，V1→V7 升级路径均有测试覆盖；V7 含告警表重建） |
+| 升级部署 | `git pull` → `npm ci` → `npm run build` → 重启服务；schema 自动迁移（当前 V8，新增录像分段索引表；V1→V8 升级路径均有测试覆盖，V7 含告警表重建） |
 | 健康检查 | `GET /healthz`（数据库 / FFmpeg / 磁盘 / 存活） |
 
 **数据目录**（`data/`，已被 .gitignore 排除，含 SQLite 库、凭据密钥、备份、媒体）：迁移时整体拷贝，注意 `credentials.key` 与 `app.db` 必须一起走，否则已加密的通知渠道配置将无法解密。
@@ -151,6 +151,7 @@ node scripts/detect-file.mjs test-videos/火灾-酒精壁炉明火.webm standard
 | `OFFLINE_TIMEOUT_MS` / `OFFLINE_CHECK_INTERVAL_MS` | 60000 / 15000 | 离线判定与巡检间隔 |
 | `ESCALATION_MINUTES` / `ESCALATION_CHECK_INTERVAL_MS` | 5 / 60000 | 告警超时升级（≤0 关闭） |
 | `ALARM_CLIP_SECONDS` | 10 | 告警短视频时长（2-60） |
+| `RECORDING` | 关（`1` 开启） | 持续录像采集总闸；索引、对账与时间线已就绪，采集 worker / 按需转码待真机联调后开放 |
 | `ALARM_RETENTION_DAYS` / `NOTIFY_RETENTION_DAYS` / `AUDIT_RETENTION_DAYS` | 180 / 30 / 180 | 数据保留天数（告警 / 推送日志 / 审计日志） |
 | `MEDIA_MAX_BYTES` | 2GB（0 关闭） | 媒体磁盘水位 |
 | `DAILY_SUMMARY_AT` / `DAILY_SUMMARY_FORCE` | 08:00（上海时区）/ 关 | 每日摘要推送时间；`FORCE=1` 启动即跑一次（演练用） |
@@ -171,7 +172,8 @@ node scripts/detect-file.mjs test-videos/火灾-酒精壁炉明火.webm standard
 server/            服务端（Express 5 + node:sqlite）
   index.mjs        启动引导、中间件、单实例锁与路由注册
   routes/          按域拆分的 HTTP 路由（auth/cameras/alarms/notify/
-                   sites/users/admin/demo/media）
+                   sites/users/admin/demo/media/recordings）
+  recording-index.mjs  持续录像段扫描、对账与时间线构建（不依赖 FFmpeg）
   http/            鉴权守卫、会话与登录限流
   schema.mjs       建表与 V1→V7 迁移
   store.mjs        数据层入口（openStore / Store）
@@ -191,6 +193,8 @@ scripts/           e2e-smoke.mjs / detect-file.mjs / 守护脚本
 docs/              设计方案（持续录像回放等）
 test-videos/       测试视频（Wikimedia Commons CC 授权，不入库）
 data/              运行数据（不入库）：SQLite / 凭据 / 备份 / 媒体
+  recordings/      告警短视频 mp4（受 MEDIA_MAX_BYTES 水位管理）
+  continuous/      持续录像 TS 分段（独立目录，避免被短视频水位误清理）
 ```
 
 ## 11. 常见问题

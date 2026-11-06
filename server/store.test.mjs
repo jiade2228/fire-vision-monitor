@@ -7,6 +7,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { SecretBox } from './secrets.mjs';
 import { openStore, backupCorruptFiles, isDatabaseCorruptionError } from './store.mjs';
+import { SCHEMA_VERSION } from './schema.mjs';
 
 function box() {
   return new SecretBox(crypto.randomBytes(32));
@@ -171,7 +172,7 @@ test('schema v2 database without site_id upgrades in place', async (t) => {
     await fs.rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
-  assert.equal(store.schemaVersion, 7);
+  assert.equal(store.schemaVersion, SCHEMA_VERSION);
   const cameras = store.listCameras();
   assert.equal(cameras.length, 1);
   assert.equal(cameras[0].siteId, store.defaultSiteId);
@@ -255,7 +256,7 @@ test('schema v3 alarm table is rebuilt without losing rows', async (t) => {
     await fs.rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
-  assert.equal(store.schemaVersion, 7);
+  assert.equal(store.schemaVersion, SCHEMA_VERSION);
   const alarms = store.listAlarms(10);
   assert.equal(alarms.length, 1);
   assert.equal(alarms[0].level, 'fire');

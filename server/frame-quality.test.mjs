@@ -8,6 +8,7 @@ import { analyzeFrameQuality } from './frame-quality.mjs';
 import { DetectionEngine } from './detection-engine.mjs';
 import { openStore } from './store.mjs';
 import { SecretBox } from './secrets.mjs';
+import { SCHEMA_VERSION } from './schema.mjs';
 
 const WIDTH = 160;
 const HEIGHT = 90;
@@ -164,5 +165,5 @@ test('V7 迁移：camera_abnormal 告警可落库，cameras.schedule 列就绪',
   // schedule 列存在且可写入（V7 迁移产物）。
   const updated = store.updateCamera(camera.id, { schedule: null });
   assert.ok(updated, 'updateCamera 应正常返回');
-  assert.equal(store.schemaVersion, 7);
+  assert.equal(store.schemaVersion, SCHEMA_VERSION);
 });

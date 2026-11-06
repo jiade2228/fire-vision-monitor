@@ -1,9 +1,26 @@
-// 数据库 schema 定义与版本迁移（V1→V6）。由 store.mjs 的 openStore 调用。
+// 数据库 schema 定义与版本迁移（V1→V8）。由 store.mjs 的 openStore 调用。
 // 本模块只依赖 node:crypto，所有函数接收已打开的 DatabaseSync 实例。
 import crypto from 'node:crypto';
 
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
+
+/** 持续录像分段索引（V8）。文件系统是事实源，本表只作为查询缓存。 */
+export const RECORDING_SEGMENTS_DDL = `
+  CREATE TABLE IF NOT EXISTS recording_segments (
+    id TEXT PRIMARY KEY,
+    camera_id TEXT NOT NULL,
+    file TEXT NOT NULL UNIQUE,
+    started_at INTEGER NOT NULL,
+    ended_at INTEGER NOT NULL,
+    bytes INTEGER NOT NULL,
+    protected INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_recording_cam_start
+    ON recording_segments(camera_id, started_at);
+  CREATE INDEX IF NOT EXISTS idx_recording_started
+    ON recording_segments(started_at);
+`;
 
 export function now() {
   return Date.now();
@@ -289,6 +306,8 @@ export function createSchema(db) {
       ON notification_logs(alarm_id, channel_id, event);
     CREATE INDEX IF NOT EXISTS idx_notify_created
       ON notification_logs(created_at DESC);
+
+    ${RECORDING_SEGMENTS_DDL}
   `);
 }
 
@@ -662,6 +681,31 @@ export function migrateSchemaV7(db) {
     `);
     db.prepare(
       "INSERT INTO meta(key, value) VALUES('schema_version', '7') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+    ).run();
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+/**
+ * V8：持续录像分段索引。仅新增表与索引，不动既有业务表；
+ * 与 createSchema 共用同一段 DDL，保证新库与升级库结构一致。
+ *
+ * 注意：录像段文件放在 data/continuous/（独立目录），
+ * 不与 data/recordings/ 下的告警短视频 mp4 混放，避免被现有水位扫描误清理。
+ */
+export function migrateSchemaV8(db) {
+  const version = Number(
+    db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()?.value ?? 0,
+  );
+  if (version >= 8) return;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.exec(RECORDING_SEGMENTS_DDL);
+    db.prepare(
+      "INSERT INTO meta(key, value) VALUES('schema_version', '8') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
     ).run();
     db.exec('COMMIT');
   } catch (error) {

@@ -39,6 +39,8 @@ import { registerAuthRoutes } from './routes/auth.mjs';
 import { registerDemoRoutes } from './routes/demo.mjs';
 import { registerMediaRoutes } from './routes/media.mjs';
 import { registerAdminRoutes } from './routes/admin.mjs';
+import { registerRecordingRoutes } from './routes/recordings.mjs';
+import { reconcileRecordingSegments } from './recording-index.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -50,6 +52,9 @@ const legacyJsonFile = path.join(dataDir, 'app.json');
 const databaseFile = path.join(dataDir, 'app.db');
 const snapshotDir = path.join(dataDir, 'snapshots');
 const recordingsDir = path.join(dataDir, 'recordings');
+// 持续录像段独立存放：data/recordings/ 已被告警短视频 mp4 与媒体水位扫描占用。
+const continuousDir = path.join(dataDir, 'continuous');
+const recordingEnabled = process.env.RECORDING === '1';
 const previewDir = path.join(dataDir, 'previews');
 const portArgIndex = process.argv.indexOf('--port');
 const port = Number(
@@ -531,6 +536,7 @@ async function main() {
   await fsp.mkdir(dataDir, { recursive: true, mode: 0o700 });
   await fsp.mkdir(snapshotDir, { recursive: true, mode: 0o700 });
   await fsp.mkdir(recordingsDir, { recursive: true, mode: 0o700 });
+  await fsp.mkdir(continuousDir, { recursive: true, mode: 0o700 });
   await fsp.mkdir(previewDir, { recursive: true, mode: 0o700 });
 
   // 媒体磁盘水位：抓拍 + 短视频总量超过 MEDIA_MAX_BYTES 时自动清理（0 关闭）。
@@ -585,6 +591,7 @@ async function main() {
   let summaryTimer;
   let mediaTimer;
   let backupTimer;
+  let recordingTimer;
 
   try {
     const dbExists = fs.existsSync(databaseFile);
@@ -1409,6 +1416,15 @@ async function main() {
       notifyChannelForClient,
       parseNotifyChannelInput,
     });
+    registerRecordingRoutes(app, {
+      store,
+      continuousDir,
+      recordingEnabled,
+      canAccessCameraSite,
+      requireAuth,
+      requireRole,
+      normalizeText,
+    });
 
     if (fs.existsSync(distDir)) {
       app.use(
@@ -1485,6 +1501,21 @@ async function main() {
     backupTimer = setInterval(() => void backupTimerRun(), 24 * 60 * 60 * 1000);
     backupTimer.unref();
 
+    // 持续录像索引每 5 分钟对账一次：文件系统是事实源，崩溃后自动补录缺失段。
+    const recordingReconcileRun = async () => {
+      try {
+        const result = await reconcileRecordingSegments(store, continuousDir);
+        if (result.inserted || result.updated || result.orphansRemoved) {
+          log('info', 'recording_index_reconciled', result);
+        }
+      } catch (error) {
+        log('error', 'recording_index_reconcile_failed', { message: error.message });
+      }
+    };
+    setTimeout(() => void recordingReconcileRun(), 20_000).unref();
+    recordingTimer = setInterval(() => void recordingReconcileRun(), 5 * 60 * 1000);
+    recordingTimer.unref();
+
     const server = app.listen(port, '0.0.0.0', () => {
       log('info', 'server_started', {
         port,
@@ -1508,6 +1539,7 @@ async function main() {
       shuttingDown = true;
       log('info', 'server_shutdown', { signal });
       if (backupTimer) clearInterval(backupTimer);
+      if (recordingTimer) clearInterval(recordingTimer);
       if (detectionTimer) clearInterval(detectionTimer);
       if (offlineTimer) clearInterval(offlineTimer);
       if (retentionTimer) clearInterval(retentionTimer);

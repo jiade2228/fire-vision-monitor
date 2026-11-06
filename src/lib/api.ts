@@ -449,6 +449,35 @@ export const ROLE_LABELS: Record<UserRole, string> = {
   viewer: '只读',
 };
 
+/** 持续录像时间线（schema V8 索引；播放/导出待真机联调后开放）。 */
+export interface RecordingTimelineBlock {
+  startedAt: number;
+  endedAt: number;
+  bytes: number;
+  protected: boolean;
+  segmentCount: number;
+}
+
+export interface RecordingGap {
+  startedAt: number;
+  endedAt: number;
+}
+
+export interface RecordingTimeline {
+  from: number;
+  to: number;
+  blocks: RecordingTimelineBlock[];
+  gaps: RecordingGap[];
+  coverageMs: number;
+  segmentCount: number;
+}
+
+export interface RecordingTimelineResponse {
+  cameraId: string;
+  enabled: boolean;
+  timeline: RecordingTimeline;
+}
+
 export const api = {
   authStatus: () =>
     request<{ needsSetup: boolean; authenticated: boolean; user: SessionUser | null }>(
@@ -690,6 +719,24 @@ export const api = {
       notifications: number;
       purgeable: { alarms: number; snapshots: number; clips: number };
     }>('/api/demo/purge', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  recordingsTimeline: ({ cameraId, from, to }: { cameraId: string; from: number; to: number }) => {
+    const search = new URLSearchParams({
+      cameraId,
+      from: String(from),
+      to: String(to),
+    });
+    return request<RecordingTimelineResponse>(`/api/recordings/timeline?${search}`);
+  },
+  reconcileRecordings: () =>
+    request<{
+      scanned: number;
+      inserted: number;
+      updated: number;
+      orphansRemoved: number;
+    }>('/api/recordings/reconcile', {
       method: 'POST',
       body: JSON.stringify({}),
     }),

@@ -112,9 +112,10 @@
 代码与测试
 - [x] P0：告警级联清理已修复并有回归测试（#2「静态缓存失效」经复核为误诊，无需动作）
 - [x] P1 三项：Webhook 主机校验、审计按天保留、登录限流 LRU 均已处理
-- [x] `npm test` 75/75、`npm run e2e` 11/11、`npm run build` 通过（11-05 基线，11-06 复跑同样全绿）
+- [x] `npm test` 85/85、`npm run e2e` 11/11、`npm run build` 通过（11-06 最终基线）
 - [x] 官方 registry `npm audit` 0 漏洞
 - [x] 11-06 补修：`openStore` 不再把并发/锁竞争误判为数据库损坏（见第五节）
+- [x] 11-06：持续录像第一阶段（V8 索引、对账、时间线）落地并有测试（见第六节）
 
 敏感内容
 - [x] `git ls-files` 123 个文件，无 `data/`、`dist/`、`node_modules/`、`.env*`、密钥或媒体
@@ -124,7 +125,7 @@
 
 文档与许可
 - [x] `LICENSE`（MIT）+ 测试素材 CC 协议说明
-- [x] `README.md` 与实际一致（11-06 更新目录结构：路由已拆分、schema V7）
+- [x] `README.md` 与实际一致（11-06 更新目录结构：路由已拆分、schema V8、持续录像索引）
 - [x] `SECURITY.md`、`CONTRIBUTING.md` 就位
 - [ ] `package.json` 的 `repository` 字段：待仓库地址确定后补（description / license / keywords / engines 已齐）
 
@@ -135,9 +136,9 @@
 
 部署形态确认
 - [ ] 真机联调与公网拓扑（VPS 部署 / 隧道扩展）待拍板
-- [ ] 生产守护 watchdog 需在目标机器验证「停止后自动拉起」；11-06 发现其每 12 秒无条件重启，易与慢启动叠加造成多实例竞争（见第五节）
+- [ ] 生产守护 watchdog：**代码已修**（11-06 增加单实例判定、指数退避、45s 启动窗口与 5 分钟卡死兜底），仍需在目标机器验证一次「停止后自动拉起」
 
-另：持续录像时间线回放设计已定稿（`docs/continuous-recording-design.md`），依赖真机验证磁盘与 FFmpeg 行为，按原判定暂缓实施。
+另：持续录像回放的**第一阶段已完成**（V8 索引、目录扫描/对账、时间线 API 与前端时间条，见 `docs/continuous-recording-design.md` 实施记录）；采集 worker、按需转码、导出仍依赖真机验证磁盘与 FFmpeg 行为，按原判定暂缓。
 
 ---
 
@@ -160,5 +161,27 @@
 - 新增 3 项回归测试：错误分类、重复备份去重、非损坏失败不产生副本。
 
 **未做（需确认）**
-- `data/` 下 6 套历史副本属诊断残留，未自动删除；确认无用后仅清理 `*.corrupt-*` 即可。
-- watchdog 的重启退避未改动（生产部署脚本，建议在目标机器联调时一并验证）。
+- `data/` 下 6 套（16 个文件、5.3MB）历史副本属诊断残留，未自动删除；确认无用后仅清理 `*.corrupt-*` 即可。
+- watchdog 的重启退避已于同日第二轮改动补齐，但仍建议在目标机器联调时验证。
+
+---
+
+## 六、11-06 第二轮：守护脚本 + 持续录像第一阶段
+
+**守护脚本 `scripts/fire-watchdog.ps1`**：原来健康检查失败即每 12 秒无条件 `Start-Process`，慢启动会叠加多实例。现改为：
+- 用 `instance.lock` 的 pid + `Win32_Process.CommandLine` 双重确认「确实在跑本项目」的实例（防 pid 复用误判）；
+- 已有实例存活时只等待并指数退避（15→120s），不重复拉起；
+- 无实例时拉起一次并给 45 秒启动窗口；连续 5 分钟不健康才判定卡死、显式终止后重建；
+- 写 `data/watchdog.log`（已被 `*.log` 忽略）；PowerShell 语法校验 0 错误，UTF-8 BOM 与中文路径保持完好。
+
+**持续录像第一阶段**（设计文档 §9 第 1 步的索引部分）：
+- schema **V8**：`recording_segments` 表 + 两个索引，新库建表与 V7→V8 迁移共用同一段 DDL；
+- 目录改为 `data/continuous/<cameraId>/<YYYYMMDD>/<HHmmss>.ts`（UTC），与 `data/recordings/` 的告警短视频 mp4 隔离，避免被媒体水位扫描误清理；
+- `server/recording-index.mjs`：目录扫描、按相邻段校准时长、文件系统→索引对账、`buildTimeline`（合并连续块 + 生成 gap），全部不依赖 FFmpeg；
+- `server/store/methods/recordings.mjs`：批量补录、时间窗查询、孤儿清理、保护段标记与豁免淘汰；
+- `GET /api/recordings/timeline`（登录 + 站点权限，跨站点 404）与 `POST /api/recordings/reconcile`（超管），5 分钟自动对账，shutdown 清理定时器；
+- 前端 `RecordingTimeline.tsx` 挂在「处置记录」页：24h 时间条、缺口/保护段图例、日期与点位切换、点击定位；
+- `RECORDING=1` 目前只影响 `enabled` 标记，**不会启动录像进程**；`play`/`export`、采集 worker、保护段自动联动仍待真机。
+
+**验证**：`npm test` 85/85（新增 7 项录像索引/接口测试）、`npm run build`、`npm run e2e` 11/11 全绿。
+另修正两处把 schema 版本硬编码为 `7` 的测试，改为断言 `SCHEMA_VERSION` 常量，避免后续迁移反复改测试。
