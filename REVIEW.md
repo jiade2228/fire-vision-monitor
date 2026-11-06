@@ -107,31 +107,58 @@
 
 ---
 
-## 四、发布前检查清单
+## 四、发布前检查清单（2026-11-06 复核）
 
 代码与测试
-- [ ] P0 两项缺陷（告警级联清理、静态缓存）已修复并有回归测试
-- [ ] P1 三项（webhook 校验、审计保留、限流 LRU）已处理
-- [ ] `npm test` 全绿、`npm run e2e` 全绿、`npm run build` 通过
-- [ ] `npm audit` 在官方 registry 无高危漏洞
+- [x] P0：告警级联清理已修复并有回归测试（#2「静态缓存失效」经复核为误诊，无需动作）
+- [x] P1 三项：Webhook 主机校验、审计按天保留、登录限流 LRU 均已处理
+- [x] `npm test` 75/75、`npm run e2e` 11/11、`npm run build` 通过（11-05 基线，11-06 复跑同样全绿）
+- [x] 官方 registry `npm audit` 0 漏洞
+- [x] 11-06 补修：`openStore` 不再把并发/锁竞争误判为数据库损坏（见第五节）
 
 敏感内容
-- [ ] `git ls-files` 不含 `data/`、`dist/`、`node_modules/`、`.env*`、任何密钥/媒体
-- [ ] 示例配置（edge-gateway/nvr-test）无真实 IP、账号、密码
-- [ ] E2E 密码仅用于临时实例，已改环境变量
-- [ ] 生产管理员已改强密码；演示点位/演示数据已清理
+- [x] `git ls-files` 123 个文件，无 `data/`、`dist/`、`node_modules/`、`.env*`、密钥或媒体
+- [x] 示例配置改用 RFC 5737 文档地址 + 占位符（`739827e`）
+- [x] E2E 密码改 `E2E_ADMIN_PASSWORD` 环境变量（`9174c29`）
+- [ ] 生产管理员强密码、演示点位/演示数据清理：需在目标实例上人工确认（本地 `data/` 仍留有历史运行数据）
 
 文档与许可
-- [ ] `LICENSE` 已添加（MIT 或 Apache-2.0）并声明素材 CC 协议
-- [ ] `README.md` 功能/部署/环境变量/FAQ 与实际一致
-- [ ] `SECURITY.md`、`CONTRIBUTING.md` 就位
-- [ ] `package.json` 元数据（license/repository/engines）补齐
+- [x] `LICENSE`（MIT）+ 测试素材 CC 协议说明
+- [x] `README.md` 与实际一致（11-06 更新目录结构：路由已拆分、schema V7）
+- [x] `SECURITY.md`、`CONTRIBUTING.md` 就位
+- [ ] `package.json` 的 `repository` 字段：待仓库地址确定后补（description / license / keywords / engines 已齐）
 
 仓库与 CI
-- [ ] `.gitignore` 补充项已提交
-- [ ] 推送 main 后 CI（test+build+e2e）全绿
-- [ ] 分支保护：main 需 PR + CI 通过（可选但推荐）
+- [x] `.gitignore` 补充项（含 `.workbuddy/`、诊断临时目录与 Playwright 产物）已提交
+- [ ] 推送 main 后 CI（test + build + e2e）全绿：**阻塞**——本地无 `git remote`、无 gh CLI，需提供仓库地址
+- [ ] 分支保护（main 需 PR + CI）：同上，待仓库创建后配置
 
 部署形态确认
-- [ ] 真机联调与公网拓扑（A1 服务上 VPS / A2 隧道扩展）已拍板
-- [ ] 生产守护（watchdog/compose）在目标机器验证过一次「停止后自动拉起」
+- [ ] 真机联调与公网拓扑（VPS 部署 / 隧道扩展）待拍板
+- [ ] 生产守护 watchdog 需在目标机器验证「停止后自动拉起」；11-06 发现其每 12 秒无条件重启，易与慢启动叠加造成多实例竞争（见第五节）
+
+另：持续录像时间线回放设计已定稿（`docs/continuous-recording-design.md`），依赖真机验证磁盘与 FFmpeg 行为，按原判定暂缓实施。
+
+---
+
+## 五、11-06 复核：`data/` 下 `*.corrupt-*` 副本堆积
+
+**现象**：`data/` 有 6 套 `app.db*.corrupt-*`（10-30 至 11-06 10:41，约 6MB）；`app.db-wal` 935KB 远大于 `app.db` 102KB；`instance.lock` 记录 pid 7044 于 11-06 10:45 启动。
+
+**取证**：在数据库副本上 `PRAGMA quick_check` / `integrity_check` 均为 `ok`，`schema_version=7`、11 张表；对副本执行完整 `openStore()` 成功。即库文件并未损坏。
+
+**根因**
+1. `openStore` 的 `catch` 覆盖建表、V1→V7 全部迁移与 `ensureDefaultSite`，任意异常（典型为多实例并发时的 `SQLITE_BUSY`）都被贴上「数据库损坏」标签并复制现场；
+2. `backupCorruptFiles` 无判重、无清理，每次失败新增 3 个文件，反复启动即无限累积，且错误信息误导排查方向；
+3. `scripts/fire-watchdog.ps1` 健康检查失败即每 12 秒拉起新实例，没有「启动中」退避，易与慢启动叠加形成并发启动；
+4. `PRAGMA journal_mode = WAL`（需排他锁）排在 `busy_timeout = 5000` 之前，竞争时立即 BUSY 而非等待。
+
+**本轮修复**
+- 仅 `errcode` 11/26（`SQLITE_CORRUPT` / `SQLITE_NOTADB`）或明确的损坏消息才判为损坏并备份；其余异常抛出真实原因并附 `cause`，不再生成误导性备份。
+- `backupCorruptFiles` 对「主库 + WAL 内容等价」的重复现场跳过复制（shm 会被运行时重建，不参与判重），历史副本不自动删除。
+- `busy_timeout` 提前到建立连接后的第一条 PRAGMA。
+- 新增 3 项回归测试：错误分类、重复备份去重、非损坏失败不产生副本。
+
+**未做（需确认）**
+- `data/` 下 6 套历史副本属诊断残留，未自动删除；确认无用后仅清理 `*.corrupt-*` 即可。
+- watchdog 的重启退避未改动（生产部署脚本，建议在目标机器联调时一并验证）。

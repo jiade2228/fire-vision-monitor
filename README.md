@@ -113,7 +113,7 @@ docker compose up -d     # 构建时自动跑 npm test，数据落命名卷 fire
 | 日志 | stdout JSON 单行（`event`/`level`/`time`），重定向到文件即可；关键事件：`demo_*`、`camera_offline`、`media_watermark_pruned`、`daily_summary_sent` |
 | 磁盘水位 | 抓拍 + 短视频超过 `MEDIA_MAX_BYTES`（默认 2GB）自动清最老已关闭告警的媒体；`/api/system` 可看当前占用 |
 | 数据保留 | 告警 180 天（`ALARM_RETENTION_DAYS`）、推送日志 30 天，每日清理 |
-| 升级部署 | `git pull` → `npm ci` → `npm run build` → 重启服务；schema 自动迁移（V1→V5 均已平滑升级验证） |
+| 升级部署 | `git pull` → `npm ci` → `npm run build` → 重启服务；schema 自动迁移（当前 V7，V1→V7 升级路径均有测试覆盖；V7 含告警表重建） |
 | 健康检查 | `GET /healthz`（数据库 / FFmpeg / 磁盘 / 存活） |
 
 **数据目录**（`data/`，已被 .gitignore 排除，含 SQLite 库、凭据密钥、备份、媒体）：迁移时整体拷贝，注意 `credentials.key` 与 `app.db` 必须一起走，否则已加密的通知渠道配置将无法解密。
@@ -169,18 +169,26 @@ node scripts/detect-file.mjs test-videos/火灾-酒精壁炉明火.webm standard
 
 ```
 server/            服务端（Express 5 + node:sqlite）
-  index.mjs        主服务与全部路由
+  index.mjs        启动引导、中间件、单实例锁与路由注册
+  routes/          按域拆分的 HTTP 路由（auth/cameras/alarms/notify/
+                   sites/users/admin/demo/media）
+  http/            鉴权守卫、会话与登录限流
+  schema.mjs       建表与 V1→V7 迁移
+  store.mjs        数据层入口（openStore / Store）
+  store/           领域方法（methods/）与行级辅助（helpers.mjs）
+  types.mjs        共享 JSDoc 类型定义（不改变构建链）
   detector.mjs     识别算法（与服务端引擎同源）
   detection-engine.mjs  7×24 检测引擎
+  frame-quality.mjs / schedule.mjs  画面异常检测 / 布防时间表
   streams.mjs      RTSP→HLS 转码管理
-  notify.mjs       通知推送与渠道自愈
-  store.mjs        数据层（schema V5）
+  notify.mjs       通知推送、模板渲染与渠道自愈
   demo-source.mjs  演示视频源
   edge-hub/edge-gateway.mjs  边缘网关（中心侧/现场侧）
   onvif*.mjs       ONVIF 发现与扫描
   reset-password.mjs  密码重置工具
 src/               前端（React 19 + TS + Vite 7）
 scripts/           e2e-smoke.mjs / detect-file.mjs / 守护脚本
+docs/              设计方案（持续录像回放等）
 test-videos/       测试视频（Wikimedia Commons CC 授权，不入库）
 data/              运行数据（不入库）：SQLite / 凭据 / 备份 / 媒体
 ```

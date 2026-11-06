@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { SecretBox } from './secrets.mjs';
-import { openStore } from './store.mjs';
+import { openStore, backupCorruptFiles, isDatabaseCorruptionError } from './store.mjs';
 
 function box() {
   return new SecretBox(crypto.randomBytes(32));
@@ -579,4 +579,50 @@ test('corrupt database is preserved instead of silently recreated', async (t) =>
   );
   const files = await fs.readdir(dataDir);
   assert.ok(files.some((file) => file.startsWith('app.db.corrupt-')));
+});
+
+test('only real file corruption is classified as corruption', () => {
+  const sqliteError = (message, errcode) => Object.assign(new Error(message), { errcode });
+  assert.equal(isDatabaseCorruptionError(sqliteError('file is not a database', 26)), true);
+  assert.equal(isDatabaseCorruptionError(sqliteError('database disk image is malformed', 11)), true);
+  assert.equal(isDatabaseCorruptionError(new Error('database disk image is malformed')), true);
+  assert.equal(isDatabaseCorruptionError(sqliteError('database is locked', 5)), false);
+  assert.equal(isDatabaseCorruptionError(sqliteError('unable to open database file', 14)), false);
+  assert.equal(isDatabaseCorruptionError(new Error('no such table: alarms')), false);
+  assert.equal(isDatabaseCorruptionError(new Error('database is locked')), false);
+});
+
+test('identical corruption does not pile up duplicate backups', async (t) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fire-store-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  await fs.writeFile(path.join(dataDir, 'app.db'), 'not a sqlite database');
+  await fs.writeFile(path.join(dataDir, 'app.db-wal'), Buffer.from('fake-wal'));
+  await fs.writeFile(path.join(dataDir, 'app.db-shm'), Buffer.from('fake-shm'));
+
+  assert.equal(backupCorruptFiles(dataDir), true);
+  // shm 由 SQLite 运行时重建，内容变化不应被视为新的损坏现场。
+  await fs.writeFile(path.join(dataDir, 'app.db-shm'), Buffer.from('rebuilt-shm'));
+  assert.equal(backupCorruptFiles(dataDir), false);
+  const count = async () =>
+    (await fs.readdir(dataDir)).filter((file) => file.startsWith('app.db.corrupt-')).length;
+  assert.equal(await count(), 1);
+
+  // 主库内容确实变化时才保留新现场。
+  await fs.writeFile(path.join(dataDir, 'app.db'), 'another broken database');
+  assert.equal(backupCorruptFiles(dataDir), true);
+  assert.equal(await count(), 2);
+});
+
+test('non-corruption init failure surfaces the real cause without a bogus backup', async (t) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fire-store-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  // 目录占位使 SQLite 无法打开数据库文件（CANTOPEN），属于运行态故障而非文件损坏。
+  await fs.mkdir(path.join(dataDir, 'app.db'));
+  await assert.rejects(
+    () => openStore({ dataDir, secretBox: box() }),
+    (error) =>
+      /未生成损坏备份/.test(error.message) && !/已保留损坏文件备份/.test(error.message),
+  );
+  const files = await fs.readdir(dataDir);
+  assert.equal(files.some((file) => file.includes('.corrupt-')), false);
 });

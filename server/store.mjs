@@ -193,9 +193,72 @@ export class Store {
 
 Object.assign(Store.prototype, userMethods, siteMethods, cameraMethods, alarmMethods, notifyMethods, auditMethods, maintenanceMethods);
 
-function backupCorruptFiles(dataDir) {
+const CORRUPT_BACKUP_FILES = ['app.db', 'app.db-wal', 'app.db-shm'];
+
+/**
+ * 判定初始化异常是否属于「数据库文件本身损坏」。
+ *
+ * 只有这类错误值得保留现场副本；锁竞争、迁移逻辑错误等属于运行态故障，
+ * 一律当成损坏会在 data/ 下反复堆积 *.corrupt-*，并给出误导性的诊断信息。
+ * 11 = SQLITE_CORRUPT，26 = SQLITE_NOTADB。
+ *
+ * @param {unknown} error 捕获到的异常。
+ * @returns {boolean} 是否为真实的文件损坏。
+ */
+export function isDatabaseCorruptionError(error) {
+  const errcode = Number(error?.errcode);
+  if (errcode === 11 || errcode === 26) return true;
+  return /SQLITE_(CORRUPT|NOTADB)|not a database|malformed|corrupt(ed)? (database|image)/i.test(
+    String(error?.message ?? error ?? ''),
+  );
+}
+
+/** 文件内容签名（大小 + 头部 4KB），用于判断已有备份是否与本次等价。 */
+function fileSignature(file) {
+  try {
+    const stat = fs.statSync(file);
+    const length = Math.min(stat.size, 4096);
+    const buffer = Buffer.alloc(length);
+    const fd = fs.openSync(file, 'r');
+    try {
+      fs.readSync(fd, buffer, 0, length, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    return `${stat.size}:${buffer.toString('hex')}`;
+  } catch {
+    return `missing:${path.basename(file)}`;
+  }
+}
+
+/**
+ * 备份损坏现场；若最近一次备份的主库与 WAL 内容与本次完全一致则跳过，
+ * 避免「实例反复启动失败」无限生成同质副本。
+ * shm 只是共享内存索引，每次运行都会重建，因此不参与判重（但仍随现场复制）。
+ *
+ * @internal 供回归测试直接调用。
+ * @param {string} dataDir 数据目录。
+ * @returns {boolean} 是否产生了新备份。
+ */
+export function backupCorruptFiles(dataDir) {
+  const current = ['app.db', 'app.db-wal']
+    .map((file) => fileSignature(path.join(dataDir, file)))
+    .join('|');
+  const previous = fs
+    .readdirSync(dataDir)
+    .filter((file) => /^app\.db\.corrupt-/.test(file))
+    .sort()
+    .reverse()[0];
+  if (previous) {
+    const suffix = previous.slice('app.db.corrupt'.length);
+    const saved = ['app.db', 'app.db-wal']
+      .map((file) => fileSignature(path.join(dataDir, `${file}.corrupt${suffix}`)))
+      .join('|');
+    if (saved === current) return false;
+  }
+
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  for (const file of ['app.db', 'app.db-wal', 'app.db-shm']) {
+  for (const file of CORRUPT_BACKUP_FILES) {
     const source = path.join(dataDir, file);
     if (fs.existsSync(source)) {
       try {
@@ -205,18 +268,20 @@ function backupCorruptFiles(dataDir) {
       }
     }
   }
+  return true;
 }
 
 /**
  * 打开并初始化数据存储：建目录、建库、跑建表与全部版本迁移，
- * 损坏时把旧库文件备份为 *.corrupt-* 再抛错（不掩盖原始故障现场）。
+ * 真实文件损坏时把旧库备份为 *.corrupt-* 再抛错（不掩盖原始故障现场）；
+ * 其他初始化失败（如多实例锁竞争）原样抛出真实原因，不生成误导性备份。
  *
  * @param {object} options
  * @param {string} options.dataDir 数据目录（自动创建，权限 0o700）。
  * @param {{encrypt(value:string):string, decrypt(value:string):string}} options.secretBox 对称加解密盒。
  * @param {object|null} [options.legacyData] 旧版 JSON 存量数据（首次迁移用）。
  * @returns {Promise<Store>} 就绪的 Store 实例。
- * @throws {Error} SQLite 初始化失败（已保留损坏文件备份）。
+ * @throws {Error} SQLite 初始化失败（附原始异常作为 cause）。
  */
 export async function openStore({ dataDir, secretBox, legacyData = null }) {
   await fsp.mkdir(dataDir, { recursive: true, mode: 0o700 });
@@ -224,6 +289,9 @@ export async function openStore({ dataDir, secretBox, legacyData = null }) {
   let db;
   try {
     db = new DatabaseSync(databasePath);
+    // 必须先设 busy_timeout：切换 journal_mode 需要排他锁，
+    // 多实例启动竞争时若尚未设置超时会立刻抛 SQLITE_BUSY。
+    db.exec('PRAGMA busy_timeout = 5000');
     try {
       await fsp.chmod(databasePath, 0o600);
       await fsp.chmod(dataDir, 0o700);
@@ -233,7 +301,6 @@ export async function openStore({ dataDir, secretBox, legacyData = null }) {
     db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA synchronous = FULL');
     db.exec('PRAGMA foreign_keys = ON');
-    db.exec('PRAGMA busy_timeout = 5000');
     createSchema(db);
     if (!db.prepare("SELECT value FROM meta WHERE key = 'initialized'").get()) {
       migrateLegacy(db, secretBox, legacyData);
@@ -251,8 +318,16 @@ export async function openStore({ dataDir, secretBox, legacyData = null }) {
     } catch {
       // ignore
     }
-    backupCorruptFiles(dataDir);
-    throw new Error(`SQLite 数据库初始化失败，已保留损坏文件备份：${error.message}`);
+    if (isDatabaseCorruptionError(error)) {
+      backupCorruptFiles(dataDir);
+      throw new Error(`SQLite 数据库初始化失败，已保留损坏文件备份：${error.message}`, {
+        cause: error,
+      });
+    }
+    throw new Error(
+      `SQLite 数据库初始化失败：${error.message}。数据库未判定为损坏，未生成损坏备份；请确认数据目录没有被其他实例占用。`,
+      { cause: error },
+    );
   }
   return new Store({ db, dataDir, secretBox });
 }

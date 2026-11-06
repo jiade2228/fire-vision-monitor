@@ -12,9 +12,13 @@ test-videos/
 *.db-wal
 *.sqlite
 
-# 测试与构建中间产物
+# 测试、诊断与构建中间产物
 coverage/
+playwright-report/
+test-results/
 .tmp-*.mjs
+.tmp-*/
+.workbuddy/
 
 # 系统与编辑器
 .DS_Store
