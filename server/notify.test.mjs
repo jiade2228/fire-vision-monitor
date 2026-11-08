@@ -12,7 +12,7 @@ import { getFreePort } from './test-port.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const port = await getFreePort();
-const receiverPort = 4397;
+const receiverPort = await getFreePort();
 const base = `http://127.0.0.1:${port}`;
 const csrf = { 'X-Requested-With': 'flame-vision' };
 

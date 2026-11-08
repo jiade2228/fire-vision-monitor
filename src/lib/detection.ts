@@ -1,10 +1,4 @@
-import type {
-  Alarm,
-  AlarmLevel,
-  AlarmStatus,
-  Camera,
-  DetectionResult,
-} from '../types';
+import type { AlarmLevel, AlarmStatus } from '../types';
 
 export const EMERGENCY_STEPS = [
   '通知消防中控室与值班领导',
@@ -36,31 +30,6 @@ export const LEVEL_LABELS: Record<AlarmLevel, string> = {
 
 export function levelLabel(level: AlarmLevel): string {
   return LEVEL_LABELS[level] ?? '告警';
-}
-
-let sequence = 0;
-
-export function createAlarm(
-  camera: Camera,
-  detection: DetectionResult,
-  snapshot?: string | null,
-): Alarm {
-  sequence += 1;
-  const stamp = Date.now().toString(36).toUpperCase();
-
-  return {
-    id: `AL-${stamp}-${String(sequence).padStart(2, '0')}`,
-    cameraId: camera.id,
-    cameraName: camera.name,
-    zone: camera.zone,
-    level: detection.level,
-    confidence: detection.confidence,
-    hotspot: detection.hotspot,
-    snapshot: snapshot ?? undefined,
-    createdAt: Date.now(),
-    status: 'pending',
-    steps: EMERGENCY_STEPS.map(() => false),
-  };
 }
 
 export function confidenceTone(confidence: number): string {

@@ -17,6 +17,24 @@ function csvCell(value: string | number | undefined): string {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
+/** 生成带 BOM 的 CSV 并触发下载，供两类导出共用。 */
+function downloadCsv(headers: string[], rows: (string | number)[][], name: string): void {
+  const csv = [headers, ...rows].map((row) => row.map(csvCell).join(',')).join('\r\n');
+  const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  const now = new Date();
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(
+    now.getHours(),
+  )}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  anchor.href = url;
+  anchor.download = `${name}-${stamp}.csv`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 export interface AuditLogExportRow {
   createdAt: number;
   username?: string | null;
@@ -43,20 +61,7 @@ export function downloadAuditCsv(
     log.detail ?? '',
     log.ip ?? '',
   ]);
-  const csv = [headers, ...rows].map((row) => row.map(csvCell).join(',')).join('\r\n');
-  const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  const now = new Date();
-  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(
-    now.getHours(),
-  )}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-  anchor.href = url;
-  anchor.download = `${name}-${stamp}.csv`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  downloadCsv(headers, rows, name);
 }
 
 export function downloadAlarmsCsv(alarms: Alarm[], name: string): void {
@@ -90,18 +95,5 @@ export function downloadAlarmsCsv(alarms: Alarm[], name: string): void {
     `${alarm.steps.filter(Boolean).length}/${alarm.steps.length}`,
     alarm.note ?? '',
   ]);
-  const csv = [headers, ...rows].map((row) => row.map(csvCell).join(',')).join('\r\n');
-  const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  const now = new Date();
-  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(
-    now.getHours(),
-  )}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-  anchor.href = url;
-  anchor.download = `${name}-${stamp}.csv`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  downloadCsv(headers, rows, name);
 }

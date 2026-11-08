@@ -14,7 +14,8 @@ test('edge source parsing', () => {
 
 test('gateway connects, registers and relays HLS requests', async (t) => {
   const server = http.createServer((_req, res) => res.end('ok'));
-  await new Promise((resolve) => server.listen(4393, '127.0.0.1', resolve));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const hubPort = server.address().port;
   const hub = new EdgeHub({
     token: '0123456789abcdef0123456789abcdef',
     logger: { info: () => undefined, warn: () => undefined },
@@ -27,7 +28,7 @@ test('gateway connects, registers and relays HLS requests', async (t) => {
   });
 
   const socket = new WebSocket(
-    'ws://127.0.0.1:4393/gateway?gatewayId=site-a&token=0123456789abcdef0123456789abcdef',
+    `ws://127.0.0.1:${hubPort}/gateway?gatewayId=site-a&token=0123456789abcdef0123456789abcdef`,
   );
   await new Promise((resolve, reject) => {
     socket.once('open', resolve);

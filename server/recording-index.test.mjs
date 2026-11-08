@@ -186,7 +186,7 @@ test('时间线接口：参数校验、跨站点隐藏与空日时间线', async
   const camera = { id: 'cam-01', siteId: 'site-a' };
   registerRecordingRoutes(app, {
     store: {
-      listCameras: () => [camera],
+      getCamera: (id) => (id === camera.id ? camera : null),
       listRecordingSegments: () => [],
     },
     continuousDir: await tempDir(t),

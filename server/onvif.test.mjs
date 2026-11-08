@@ -62,12 +62,13 @@ function startMockOnvif(port) {
 }
 
 test('ONVIF 设备信息/通道/取流解析', async (t) => {
-  const mock = await startMockOnvif(4600);
+  const mockPort = await getFreePort();
+  const mock = await startMockOnvif(mockPort);
   t.after(() => mock.close());
   const { discoverDevice } = await import('./onvif.mjs');
   const device = await discoverDevice({
     host: '127.0.0.1',
-    port: 4600,
+    port: mockPort,
     username: 'admin',
     password: 'pass',
   });
@@ -82,7 +83,8 @@ test('ONVIF 设备信息/通道/取流解析', async (t) => {
 });
 
 test('ONVIF discover + import API 端到端', async (t) => {
-  const mock = await startMockOnvif(4601);
+  const mockPort = await getFreePort();
+  const mock = await startMockOnvif(mockPort);
   const port = await getFreePort();
   const base = `http://127.0.0.1:${port}`;
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fire-vision-onvif-'));
@@ -146,7 +148,7 @@ test('ONVIF discover + import API 端到端', async (t) => {
   const discover = await call(
     'POST',
     '/api/onvif/discover',
-    { hosts: ['127.0.0.1'], port: 4601, username: 'admin', password: 'pass' },
+    { hosts: ['127.0.0.1'], port: mockPort, username: 'admin', password: 'pass' },
     cookie,
   );
   assert.equal(discover.status, 200, 'discover');

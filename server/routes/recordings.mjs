@@ -34,8 +34,8 @@ export function registerRecordingRoutes(app, deps) {
   app.get('/api/recordings/timeline', requireAuth, (req, res) => {
     const cameraId = normalizeText(req.query.cameraId, 64);
     if (!cameraId) return res.status(400).json({ error: '缺少 cameraId' });
-    // listCameras 而非 getCamera：后者对不存在的 ID 会走到行对象解析器。
-    const camera = store.listCameras().find((item) => item.id === cameraId);
+    // 按主键查询，避免全表加载点位并逐个解密 RTSP 凭据；不存在的 ID 返回 null。
+    const camera = store.getCamera(cameraId);
     if (!camera) return res.status(404).json({ error: '点位不存在' });
     // 跨站点一律 404，与现有媒体接口一致，避免泄露点位是否存在。
     if (!canAccessCameraSite(req.user, camera, store)) {
