@@ -50,7 +50,7 @@ let buffer = Buffer.alloc(0);
 
 child.stdout.on('data', (chunk) => {
   buffer = buffer.length ? Buffer.concat([buffer, chunk]) : chunk;
-  while (buffer.length - 0 >= frameBytes && buffer.length >= frameBytes) {
+  while (buffer.length >= frameBytes) {
     const frame = buffer.subarray(0, frameBytes);
     buffer = buffer.subarray(frameBytes);
     frames += 1;

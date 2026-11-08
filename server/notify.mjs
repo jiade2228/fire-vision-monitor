@@ -21,6 +21,11 @@ const LEVEL_LABELS = {
   camera_abnormal: '画面异常',
 };
 
+/** Webhook 请求体签名：三类推送共用同一算法，头字段差异仍由各调用点自行决定。 */
+function signWebhookBody(secret, body) {
+  return `sha256=${crypto.createHmac('sha256', secret).update(body).digest('hex')}`;
+}
+
 function levelLabelFor(level) {
   return LEVEL_LABELS[level] ?? '告警';
 }
@@ -299,10 +304,7 @@ export class Notifier {
     const body = JSON.stringify(payload);
     const headers = {};
     if (channel.secret) {
-      headers['X-Fire-Signature'] = `sha256=${crypto
-        .createHmac('sha256', channel.secret)
-        .update(body)
-        .digest('hex')}`;
+      headers['X-Fire-Signature'] = signWebhookBody(channel.secret, body);
       headers['X-Fire-Event'] = `alarm.${event}`;
     }
     return { body, headers };
@@ -463,10 +465,7 @@ export class Notifier {
           const payload = { event, message, ...data, sentAt: Date.now() };
           body = JSON.stringify(payload);
           if (channel.secret) {
-            headers['X-Fire-Signature'] = `sha256=${crypto
-              .createHmac('sha256', channel.secret)
-              .update(body)
-              .digest('hex')}`;
+            headers['X-Fire-Signature'] = signWebhookBody(channel.secret, body);
           }
         }
         await this.postWithRetry(channel.url, body, headers);
@@ -513,10 +512,7 @@ export class Notifier {
       const payload = { event: 'test', message, sentAt: Date.now() };
       body = JSON.stringify(payload);
       if (channel.secret) {
-        headers['X-Fire-Signature'] = `sha256=${crypto
-          .createHmac('sha256', channel.secret)
-          .update(body)
-          .digest('hex')}`;
+        headers['X-Fire-Signature'] = signWebhookBody(channel.secret, body);
       }
     }
     await this.postWithRetry(channel.url, body, headers);

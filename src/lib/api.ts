@@ -1,4 +1,4 @@
-import type { Alarm, AlarmLevel, AlarmStatus } from '../types';
+import type { Alarm, AlarmLevel, AlarmStatus, DetectionSensitivity } from '../types';
 
 export type UserRole = 'admin' | 'operator' | 'viewer';
 
@@ -19,7 +19,8 @@ export interface RoiRect {
   h: number;
 }
 
-export type CameraSensitivity = 'low' | 'standard' | 'high';
+/** 与 types.ts 的 DetectionSensitivity 同源，保留 api 层既有导出名。 */
+export type CameraSensitivity = DetectionSensitivity;
 
 /** 布防时间表：按星期 + 时段启用检测；null 表示 7×24 全天候布防。 */
 export interface CameraSchedule {

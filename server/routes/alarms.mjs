@@ -154,34 +154,36 @@ export function registerAlarmRoutes(app, deps) {
     res.json({ events: store.listAlarmEvents(alarm.id).map(mapAlarmEvent) });
   });
 
-  app.get('/api/alarms/:id/snapshot', requireAuth, (req, res) => {
+  // 抓图与短视频共用同一套「越权按不存在处理 + 文件名白名单 + 私有缓存」逻辑。
+  const serveAlarmMedia = (req, res, { fileFor, pattern, dir }) => {
     const alarm = store.getAlarm(req.params.id);
-    if (
-      !alarm?.snapshotFile ||
-      !canAccessAlarmSite(req.user, alarm, store)
-    ) {
+    const source = fileFor(alarm);
+    if (!source || !canAccessAlarmSite(req.user, alarm, store)) {
       return res.status(404).end();
     }
-    const safeName = path.basename(alarm.snapshotFile);
-    if (!/^[a-f0-9-]+\.jpg$/i.test(safeName)) return res.status(404).end();
+    const safeName = path.basename(source);
+    if (!pattern.test(safeName)) return res.status(404).end();
     res.setHeader('Cache-Control', 'private, max-age=3600');
-    res.sendFile(path.join(snapshotDir, safeName), (error) => {
+    res.sendFile(path.join(dir, safeName), (error) => {
       if (error && !res.headersSent) res.status(404).end();
     });
-  });
+  };
 
-  app.get('/api/alarms/:id/clip', requireAuth, (req, res) => {
-    const alarm = store.getAlarm(req.params.id);
-    if (!alarm?.clipFile || !canAccessAlarmSite(req.user, alarm, store)) {
-      return res.status(404).end();
-    }
-    const safeName = path.basename(alarm.clipFile);
-    if (!/^[a-f0-9-]+\.mp4$/i.test(safeName)) return res.status(404).end();
-    res.setHeader('Cache-Control', 'private, max-age=3600');
-    res.sendFile(path.join(recordingsDir, safeName), (error) => {
-      if (error && !res.headersSent) res.status(404).end();
-    });
-  });
+  app.get('/api/alarms/:id/snapshot', requireAuth, (req, res) =>
+    serveAlarmMedia(req, res, {
+      fileFor: (alarm) => alarm?.snapshotFile,
+      pattern: /^[a-f0-9-]+\.jpg$/i,
+      dir: snapshotDir,
+    }),
+  );
+
+  app.get('/api/alarms/:id/clip', requireAuth, (req, res) =>
+    serveAlarmMedia(req, res, {
+      fileFor: (alarm) => alarm?.clipFile,
+      pattern: /^[a-f0-9-]+\.mp4$/i,
+      dir: recordingsDir,
+    }),
+  );
 
   app.post(
     '/api/alarms',
