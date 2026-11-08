@@ -19,7 +19,6 @@ import { StreamError } from '../streams.mjs';
  * @param {object} deps.edgeHub
  * @param {object} deps.streamManager
  * @param {(user: any, camera: any, store: object) => boolean} deps.canAccessCameraSite
- * @param {(value: any, maxLength?: number) => string} deps.normalizeText
  * @param {import('express').RequestHandler} deps.requireAuth
  * @param {Function} deps.log
  */

@@ -25,7 +25,7 @@ import path from 'node:path';
  * @param {string} deps.recordingsDir
  * @param {(user: any, store: object) => string[] | null} deps.allowedSiteIdsFor
  * @param {import('express').RequestHandler} deps.requireAuth
- * @param {import('express').RequestHandler} deps.requireRole
+ * @param {(...roles: string[]) => import('express').RequestHandler} deps.requireRole
  * @param {(value: any, maxLength?: number) => string} deps.normalizeText
  * @param {(req: import('express').Request) => string} deps.clientIp
  */
@@ -48,6 +48,10 @@ export function registerAlarmRoutes(app, deps) {
     clientIp,
   } = deps;
 
+  // 统计接口的天数钳制：fallback 与下界按各接口原值传入，上界恒为 90。
+  const clampDays = (value, fallback, min) =>
+    Math.min(Math.max(Number(value) || fallback, min), 90);
+
   app.get('/api/alarms', requireAuth, (req, res) => {
     const alarms = store.listAlarms(req.query.limit, {
       allowedSiteIds: allowedSiteIdsFor(req.user, store),
@@ -57,7 +61,7 @@ export function registerAlarmRoutes(app, deps) {
 
   // 误报热点：近 N 天按点位聚合的误报计数（站点隔离），供「误报治理」调优提示。
   app.get('/api/alarms/false-hotspots', requireAuth, (req, res) => {
-    const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 90);
+    const days = clampDays(req.query.days, 7, 1);
     const allowed = allowedSiteIdsFor(req.user, store);
     const hotspots = store
       .listFalseAlarmCounts({ days, siteIds: allowed === null ? null : allowed })
@@ -67,7 +71,7 @@ export function registerAlarmRoutes(app, deps) {
 
   // 趋势统计：按上海时区按天聚合，站点管理员只能看自己的站点。
   app.get('/api/alarms/stats', requireAuth, (req, res) => {
-    const days = Math.min(Math.max(Number(req.query.days) || 30, 7), 90);
+    const days = clampDays(req.query.days, 30, 7);
     const allowed = allowedSiteIdsFor(req.user, store);
     const rows = store.alarmStatsByDay({
       days,

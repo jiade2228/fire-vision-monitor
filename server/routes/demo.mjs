@@ -38,7 +38,7 @@ import { DemoSourceError } from '../demo-source.mjs';
  * @param {(req: import('express').Request) => string} deps.clientIp
  * @param {Function} deps.log
  * @param {import('express').RequestHandler} deps.requireAuth
- * @param {import('express').RequestHandler} deps.requireRole
+ * @param {(...roles: string[]) => import('express').RequestHandler} deps.requireRole
  */
 export function registerDemoRoutes(app, deps) {
   const {

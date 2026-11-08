@@ -1,6 +1,34 @@
 import crypto from 'node:crypto';
 import { now } from '../../schema.mjs';
 
+/** 列表与分页总数共用同一套筛选条件，避免两处口径漂移。 */
+function buildAuditFilter({ action = '', q = '', from = null, to = null } = {}) {
+  const where = [];
+  const params = [];
+  const actionKey = String(action ?? '').trim();
+  if (actionKey) {
+    where.push('action LIKE ?');
+    params.push(`${actionKey}%`);
+  }
+  const keyword = String(q ?? '').trim().slice(0, 64);
+  if (keyword) {
+    where.push('(username LIKE ? OR detail LIKE ? OR target_id LIKE ?)');
+    params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
+  }
+  if (Number.isFinite(from)) {
+    where.push('created_at >= ?');
+    params.push(Number(from));
+  }
+  if (Number.isFinite(to)) {
+    where.push('created_at <= ?');
+    params.push(Number(to));
+  }
+  return {
+    clause: where.length ? `WHERE ${where.join(' AND ')}` : '',
+    params,
+  };
+}
+
 export const auditMethods = {
 /**
  * 记录一条审计日志。
@@ -54,27 +82,7 @@ listAuditFiltered({
   } = {}) {
     const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
     const safeOffset = Math.min(Math.max(Number(offset) || 0, 0), 1_000_000);
-    const where = [];
-    const params = [];
-    const actionKey = String(action ?? '').trim();
-    if (actionKey) {
-      where.push('action LIKE ?');
-      params.push(`${actionKey}%`);
-    }
-    const keyword = String(q ?? '').trim().slice(0, 64);
-    if (keyword) {
-      where.push('(username LIKE ? OR detail LIKE ? OR target_id LIKE ?)');
-      params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
-    }
-    if (Number.isFinite(from)) {
-      where.push('created_at >= ?');
-      params.push(Number(from));
-    }
-    if (Number.isFinite(to)) {
-      where.push('created_at <= ?');
-      params.push(Number(to));
-    }
-    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const { clause, params } = buildAuditFilter({ action, q, from, to });
     return this.db
       .prepare(
         `SELECT * FROM audit_logs ${clause} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
@@ -87,27 +95,7 @@ listAuditFiltered({
  * @returns {number}
  */
 countAuditFiltered({ action = '', q = '', from = null, to = null } = {}) {
-    const where = [];
-    const params = [];
-    const actionKey = String(action ?? '').trim();
-    if (actionKey) {
-      where.push('action LIKE ?');
-      params.push(`${actionKey}%`);
-    }
-    const keyword = String(q ?? '').trim().slice(0, 64);
-    if (keyword) {
-      where.push('(username LIKE ? OR detail LIKE ? OR target_id LIKE ?)');
-      params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
-    }
-    if (Number.isFinite(from)) {
-      where.push('created_at >= ?');
-      params.push(Number(from));
-    }
-    if (Number.isFinite(to)) {
-      where.push('created_at <= ?');
-      params.push(Number(to));
-    }
-    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const { clause, params } = buildAuditFilter({ action, q, from, to });
     const row = this.db
       .prepare(`SELECT COUNT(*) AS total FROM audit_logs ${clause}`)
       .get(...params);

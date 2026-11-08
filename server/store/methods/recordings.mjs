@@ -29,8 +29,7 @@ export const recordingsMethods = {
     `);
     let inserted = 0;
     let updated = 0;
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
+    this.transaction(() => {
       for (const segment of segments) {
         const existing = find.get(segment.file);
         if (!existing) {
@@ -60,11 +59,7 @@ export const recordingsMethods = {
           updated += 1;
         }
       }
-      this.db.exec('COMMIT');
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
+    });
     return { inserted, updated };
   },
 
@@ -120,14 +115,9 @@ export const recordingsMethods = {
     if (!files.length) return 0;
     const remove = this.db.prepare('DELETE FROM recording_segments WHERE file = ?');
     let deleted = 0;
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
+    this.transaction(() => {
       for (const file of files) deleted += remove.run(file).changes;
-      this.db.exec('COMMIT');
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
+    });
     return deleted;
   },
 

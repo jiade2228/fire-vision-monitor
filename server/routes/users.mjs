@@ -17,7 +17,7 @@ import crypto from 'node:crypto';
  * @param {Function} deps.validUsername
  * @param {Function} deps.validatePassword
  * @param {import('express').RequestHandler} deps.requireAuth
- * @param {import('express').RequestHandler} deps.requireRole
+ * @param {(...roles: string[]) => import('express').RequestHandler} deps.requireRole
  * @param {(value: any, maxLength?: number) => string} deps.normalizeText
  * @param {(req: import('express').Request) => string} deps.clientIp
  */

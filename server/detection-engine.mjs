@@ -727,7 +727,8 @@ export class DetectionEngine {
    *   width: number, height: number, fps: number, sensitivity: string,
    *   cooldownMs: number, maxCameras: number, skipped: number,
    *   keyframesOnly: boolean, clipSeconds: number,
-   *   stats: {frames: number, alarms: number, duplicates: number, errors: number, clips: number},
+   *   stats: {frames: number, alarms: number, duplicates: number, errors: number,
+   *     clips: number, qualityAlarms: number, qualityRecovered: number, disarmedFrames: number},
    *   cameras: Array<{cameraId: string, code: string, name: string, siteId: string|null,
    *     sensitivity: string, roiCount: number, running: boolean, frames: number,
    *     startedAt: number, lastFrameAt: number|null, lastError: string|null}>}}

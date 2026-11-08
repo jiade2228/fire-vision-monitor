@@ -48,6 +48,10 @@ const dataDir = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.join(projectRoot, 'data');
 const distDir = path.join(projectRoot, 'dist');
+// SPA 回退与 404 兜底共享保留前缀；回退额外排除 /proxy/ 及精确路径 /healthz。
+const commonReservedPaths = ['/api/', '/streams/', '/demo/'];
+const spaReservedPaths = [...commonReservedPaths, '/proxy/'];
+const spaReservedExactPaths = ['/healthz'];
 const legacyJsonFile = path.join(dataDir, 'app.json');
 const databaseFile = path.join(dataDir, 'app.db');
 const snapshotDir = path.join(dataDir, 'snapshots');
@@ -1219,9 +1223,6 @@ async function main() {
     app.use(express.json({ limit: '2mb' }));
 
     const {
-      sessionSignature,
-      createSessionToken,
-      readSessionToken,
       currentUser,
       setSessionCookie,
       clearSessionCookie,
@@ -1243,7 +1244,6 @@ async function main() {
       adminSiteIdsFor,
       canManageSite,
       canManageCamera,
-      isManager,
       fallbackSiteIdFor,
     } = createGuards(store, currentUser);
 
@@ -1442,11 +1442,8 @@ async function main() {
       app.use((req, res, next) => {
         if (
           req.method !== 'GET' ||
-          req.path.startsWith('/api/') ||
-          req.path.startsWith('/streams/') ||
-          req.path.startsWith('/demo/') ||
-          req.path.startsWith('/proxy/') ||
-          req.path === '/healthz'
+          spaReservedPaths.some((prefix) => req.path.startsWith(prefix)) ||
+          spaReservedExactPaths.includes(req.path)
         ) {
           return next();
         }
@@ -1456,11 +1453,7 @@ async function main() {
     }
 
     app.use((req, res) => {
-      if (
-        req.path.startsWith('/api/') ||
-        req.path.startsWith('/streams/') ||
-        req.path.startsWith('/demo/')
-      ) {
+      if (commonReservedPaths.some((prefix) => req.path.startsWith(prefix))) {
         return res.status(404).json({ error: '接口不存在' });
       }
       return res.status(404).send('Not found');
@@ -1574,6 +1567,8 @@ async function main() {
   } catch (error) {
     log('error', 'startup_failed', { message: error.message });
     try {
+      if (backupTimer) clearInterval(backupTimer);
+      if (recordingTimer) clearInterval(recordingTimer);
       if (detectionTimer) clearInterval(detectionTimer);
       if (offlineTimer) clearInterval(offlineTimer);
       if (retentionTimer) clearInterval(retentionTimer);

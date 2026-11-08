@@ -191,6 +191,8 @@ importCameras(items) {
     return this.transaction(() => {
       const created = [];
       let skipped = 0;
+      // 编码基准在事务内只取一次：原实现逐条全表取 max，批量导入为 O(N²)。
+      let nextCode = Number(this.nextCameraCode().replace(/\D/g, ''));
       for (const item of items) {
         const key = sourceFingerprint(item.protocol, item.sourceUrl);
         if (key && this.cameraBySourceKey(key)) {
@@ -200,7 +202,7 @@ importCameras(items) {
         const camera = this.insertCamera({
           ...item,
           id: crypto.randomUUID(),
-          code: this.nextCameraCode(),
+          code: `CAM-${String(nextCode++).padStart(2, '0')}`,
           createdAt: now(),
           updatedAt: now(),
         });

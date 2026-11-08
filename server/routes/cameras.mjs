@@ -64,6 +64,13 @@ export function registerCameraRoutes(app, deps) {
     cameraForClient,
   } = deps;
 
+  // 点位站点 ID 与批量 ids 的公共解析：保持原有短路求值与兜底语义。
+  const siteIdInput = (req) => normalizeText(String(req.body.siteId ?? ''), 64);
+  const parseCameraIds = (body) =>
+    Array.isArray(body.ids)
+      ? body.ids.slice(0, 200).filter((id) => typeof id === 'string' && id)
+      : [];
+
   app.get('/api/cameras', requireAuth, (req, res) => {
     const allowed = allowedSiteIdsFor(req.user, store);
     const siteId = normalizeText(req.query.siteId, 64) || null;
@@ -216,7 +223,7 @@ export function registerCameraRoutes(app, deps) {
     const parsed = validateCameraInput(req.body);
     if (parsed.error) return res.status(400).json({ error: parsed.error });
     const siteId =
-      normalizeText(String(req.body.siteId ?? ''), 64) || fallbackSiteIdFor(req.user);
+      siteIdInput(req) || fallbackSiteIdFor(req.user);
     if (!store.getSite(siteId)) {
       return res.status(400).json({ error: '指定的站点不存在' });
     }
@@ -288,7 +295,7 @@ export function registerCameraRoutes(app, deps) {
         req.body.schedule !== undefined ? req.body.schedule : camera.schedule,
     };
     if (req.body.siteId !== undefined) {
-      const siteId = normalizeText(String(req.body.siteId ?? ''), 64);
+      const siteId = siteIdInput(req);
       if (!siteId) {
         return res.status(400).json({ error: '站点 ID 不能为空' });
       }
@@ -361,9 +368,7 @@ export function registerCameraRoutes(app, deps) {
 
   // 点位批量操作：启停检测 / 灵敏度 / 站点迁移 / 删除，逐条鉴权并在同一响应汇总结果。
   app.post('/api/cameras/batch-update', requireAuth, requireManager, (req, res) => {
-    const ids = Array.isArray(req.body.ids)
-      ? req.body.ids.slice(0, 200).filter((id) => typeof id === 'string' && id)
-      : [];
+    const ids = parseCameraIds(req.body);
     if (ids.length === 0) return res.status(400).json({ error: '请选择至少一个点位' });
     const patch = {};
     if (req.body.detectEnabled !== undefined) {
@@ -377,7 +382,7 @@ export function registerCameraRoutes(app, deps) {
       patch.detectSensitivity = req.body.detectSensitivity;
     }
     if (req.body.siteId !== undefined) {
-      const siteId = normalizeText(String(req.body.siteId ?? ''), 64);
+      const siteId = siteIdInput(req);
       if (!siteId) return res.status(400).json({ error: '站点 ID 不能为空' });
       if (!store.getSite(siteId)) {
         return res.status(400).json({ error: '指定的站点不存在' });
@@ -425,9 +430,7 @@ export function registerCameraRoutes(app, deps) {
     requireAuth,
     requireManager,
     async (req, res) => {
-      const ids = Array.isArray(req.body.ids)
-        ? req.body.ids.slice(0, 200).filter((id) => typeof id === 'string' && id)
-        : [];
+      const ids = parseCameraIds(req.body);
       if (ids.length === 0) return res.status(400).json({ error: '请选择至少一个点位' });
       const deleted = [];
       const errors = [];
@@ -493,7 +496,7 @@ export function registerCameraRoutes(app, deps) {
       return res.status(400).json({ error: '请填写设备 IP 或域名，不要包含协议和路径' });
     }
     const siteId =
-      normalizeText(String(req.body.siteId ?? ''), 64) || fallbackSiteIdFor(req.user);
+      siteIdInput(req) || fallbackSiteIdFor(req.user);
     if (!store.getSite(siteId)) {
       return res.status(400).json({ error: '指定的站点不存在' });
     }
@@ -621,7 +624,7 @@ export function registerCameraRoutes(app, deps) {
       return res.status(400).json({ error: '没有可导入的通道' });
     }
     const fallbackSiteId =
-      normalizeText(String(req.body.siteId ?? ''), 64) || fallbackSiteIdFor(req.user);
+      siteIdInput(req) || fallbackSiteIdFor(req.user);
     if (!store.getSite(fallbackSiteId)) {
       return res.status(400).json({ error: '指定的站点不存在' });
     }
