@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import type { ViewKey } from '../types';
 import { ROLE_LABELS } from '../lib/api';
 import type { SessionUser } from '../lib/api';
 import { formatDate, formatTime } from '../lib/format';
 import { useNow } from '../hooks/useNow';
+import { applyTheme, loadTheme, toggleTheme, type Theme } from '../lib/theme';
 
 interface Props {
   view: ViewKey;
@@ -44,6 +46,12 @@ export default function TopBar({
   onLogout,
 }: Props) {
   const live = onlineCount > 0;
+  const [theme, setTheme] = useState<Theme>(() => loadTheme());
+  const onToggleTheme = () => {
+    const next = toggleTheme(theme);
+    setTheme(next);
+    applyTheme(next);
+  };
 
   return (
     <header className="topbar">
@@ -86,6 +94,16 @@ export default function TopBar({
       </div>
 
       <div className="topbar-right">
+        <button
+          type="button"
+          className="topbar-settings topbar-theme"
+          onClick={onToggleTheme}
+          title={theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'}
+          aria-label={theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'}
+          aria-pressed={theme === 'light'}
+        >
+          {theme === 'dark' ? '浅色' : '深色'}
+        </button>
         {(user.role === 'admin' || user.siteAdmin) && (
           <button
             type="button"

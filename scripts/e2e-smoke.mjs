@@ -368,6 +368,28 @@ async function main() {
       console.log('  --  本地视频测试回归：未找到 test-videos 样本，跳过');
     }
 
+    // 主题切换：手动切换后 CSS 变量生效，刷新后仍保持（验证持久化与防闪烁初始化）。
+    if (await page.$('.topbar-theme')) {
+      await page.click('.topbar-theme');
+      const switched = await page.evaluate(() => ({
+        theme: document.documentElement.dataset.theme,
+        scheme: getComputedStyle(document.documentElement).colorScheme,
+        bg: getComputedStyle(document.body).backgroundColor,
+      }));
+      check(
+        '切换浅色主题后配色生效',
+        switched.theme === 'light' &&
+          switched.scheme === 'light' &&
+          switched.bg !== 'rgb(7, 12, 20)',
+        JSON.stringify(switched),
+      );
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      const persisted = await page.evaluate(() => document.documentElement.dataset.theme);
+      check('刷新后主题保持', persisted === 'light', String(persisted));
+    } else {
+      check('主题切换按钮存在', false, '未找到 .topbar-theme');
+    }
+
     console.log(failures === 0 ? 'E2E 全部通过' : `E2E 失败 ${failures} 项`);
   } catch (error) {
     failures += 1;

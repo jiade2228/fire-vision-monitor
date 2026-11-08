@@ -200,7 +200,10 @@
 
 **UI 缺陷修复（本次）**：`src/styles/app.css` 的审计日志表格 `.audit-table*` 引用了 4 个**未定义且无 fallback** 的变量（`--color-border-tertiary` / `--color-background-secondary` / `--color-text-primary` / `--font-mono`），使容器与单元格边框、表头背景、操作列文字色、等宽字体声明全部失效。已对齐项目现有设计变量 `--line` / `--panel-2` / `--text` / `--mono`，不引入新配色体系。`--muted` 的 3 处引用均带 fallback、视觉正常，仅命名不统一，暂不动。
 
-**当前基线**：`npm test` 85/85（skipped 0）、`npm run build`、`npm run e2e` 11/11；git 工作区干净。
+**浅色主题（新增，用户选定「手动切换」方案）**：`src/lib/theme.ts` + `:root[data-theme='light']`，顶栏「浅色/深色」按钮切换、localStorage 持久化、`main.tsx` 挂载前应用防闪烁、`theme-color` meta 同步。为保证默认深色外观逐字不变，将约 51 处硬编码语义色与强调白字改为 CSS 变量并保留原深色取值；浅色块给出对比度更高的取值。E2E 新增 2 项（切换后 `color-scheme`/背景生效、刷新后保持），共 13 项全绿。
+**已知限制**：仍有大量 `rgba(126,168,214,x)` 半透明边框、深色遮罩与少量硬编码色未适配，浅色主题为第一版，需按页面逐块视觉回归；未做逐页截图验收。
+
+**当前基线**：`npm test` 85/85（skipped 0）、`npm run build`、`npm run e2e` **13/13**；git 工作区干净。
 
 **仍未解决 / 需拍板**
 - 代码：CSS 死样式与重复定义清理、`Dockerfile` build 阶段缺 FFmpeg 导致测试集合与 CI 不一致、`e2e-smoke.mjs` 个人机器路径与中文文案断言、P3 魔法数字、`AdminPanel.tsx`(3421 行) / `App.tsx`(982 行) 分步拆分。
