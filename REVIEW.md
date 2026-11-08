@@ -206,7 +206,9 @@
 **当前基线**：`npm test` 85/85（skipped 0）、`npm run build`、`npm run e2e` **13/13**；git 工作区干净。
 
 **仍未解决 / 需拍板**
-- 代码：CSS 死样式与重复定义清理、`Dockerfile` build 阶段缺 FFmpeg 导致测试集合与 CI 不一致、`e2e-smoke.mjs` 个人机器路径与中文文案断言、P3 魔法数字、`AdminPanel.tsx`(3421 行) / `App.tsx`(982 行) 分步拆分。
+- 代码：`AdminPanel.tsx`(3421 行) / `App.tsx`(982 行) 分步拆分、`e2e-smoke.mjs` 中文文案断言改为稳定选择器、`Dockerfile` build 阶段是否补 FFmpeg（会增大构建层，需决策）。
+- 已闭环：E2E 个人机器路径移除（改 `PUPPETEER_REQUIRE_DIR` + 项目 `node_modules`）、FFmpeg 缺失时输出显式告警、播放重试延时常量收敛、`--muted` 历史别名补齐定义（深色取值与原 fallback 完全一致）。
+- **取证结论（不再重复评估）**：CSS 死样式选择器含大量后代/伪元素/`@media` 组合（`.settings-section-head h3`、`.camera-help-steps li::marker`、逗号组合等），机械删除易留空规则与孤立片段；`.clip-download` / `.user-row` 的两处定义属属性互补与有意覆盖，合并会改布局。若确要清理，应作为独立样式重构并配视觉回归，收益（约 1–2KB）低于风险。
 - 取证后刻意不统一：notify 三处 payload 结构、`media.mjs` 三处守卫块的 404 形态差异（统一会改行为或引入过度参数化）。
 - 明确排除（会改响应/方法面）：统一 404 响应体、`/proxy/*` 的 `app.all` 收敛、历史迁移重构、拆分 `main()`。
 - 外部阻塞：GitHub 仓库地址（无 remote / 无 gh CLI / 无 token）、持续录像采集与按需转码真机联调、watchdog 生产验证、目标实例管理员强密码与演示数据确认。

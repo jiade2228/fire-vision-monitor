@@ -32,9 +32,9 @@ const fsSyncExists = (candidate) => {
 
 function loadPuppeteer() {
   const skillDirs = [
-    'C:/Users/87304/.workbuddy/skills/hallmark/',
+    process.env.PUPPETEER_REQUIRE_DIR,
     path.join(root, 'node_modules/'),
-  ];
+  ].filter(Boolean);
   for (const dir of skillDirs) {
     try {
       return createRequire(dir)('puppeteer-core');

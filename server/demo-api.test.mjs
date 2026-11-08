@@ -13,6 +13,10 @@ const base = `http://127.0.0.1:${port}`;
 const csrf = { 'X-Requested-With': 'flame-vision' };
 
 const ffmpegOk = spawnSync('ffmpeg', ['-version'], { encoding: 'utf8' }).status === 0;
+if (!ffmpegOk) {
+  // Docker build 阶段未安装 FFmpeg 时，让跳过在构建日志中可见（CI 已安装，用例全跑）。
+  console.warn('[test] 未检测到 FFmpeg：演示视频源相关用例将跳过');
+}
 
 function cookieFrom(response) {
   return (response.headers.getSetCookie?.() ?? [])

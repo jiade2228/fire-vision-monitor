@@ -23,6 +23,8 @@
   --tone-danger-soft: #ffb2ab;
   --tone-warn: #fbd88a;
   --tone-neutral: #aeb4c0;
+  /* 历史别名：既有 3 处 var(--muted, #8ea3bd) 的取值与此一致，定义后深色外观不变。 */
+  --muted: #8ea3bd;
 }
 
 :root[data-theme='light'] {
@@ -48,6 +50,7 @@
   --tone-danger-soft: #c0443a;
   --tone-warn: #8a5a00;
   --tone-neutral: #5a6b80;
+  --muted: #5a6b80;
   color-scheme: light;
 }
 

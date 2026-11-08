@@ -5,6 +5,7 @@ import type { CameraSource } from '../types';
 export type PlaybackState = 'idle' | 'loading' | 'ready' | 'error' | 'ended';
 
 const MAX_RETRIES = 4;
+const RETRY_DELAY_MS = 1500;
 
 export function useVideoPlayback(source: CameraSource | null) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -59,7 +60,7 @@ export function useVideoPlayback(source: CameraSource | null) {
     const handleVideoError = () => {
       if (cancelled) return;
       if (source.kind === 'remote') {
-        scheduleRetry(1500);
+        scheduleRetry(RETRY_DELAY_MS);
       } else {
         setPlayback('error');
       }
@@ -81,7 +82,7 @@ export function useVideoPlayback(source: CameraSource | null) {
       const attempt = video.play();
       if (attempt && typeof attempt.catch === 'function') {
         attempt.catch(() => {
-          if (!cancelled) scheduleRetry(1500);
+          if (!cancelled) scheduleRetry(RETRY_DELAY_MS);
         });
       }
     };
@@ -124,7 +125,7 @@ export function useVideoPlayback(source: CameraSource | null) {
               if (!data.fatal) return;
               hls?.destroy();
               hls = null;
-              scheduleRetry(1500 * Math.max(attemptsRef.current, 1));
+              scheduleRetry(RETRY_DELAY_MS * Math.max(attemptsRef.current, 1));
             });
           })
           .catch(() => {
