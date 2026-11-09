@@ -10,17 +10,8 @@ import crypto from 'node:crypto';
 
 /**
  * @param {import('express').Express} app
- * @param {object} deps
- * @param {object} deps.store - 数据库访问层
- * @param {object} deps.notifier - 通知引擎（含 testChannel）
- * @param {import('express').RequestHandler} deps.requireAuth
- * @param {import('express').RequestHandler} deps.requireManager
- * @param {(user: any) => string[] | null} deps.adminSiteIdsFor
- * @param {(user: any, siteId?: string) => boolean} deps.canManageSite
- * @param {(value: any, maxLength?: number) => string} deps.normalizeText
- * @param {(req: import('express').Request) => string} deps.clientIp
- * @param {Function} deps.notifyChannelForClient
- * @param {Function} deps.parseNotifyChannelInput
+ * @param {import('./deps.mjs').RouteDeps} deps
+ *   store 数据库访问层；notifier 通知引擎（含 testChannel）。
  */
 export function registerNotifyRoutes(app, deps) {
   const {

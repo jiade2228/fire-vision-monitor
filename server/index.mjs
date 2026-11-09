@@ -19,6 +19,7 @@ import { EdgeHub, parseEdgeSource } from './edge-hub.mjs';
 import { discoverDevices } from './onvif.mjs';
 import { discoverOnvifDevices } from './onvif-discovery.mjs';
 import { DetectionEngine } from './detection-engine.mjs';
+import { runFfmpegOnce } from './ffmpeg-once.mjs';
 import { toClientSchedule } from './schedule.mjs';
 import {
   DEMO_CAMERA_CODE,
@@ -60,6 +61,8 @@ const recordingsDir = path.join(dataDir, 'recordings');
 const continuousDir = path.join(dataDir, 'continuous');
 const recordingEnabled = process.env.RECORDING === '1';
 const previewDir = path.join(dataDir, 'previews');
+// 运行期目录统一权限：仅属主可读写执行（抓拍/录像/数据库等私有目录）。
+const DIR_MODE = 0o700;
 const portArgIndex = process.argv.indexOf('--port');
 const port = Number(
   process.env.PORT ?? (portArgIndex >= 0 ? process.argv[portArgIndex + 1] : 4173),
@@ -490,58 +493,34 @@ function parseSnapshot(dataUrl) {
 
 /** 抓取一帧 JPEG 作为 ROI 编辑底图，失败返回 false。 */
 function capturePreview(camera, target) {
-  return new Promise((resolve) => {
-    const args = ['-v', 'error', '-nostdin', '-y'];
-    if (camera.protocol === 'rtsp') args.push('-rtsp_transport', 'tcp');
-    args.push('-i', camera.sourceUrl, '-frames:v', '1', '-q:v', '4', '-an', target);
-    let child;
-    try {
-      child = spawn(process.env.FFMPEG_PATH || 'ffmpeg', args, {
-        windowsHide: true,
-        stdio: ['ignore', 'ignore', 'ignore'],
-      });
-    } catch {
-      resolve(false);
-      return;
-    }
-    let settled = false;
-    const finish = (value) => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
-    };
-    const timer = setTimeout(() => {
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        // ignore
-      }
-      finish(false);
-    }, 8_000);
-    timer.unref?.();
-    child.on('error', () => {
-      clearTimeout(timer);
-      finish(false);
-    });
-    child.on('exit', (code) => {
-      clearTimeout(timer);
+  const args = ['-v', 'error', '-nostdin', '-y'];
+  if (camera.protocol === 'rtsp') args.push('-rtsp_transport', 'tcp');
+  args.push('-i', camera.sourceUrl, '-frames:v', '1', '-q:v', '4', '-an', target);
+  return runFfmpegOnce({
+    spawnImpl: spawn,
+    ffmpegPath: process.env.FFMPEG_PATH || 'ffmpeg',
+    args,
+    timeoutMs: 8_000,
+    stdio: ['ignore', 'ignore', 'ignore'],
+    failureValue: false,
+    onExit: (code) => {
       let exists = false;
       try {
         exists = fs.existsSync(target);
       } catch {
         exists = false;
       }
-      finish(code === 0 && exists);
-    });
+      return code === 0 && exists;
+    },
   });
 }
 
 async function main() {
-  await fsp.mkdir(dataDir, { recursive: true, mode: 0o700 });
-  await fsp.mkdir(snapshotDir, { recursive: true, mode: 0o700 });
-  await fsp.mkdir(recordingsDir, { recursive: true, mode: 0o700 });
-  await fsp.mkdir(continuousDir, { recursive: true, mode: 0o700 });
-  await fsp.mkdir(previewDir, { recursive: true, mode: 0o700 });
+  await fsp.mkdir(dataDir, { recursive: true, mode: DIR_MODE });
+  await fsp.mkdir(snapshotDir, { recursive: true, mode: DIR_MODE });
+  await fsp.mkdir(recordingsDir, { recursive: true, mode: DIR_MODE });
+  await fsp.mkdir(continuousDir, { recursive: true, mode: DIR_MODE });
+  await fsp.mkdir(previewDir, { recursive: true, mode: DIR_MODE });
 
   // 媒体磁盘水位：抓拍 + 短视频总量超过 MEDIA_MAX_BYTES 时自动清理（0 关闭）。
   const mediaMaxBytes =

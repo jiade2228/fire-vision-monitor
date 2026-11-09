@@ -221,6 +221,7 @@ export default function CameraTile({
             type="button"
             className="tile-action tile-action--danger"
             onClick={() => onDisconnect(camera.id)}
+            data-testid="tile-disconnect"
           >
             断开
           </button>

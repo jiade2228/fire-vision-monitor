@@ -10,15 +10,7 @@ import crypto from 'node:crypto';
 
 /**
  * @param {import('express').Express} app
- * @param {object} deps
- * @param {object} deps.store
- * @param {(user: any, store: object) => string[] | null} deps.allowedSiteIdsFor
- * @param {import('express').RequestHandler} deps.requireAuth
- * @param {(...roles: string[]) => import('express').RequestHandler} deps.requireRole
- * @param {import('express').RequestHandler} deps.requireManager
- * @param {(user: any, siteId?: string) => boolean} deps.canManageSite
- * @param {(value: any, maxLength?: number) => string} deps.normalizeText
- * @param {(req: import('express').Request) => string} deps.clientIp
+ * @param {import('./deps.mjs').RouteDeps} deps
  */
 export function registerSiteRoutes(app, deps) {
   const {

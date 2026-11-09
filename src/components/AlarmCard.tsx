@@ -51,7 +51,7 @@ function AlarmCard({ alarm, expanded, handlers, readOnly = false }: Props) {
             {!isDeviceHealth && ` · 置信度 ${alarm.confidence}%`}
           </span>
         </span>
-        <span className={`status-chip status-chip--${statusMeta.tone}`}>{statusMeta.label}</span>
+        <span className={`status-chip status-chip--${statusMeta.tone}`} data-testid="alarm-status-chip">{statusMeta.label}</span>
       </button>
 
       {expanded && (
@@ -166,7 +166,7 @@ function AlarmCard({ alarm, expanded, handlers, readOnly = false }: Props) {
                 <p className="alarm-readonly">只读账号仅可查看告警，需由值班员或管理员处置。</p>
               ) : (
                 <div className="alarm-actions">
-                  <button type="button" className="btn btn-danger" onClick={() => handlers.onConfirm(alarm.id)}>
+                  <button type="button" className="btn btn-danger" onClick={() => handlers.onConfirm(alarm.id)} data-testid="alarm-confirm">
                     {isDeviceHealth
                       ? alarm.level === 'camera_abnormal'
                         ? '确认画面异常'

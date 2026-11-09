@@ -13,14 +13,7 @@ import { StreamError } from '../streams.mjs';
 
 /**
  * @param {import('express').Express} app
- * @param {object} deps
- * @param {object} deps.store
- * @param {object} deps.demoSource
- * @param {object} deps.edgeHub
- * @param {object} deps.streamManager
- * @param {(user: any, camera: any, store: object) => boolean} deps.canAccessCameraSite
- * @param {import('express').RequestHandler} deps.requireAuth
- * @param {Function} deps.log
+ * @param {import('./deps.mjs').RouteDeps} deps
  */
 export function registerMediaRoutes(app, deps) {
   const {
@@ -33,6 +26,22 @@ export function registerMediaRoutes(app, deps) {
     log,
   } = deps;
 
+  // 媒体点位守卫：取点位并校验协议白名单、源地址（可选）与站点访问权限。
+  // 校验不通过返回 null，由各调用点发送各自的 404 响应（JSON / 文本 / 空体），
+  // 以保持三处原有的响应形态与校验短路顺序。
+  const mediaCameraFor = (req, cameraId, { protocols, requireSourceUrl = false }) => {
+    const camera = store.getCamera(cameraId);
+    if (
+      !camera ||
+      !protocols.includes(camera.protocol) ||
+      (requireSourceUrl && !camera.sourceUrl) ||
+      !canAccessCameraSite(req.user, camera, store)
+    ) {
+      return null;
+    }
+    return camera;
+  };
+
   // 跨域 HLS/HTTP 视频代理：浏览器只连中心，解决跨域无法读帧识别的问题。
   // 仅允许代理与该点位已配置源站同源的资源，杜绝被当作通用代理（SSRF）。
   app.all(
@@ -41,12 +50,8 @@ export function registerMediaRoutes(app, deps) {
     async (req, res) => {
       const cameraId = req.params.cameraId;
       const tail = req.params.tail || '';
-      const camera = store.getCamera(cameraId);
-      if (
-        !camera ||
-        (camera.protocol !== 'hls' && camera.protocol !== 'http') ||
-        !canAccessCameraSite(req.user, camera, store)
-      ) {
+      const camera = mediaCameraFor(req, cameraId, { protocols: ['hls', 'http'] });
+      if (!camera) {
         return res.status(404).json({ error: '该点位不支持代理取流或不存在' });
       }
       let targetUrl;
@@ -175,13 +180,11 @@ export function registerMediaRoutes(app, deps) {
   });
 
   app.get('/streams/:cameraId/index.m3u8', requireAuth, async (req, res) => {
-    const camera = store.getCamera(req.params.cameraId);
-    if (
-      !camera ||
-      !['rtsp', 'edge'].includes(camera.protocol) ||
-      !camera.sourceUrl ||
-      !canAccessCameraSite(req.user, camera, store)
-    ) {
+    const camera = mediaCameraFor(req, req.params.cameraId, {
+      protocols: ['rtsp', 'edge'],
+      requireSourceUrl: true,
+    });
+    if (!camera) {
       return res.status(404).send('视频点位不存在');
     }
     try {
@@ -208,12 +211,10 @@ export function registerMediaRoutes(app, deps) {
   });
 
   app.get('/streams/:cameraId/:segment', requireAuth, async (req, res) => {
-    const camera = store.getCamera(req.params.cameraId);
-    if (
-      !camera ||
-      !['rtsp', 'edge'].includes(camera.protocol) ||
-      !canAccessCameraSite(req.user, camera, store)
-    ) {
+    const camera = mediaCameraFor(req, req.params.cameraId, {
+      protocols: ['rtsp', 'edge'],
+    });
+    if (!camera) {
       return res.status(404).end();
     }
     const segment = req.params.segment;

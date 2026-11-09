@@ -30,6 +30,47 @@ function levelLabelFor(level) {
   return LEVEL_LABELS[level] ?? '告警';
 }
 
+/**
+ * 按渠道类型构造 JSON 请求体与请求头：企微/钉钉为 markdown 消息，
+ * Webhook 为结构化载荷（带可选 HMAC-SHA256 签名头与事件头）。
+ * 告警推送 / 广播 / 测试三个入口共用此分支，差异经参数传入以逐字保留：
+ * 钉钉标题、Webhook 附加字段顺序、以及仅告警下发的 X-Fire-Event 头。
+ *
+ * @param {import('./types.mjs').NotifyChannel} channel 渠道。
+ * @param {string} message markdown 正文。
+ * @param {object} options 差异参数。
+ * @param {string} options.event Webhook 载荷的 event 字段（同时用作 X-Fire-Event 值）。
+ * @param {string} options.dingtalkTitle 钉钉 markdown 标题（告警级别 / 值守摘要 / 火情监控测试）。
+ * @param {object} [options.webhookExtra] Webhook 载荷在 message 与 sentAt 之间的附加字段。
+ * @param {boolean} [options.includeFireEvent] 是否额外下发 X-Fire-Event 头（仅告警推送）。
+ * @returns {{body: string, headers: Record<string, string>}}
+ */
+function buildChannelBody(channel, message, {
+  event,
+  dingtalkTitle,
+  webhookExtra = {},
+  includeFireEvent = false,
+}) {
+  const headers = {};
+  let body;
+  if (channel.kind === 'wecom') {
+    body = JSON.stringify({ msgtype: 'markdown', markdown: { content: message } });
+  } else if (channel.kind === 'dingtalk') {
+    body = JSON.stringify({
+      msgtype: 'markdown',
+      markdown: { title: dingtalkTitle, text: message },
+    });
+  } else {
+    const payload = { event, message, ...webhookExtra, sentAt: Date.now() };
+    body = JSON.stringify(payload);
+    if (channel.secret) {
+      headers['X-Fire-Signature'] = signWebhookBody(channel.secret, body);
+      if (includeFireEvent) headers['X-Fire-Event'] = event;
+    }
+  }
+  return { body, headers };
+}
+
 const EVENT_LABELS = {
   created: '检测到异常',
   confirmed: '告警已确认',
@@ -75,7 +116,7 @@ export function formatTime(timestamp) {
  * @returns {string} 渲染后的 markdown 文本。
  */
 export function renderTemplate(template, alarm, extra = {}) {
-  const levelLabel = LEVEL_LABELS[alarm.level] ?? '告警';
+  const levelLabel = levelLabelFor(alarm.level);
   const link = extra.link || '监控平台告警页';
   const vars = {
     site: extra.siteName || '',
@@ -105,7 +146,7 @@ export function buildAlarmMessage(alarm, event = 'created', extra = {}) {
   if (extra.template && event === 'created') {
     return renderTemplate(extra.template, alarm, extra);
   }
-  const levelLabel = LEVEL_LABELS[alarm.level] ?? '告警';
+  const levelLabel = levelLabelFor(alarm.level);
   const lines = [];
   if (event === 'recovered') {
     lines.push(`### ${EVENT_LABELS.recovered}`);
@@ -278,36 +319,16 @@ export class Notifier {
   buildBody(channel, alarm, event, extra = {}) {
     const enriched = { ...extra, link: this.resolveLink() };
     const message = buildAlarmMessage(alarm, event, enriched);
-    if (channel.kind === 'wecom') {
-      return {
-        body: JSON.stringify({ msgtype: 'markdown', markdown: { content: message } }),
-        headers: {},
-      };
-    }
-    if (channel.kind === 'dingtalk') {
-      return {
-        body: JSON.stringify({
-          msgtype: 'markdown',
-          markdown: { title: `${LEVEL_LABELS[alarm.level] ?? '告警'}`, text: message },
-        }),
-        headers: {},
-      };
-    }
-    const payload = {
+    return buildChannelBody(channel, message, {
       event: `alarm.${event}`,
-      message,
-      alarm,
-      camera: extra.camera ?? null,
-      site: extra.siteName ? { name: extra.siteName } : null,
-      sentAt: Date.now(),
-    };
-    const body = JSON.stringify(payload);
-    const headers = {};
-    if (channel.secret) {
-      headers['X-Fire-Signature'] = signWebhookBody(channel.secret, body);
-      headers['X-Fire-Event'] = `alarm.${event}`;
-    }
-    return { body, headers };
+      dingtalkTitle: levelLabelFor(alarm.level),
+      webhookExtra: {
+        alarm,
+        camera: extra.camera ?? null,
+        site: extra.siteName ? { name: extra.siteName } : null,
+      },
+      includeFireEvent: true,
+    });
   }
 
   /**
@@ -452,22 +473,11 @@ export class Notifier {
         continue;
       }
       try {
-        let body;
-        const headers = {};
-        if (channel.kind === 'wecom') {
-          body = JSON.stringify({ msgtype: 'markdown', markdown: { content: message } });
-        } else if (channel.kind === 'dingtalk') {
-          body = JSON.stringify({
-            msgtype: 'markdown',
-            markdown: { title: '值守摘要', text: message },
-          });
-        } else {
-          const payload = { event, message, ...data, sentAt: Date.now() };
-          body = JSON.stringify(payload);
-          if (channel.secret) {
-            headers['X-Fire-Signature'] = signWebhookBody(channel.secret, body);
-          }
-        }
+        const { body, headers } = buildChannelBody(channel, message, {
+          event,
+          dingtalkTitle: '值守摘要',
+          webhookExtra: data,
+        });
         await this.postWithRetry(channel.url, body, headers);
         this.store.finishNotification(key, channel.id, event, { status: 'sent' });
         sent += 1;
@@ -499,22 +509,10 @@ export class Notifier {
       `> 时间：${formatTime(Date.now())}`,
       '> 收到本条消息说明推送配置正常。',
     ].join('\n');
-    let body;
-    let headers = {};
-    if (channel.kind === 'wecom') {
-      body = JSON.stringify({ msgtype: 'markdown', markdown: { content: message } });
-    } else if (channel.kind === 'dingtalk') {
-      body = JSON.stringify({
-        msgtype: 'markdown',
-        markdown: { title: '火情监控测试', text: message },
-      });
-    } else {
-      const payload = { event: 'test', message, sentAt: Date.now() };
-      body = JSON.stringify(payload);
-      if (channel.secret) {
-        headers['X-Fire-Signature'] = signWebhookBody(channel.secret, body);
-      }
-    }
+    const { body, headers } = buildChannelBody(channel, message, {
+      event: 'test',
+      dingtalkTitle: '火情监控测试',
+    });
     await this.postWithRetry(channel.url, body, headers);
     return true;
   }

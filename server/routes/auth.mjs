@@ -11,26 +11,7 @@ import crypto from 'node:crypto';
 
 /**
  * @param {import('express').Express} app
- * @param {object} deps
- * @param {(req: import('express').Request) => any} deps.currentUser
- * @param {(req: import('express').Request, res: import('express').Response, user: any) => void} deps.setSessionCookie
- * @param {(res: import('express').Response) => void} deps.clearSessionCookie
- * @param {(ip: string, key: string) => boolean} deps.checkLoginBlocked
- * @param {(ip: string, key: string) => void} deps.recordLoginFailure
- * @param {object} deps.store
- * @param {Function} deps.publicUser
- * @param {(value: any, maxLength?: number) => string} deps.normalizeText
- * @param {Function} deps.validUsername
- * @param {Function} deps.validatePassword
- * @param {Function} deps.passwordHash
- * @param {Function} deps.verifyPassword
- * @param {(req: import('express').Request) => string} deps.clientIp
- * @param {Array} deps.defaultCameras
- * @param {{ inFlight: boolean }} deps.setupGuard
- * @param {import('express').RequestHandler} deps.requireAuth
- * @param {(user: any, store: object) => string[] | null} deps.allowedSiteIdsFor
- * @param {Set<object>} deps.sseClients
- * @param {any} [deps.detectionEngine]
+ * @param {import('./deps.mjs').RouteDeps} deps
  */
 export function registerAuthRoutes(app, deps) {
   const {

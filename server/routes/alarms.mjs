@@ -12,22 +12,7 @@ import path from 'node:path';
 
 /**
  * @param {import('express').Express} app
- * @param {object} deps
- * @param {object} deps.store
- * @param {object} deps.metrics
- * @param {(event: string, payload: any, siteId?: string) => void} deps.broadcastEvent
- * @param {object} [deps.notifier]
- * @param {(user: any, alarm: any, store: object) => boolean} deps.canAccessAlarmSite
- * @param {(user: any, camera: any, store: object) => boolean} deps.canAccessCameraSite
- * @param {Function} deps.mapAlarmEvent
- * @param {Function} deps.parseSnapshot
- * @param {string} deps.snapshotDir
- * @param {string} deps.recordingsDir
- * @param {(user: any, store: object) => string[] | null} deps.allowedSiteIdsFor
- * @param {import('express').RequestHandler} deps.requireAuth
- * @param {(...roles: string[]) => import('express').RequestHandler} deps.requireRole
- * @param {(value: any, maxLength?: number) => string} deps.normalizeText
- * @param {(req: import('express').Request) => string} deps.clientIp
+ * @param {import('./deps.mjs').RouteDeps} deps
  */
 export function registerAlarmRoutes(app, deps) {
   const {

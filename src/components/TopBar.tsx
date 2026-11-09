@@ -110,6 +110,7 @@ export default function TopBar({
             className="topbar-settings"
             onClick={onManage}
             title="管理远程点位、视频流和访问账号"
+            data-testid="open-admin"
           >
             <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" fill="none">
               <path
@@ -140,6 +141,7 @@ export default function TopBar({
             className={`nav-tab ${view === tab.key ? 'is-active' : ''}`}
             onClick={() => onViewChange(tab.key)}
             aria-current={view === tab.key ? 'page' : undefined}
+            data-testid={`nav-tab-${tab.key}`}
           >
             {tab.label}
             {tab.key === 'alarms' && pendingCount > 0 && (

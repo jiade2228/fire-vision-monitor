@@ -15,30 +15,7 @@ import { DemoSourceError } from '../demo-source.mjs';
 
 /**
  * @param {import('express').Express} app
- * @param {object} deps
- * @param {object} deps.store
- * @param {object} deps.demoSource
- * @param {() => object} deps.demoPurgeFilter
- * @param {(cameraId: string) => void} deps.rememberDemoCameraId
- * @param {() => Promise<{snapshots: object, recordings: object}>} deps.computeMediaUsage
- * @param {() => void} deps.syncDetection
- * @param {object} deps.streamManager
- * @param {any} deps.detectionEngine
- * @param {object} deps.edgeHub
- * @param {boolean} deps.ffprobeOk
- * @param {number} deps.mediaMaxBytes
- * @param {string} deps.edgeGatewayToken
- * @param {string} deps.snapshotDir
- * @param {string} deps.recordingsDir
- * @param {string} deps.databaseFile
- * @param {string} deps.DEMO_CAMERA_CODE
- * @param {string} deps.DEMO_CAMERA_NAME
- * @param {string} deps.DEMO_CAMERA_ZONE
- * @param {(value: any, maxLength?: number) => string} deps.normalizeText
- * @param {(req: import('express').Request) => string} deps.clientIp
- * @param {Function} deps.log
- * @param {import('express').RequestHandler} deps.requireAuth
- * @param {(...roles: string[]) => import('express').RequestHandler} deps.requireRole
+ * @param {import('./deps.mjs').RouteDeps} deps
  */
 export function registerDemoRoutes(app, deps) {
   const {

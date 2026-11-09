@@ -18,27 +18,7 @@ import { discoverOnvifDevices } from '../onvif-discovery.mjs';
 
 /**
  * @param {import('express').Express} app
- * @param {object} deps
- * @param {object} deps.store
- * @param {object} deps.streamManager
- * @param {object} deps.edgeHub
- * @param {boolean} deps.ffprobeOk
- * @param {() => void} deps.syncDetection
- * @param {any} deps.detectionEngine
- * @param {string} deps.dataDir
- * @param {string} deps.previewDir
- * @param {Function} deps.log
- * @param {Function} deps.validateCameraInput
- * @param {Function} deps.capturePreview
- * @param {import('express').RequestHandler} deps.requireAuth
- * @param {import('express').RequestHandler} deps.requireManager
- * @param {(user: any, camera: any) => boolean} deps.canManageCamera
- * @param {(user: any, siteId?: string) => boolean} deps.canManageSite
- * @param {(user: any, store: object) => string[] | null} deps.allowedSiteIdsFor
- * @param {(user: any) => string} deps.fallbackSiteIdFor
- * @param {(value: any, maxLength?: number) => string} deps.normalizeText
- * @param {(req: import('express').Request) => string} deps.clientIp
- * @param {Function} deps.cameraForClient
+ * @param {import('./deps.mjs').RouteDeps} deps
  */
 export function registerCameraRoutes(app, deps) {
   const {
@@ -70,6 +50,19 @@ export function registerCameraRoutes(app, deps) {
     Array.isArray(body.ids)
       ? body.ids.slice(0, 200).filter((id) => typeof id === 'string' && id)
       : [];
+
+  // 站点归属校验（存在性 → 管理权限）的公共骨架：失败返回 { status, error }
+  // 交由调用点按原状态码/文案发送，成功返回 null；denyMessage 逐处传入以保留
+  // 「无权管理该站点」与「无权管理目标站点」两种原文案及原有校验顺序。
+  const siteGuard = (req, siteId, denyMessage) => {
+    if (!store.getSite(siteId)) {
+      return { status: 400, error: '指定的站点不存在' };
+    }
+    if (!canManageSite(req.user, siteId)) {
+      return { status: 403, error: denyMessage };
+    }
+    return null;
+  };
 
   app.get('/api/cameras', requireAuth, (req, res) => {
     const allowed = allowedSiteIdsFor(req.user, store);
@@ -224,12 +217,8 @@ export function registerCameraRoutes(app, deps) {
     if (parsed.error) return res.status(400).json({ error: parsed.error });
     const siteId =
       siteIdInput(req) || fallbackSiteIdFor(req.user);
-    if (!store.getSite(siteId)) {
-      return res.status(400).json({ error: '指定的站点不存在' });
-    }
-    if (!canManageSite(req.user, siteId)) {
-      return res.status(403).json({ error: '无权管理该站点' });
-    }
+    const guard = siteGuard(req, siteId, '无权管理该站点');
+    if (guard) return res.status(guard.status).json({ error: guard.error });
     try {
       const camera = store.createCamera({
         id: crypto.randomUUID(),
@@ -299,12 +288,8 @@ export function registerCameraRoutes(app, deps) {
       if (!siteId) {
         return res.status(400).json({ error: '站点 ID 不能为空' });
       }
-      if (!store.getSite(siteId)) {
-        return res.status(400).json({ error: '指定的站点不存在' });
-      }
-      if (!canManageSite(req.user, siteId)) {
-        return res.status(403).json({ error: '无权管理目标站点' });
-      }
+      const guard = siteGuard(req, siteId, '无权管理目标站点');
+      if (guard) return res.status(guard.status).json({ error: guard.error });
       merged.siteId = siteId;
     }
     const parsed = validateCameraInput(merged);
@@ -384,12 +369,8 @@ export function registerCameraRoutes(app, deps) {
     if (req.body.siteId !== undefined) {
       const siteId = siteIdInput(req);
       if (!siteId) return res.status(400).json({ error: '站点 ID 不能为空' });
-      if (!store.getSite(siteId)) {
-        return res.status(400).json({ error: '指定的站点不存在' });
-      }
-      if (!canManageSite(req.user, siteId)) {
-        return res.status(403).json({ error: '无权管理目标站点' });
-      }
+      const guard = siteGuard(req, siteId, '无权管理目标站点');
+      if (guard) return res.status(guard.status).json({ error: guard.error });
       patch.siteId = siteId;
     }
     if (Object.keys(patch).length === 0) {
@@ -497,12 +478,8 @@ export function registerCameraRoutes(app, deps) {
     }
     const siteId =
       siteIdInput(req) || fallbackSiteIdFor(req.user);
-    if (!store.getSite(siteId)) {
-      return res.status(400).json({ error: '指定的站点不存在' });
-    }
-    if (!canManageSite(req.user, siteId)) {
-      return res.status(403).json({ error: '无权管理该站点' });
-    }
+    const guard = siteGuard(req, siteId, '无权管理该站点');
+    if (guard) return res.status(guard.status).json({ error: guard.error });
     if (!username) return res.status(400).json({ error: '请填写设备用户名' });
     if (!password) return res.status(400).json({ error: '请填写设备密码' });
     if (!zone) return res.status(400).json({ error: '请填写这些点位的所属区域' });
@@ -625,12 +602,8 @@ export function registerCameraRoutes(app, deps) {
     }
     const fallbackSiteId =
       siteIdInput(req) || fallbackSiteIdFor(req.user);
-    if (!store.getSite(fallbackSiteId)) {
-      return res.status(400).json({ error: '指定的站点不存在' });
-    }
-    if (!canManageSite(req.user, fallbackSiteId)) {
-      return res.status(403).json({ error: '无权管理该站点' });
-    }
+    const guard = siteGuard(req, fallbackSiteId, '无权管理该站点');
+    if (guard) return res.status(guard.status).json({ error: guard.error });
     const created = [];
     let skipped = 0;
     for (const device of devices) {
@@ -639,12 +612,8 @@ export function registerCameraRoutes(app, deps) {
       // 前端按设备下发 siteId，缺省时回退到请求级站点，避免全部落到默认站点。
       const deviceSiteId =
         normalizeText(String(device.siteId ?? ''), 64) || fallbackSiteId;
-      if (!store.getSite(deviceSiteId)) {
-        return res.status(400).json({ error: '指定的站点不存在' });
-      }
-      if (!canManageSite(req.user, deviceSiteId)) {
-        return res.status(403).json({ error: '无权管理目标站点' });
-      }
+      const guard = siteGuard(req, deviceSiteId, '无权管理目标站点');
+      if (guard) return res.status(guard.status).json({ error: guard.error });
       const profiles = Array.isArray(device.profiles) ? device.profiles : [];
       for (const profile of profiles) {
         const rtspUri = String(profile.rtspUri || '');

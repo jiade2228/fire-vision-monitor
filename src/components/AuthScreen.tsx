@@ -98,6 +98,7 @@ export default function AuthScreen({
                 autoFocus
                 required
                 placeholder="请输入用户名"
+                data-testid="login-username"
                 onChange={(event) => setUsername(event.target.value)}
               />
             </label>
@@ -149,7 +150,7 @@ export default function AuthScreen({
               </p>
             )}
 
-            <button type="submit" className="btn btn-danger auth-submit" disabled={submitting}>
+            <button type="submit" className="btn btn-danger auth-submit" disabled={submitting} data-testid="login-submit">
               {submitting ? '请稍候…' : mode === 'setup' ? '创建并进入系统' : '登录'}
             </button>
 

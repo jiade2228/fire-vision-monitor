@@ -159,13 +159,10 @@ async function main() {
     await page.goto(base, { waitUntil: 'networkidle2', timeout: 30_000 });
     await new Promise((resolve) => setTimeout(resolve, 600));
 
-    await page.type('input[placeholder="请输入用户名"]', 'admin');
+    await page.type('[data-testid="login-username"]', 'admin');
     await page.type('input[type="password"]', password);
     await page.evaluate(() => {
-      const button = [...document.querySelectorAll('button')].find(
-        (item) => item.textContent.trim() === '登录',
-      );
-      button?.click();
+      document.querySelector('[data-testid="login-submit"]')?.click();
     });
     check(
       '登录后进入监控视图',
@@ -179,10 +176,7 @@ async function main() {
     );
 
     await page.evaluate(() => {
-      const button = [...document.querySelectorAll('button')].find((item) =>
-        item.textContent.includes('系统管理'),
-      );
-      button?.click();
+      document.querySelector('[data-testid="open-admin"]')?.click();
     });
     check(
       '管理面板打开',
@@ -190,37 +184,28 @@ async function main() {
     );
 
     await page.evaluate(() => {
-      const button = [...document.querySelectorAll('button')].find((item) =>
-        item.textContent.includes('新增单个点位'),
-      );
-      button?.click();
+      document.querySelector('[data-testid="point-add-single"]')?.click();
     });
     const filled = await page.evaluate(() => {
       const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
         window.HTMLInputElement.prototype,
         'value',
       ).set;
-      const fill = (labelText, value) => {
-        const label = [...document.querySelectorAll('label')].find((item) =>
-          item.textContent.includes(labelText),
-        );
-        const input = label?.querySelector('input');
+      const fill = (testId, value) => {
+        const input = document.querySelector(`[data-testid="${testId}"]`);
         if (!input) return false;
         nativeInputValueSetter.call(input, value);
         input.dispatchEvent(new Event('input', { bubbles: true }));
         return true;
       };
-      const okName = fill('点位名称', 'E2E 测试点位');
-      const okZone = fill('所属区域', 'E2E 区');
+      const okName = fill('point-name-input', 'E2E 测试点位');
+      const okZone = fill('point-zone-input', 'E2E 区');
       return okName && okZone;
     });
     check('点位表单填写成功', filled);
 
     await page.evaluate(() => {
-      const button = [...document.querySelectorAll('button')].find(
-        (item) => item.textContent.trim() === '保存点位',
-      );
-      button?.click();
+      document.querySelector('[data-testid="point-save"]')?.click();
     });
     check(
       '点位列表出现新点位',
@@ -239,10 +224,7 @@ async function main() {
       document.querySelector('.settings-close')?.click();
     });
     await page.evaluate(() => {
-      const tab = [...document.querySelectorAll('.nav-tab')].find((item) =>
-        item.textContent.includes('告警中心'),
-      );
-      tab?.click();
+      document.querySelector('[data-testid="nav-tab-alarms"]')?.click();
     });
     await new Promise((resolve) => setTimeout(resolve, 500));
 
@@ -277,9 +259,7 @@ async function main() {
     // 应用会自动展开最新待处置告警：只有按钮不在 DOM 里才需要点一次展开，避免把卡片点折叠。
     const confirmVisible = await waitFor(async () => {
       const visible = await page.evaluate(() =>
-        [...document.querySelectorAll('button')].some(
-          (item) => item.textContent.trim() === '确认火情',
-        ),
+        Boolean(document.querySelector('[data-testid="alarm-confirm"]')),
       );
       if (!visible) {
         await page.evaluate(() => document.querySelector('.alarm-head')?.click());
@@ -289,17 +269,14 @@ async function main() {
     }, 6000);
     check('告警卡片展开且出现确认按钮', confirmVisible);
     await page.evaluate(() => {
-      const button = [...document.querySelectorAll('button')].find(
-        (item) => item.textContent.trim() === '确认火情',
-      );
-      button?.click();
+      document.querySelector('[data-testid="alarm-confirm"]')?.click();
     });
     check(
       '确认后状态变为处置中',
       await waitFor(
         () =>
           page.evaluate(() =>
-            [...document.querySelectorAll('.status-chip')].some(
+            [...document.querySelectorAll('[data-testid="alarm-status-chip"]')].some(
               (item) => item.textContent.trim() === '处置中',
             ),
           ),
@@ -319,10 +296,7 @@ async function main() {
     if (fsSync.existsSync(fireSample)) {
       await page.setViewport({ width: 1440, height: 900 });
       await page.evaluate(() => {
-        const button = [...document.querySelectorAll('button')].find((item) =>
-          item.textContent.includes('监控'),
-        );
-        button?.click();
+        document.querySelector('[data-testid="nav-tab-monitor"]')?.click();
       });
       await new Promise((resolve) => setTimeout(resolve, 600));
       await page.evaluate(() => window.scrollTo(0, 0));
@@ -332,10 +306,7 @@ async function main() {
         const alarmVisible = await waitFor(
           () =>
             page.evaluate(
-              () =>
-                [...document.querySelectorAll('button')].some((item) =>
-                  item.textContent.includes('确认火情'),
-                ),
+              () => Boolean(document.querySelector('[data-testid="alarm-confirm"]')),
             ),
           60_000,
         );
@@ -343,10 +314,7 @@ async function main() {
         if (alarmVisible) {
           await page.evaluate(() => {
             const tile = document.querySelector('.camera-tile');
-            const button = [...(tile?.querySelectorAll('button') ?? [])].find((item) =>
-              item.textContent.includes('断开'),
-            );
-            button?.click();
+            tile?.querySelector('[data-testid="tile-disconnect"]')?.click();
           });
           await new Promise((resolve) => setTimeout(resolve, 800));
           const cleaned = await page.evaluate(() => {

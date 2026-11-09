@@ -15,7 +15,6 @@ import type {
   NotifyKind,
   NotifyTemplate,
   AlarmStats,
-  AlarmStatsDay,
   OnvifDiscoverResult,
   OnvifProfile,
   OnvifScanDevice,
@@ -31,6 +30,8 @@ import type { ToastKind } from '../types';
 import { formatDateTime } from '../lib/format';
 import { downloadAuditCsv } from '../lib/export';
 import RoiEditor from './RoiEditor';
+import StatsOverview from './StatsOverview';
+import AuditLogTable from './AuditLogTable';
 
 interface Props {
   cameras: ManagedCamera[];
@@ -116,74 +117,6 @@ function formatBytes(bytes: number): string {
   const index = Math.min(Math.floor(Math.log2(bytes) / 10), units.length - 1);
   const value = bytes / 1024 ** index;
   return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[index]}`;
-}
-
-function StatsChart({ days }: { days: AlarmStatsDay[] }) {
-  const width = 560;
-  const height = 168;
-  const pad = { left: 30, right: 8, top: 10, bottom: 20 };
-  const innerW = width - pad.left - pad.right;
-  const innerH = height - pad.top - pad.bottom;
-  const max = Math.max(1, ...days.map((day) => day.total));
-  const slot = innerW / Math.max(days.length, 1);
-  const barW = Math.max(2, slot * 0.62);
-  return (
-    <svg
-      className="stats-chart"
-      viewBox={`0 0 ${width} ${height}`}
-      role="img"
-      aria-label={`近${days.length}天告警趋势`}
-    >
-      {[0, 0.5, 1].map((ratio) => {
-        const y = pad.top + innerH * (1 - ratio);
-        return (
-          <g key={ratio}>
-            <line x1={pad.left} y1={y} x2={width - pad.right} y2={y} className="stats-grid" />
-            <text x={pad.left - 5} y={y + 3} className="stats-axis" textAnchor="end">
-              {Math.round(max * ratio)}
-            </text>
-          </g>
-        );
-      })}
-      {days.map((day, index) => {
-        const fireH = innerH * (day.fire / max);
-        const smokeH = innerH * (day.smoke / max);
-        const offlineH = innerH * (day.offline / max);
-        const x = pad.left + index * slot + (slot - barW) / 2;
-        const totalH = fireH + smokeH + offlineH;
-        const yFire = pad.top + innerH - totalH;
-        const ySmoke = yFire + fireH;
-        const yOffline = ySmoke + smokeH;
-        return (
-          <g key={day.date}>
-            <title>{`${day.date} 共 ${day.total} 条（火焰 ${day.fire} · 烟雾 ${day.smoke} · 离线 ${day.offline}）`}</title>
-            {day.offline > 0 && (
-              <rect x={x} y={yOffline} width={barW} height={offlineH} rx="1" fill="rgba(148,163,184,0.72)" />
-            )}
-            {day.smoke > 0 && (
-              <rect x={x} y={ySmoke} width={barW} height={smokeH} rx="1" fill="rgba(255,170,70,0.9)" />
-            )}
-            {day.fire > 0 && (
-              <rect x={x} y={yFire} width={barW} height={fireH} rx="1" fill="rgba(255,75,62,0.9)" />
-            )}
-          </g>
-        );
-      })}
-      {days.map((day, index) =>
-        index % 5 === 0 || index === days.length - 1 ? (
-          <text
-            key={day.date}
-            x={pad.left + index * slot + slot / 2}
-            y={height - 5}
-            className="stats-axis"
-            textAnchor="middle"
-          >
-            {day.date.slice(5)}
-          </text>
-        ) : null,
-      )}
-    </svg>
-  );
 }
 
 const PROTOCOL_LABELS: Record<ManagedCamera['protocol'], string> = {
@@ -1502,7 +1435,7 @@ export default function AdminPanel({
                   >
                     品牌设备批量接入
                   </button>
-                  <button type="button" className="btn btn-sm btn-danger" onClick={openCreateCamera}>
+                  <button type="button" className="btn btn-sm btn-danger" onClick={openCreateCamera} data-testid="point-add-single">
                     新增单个点位
                   </button>
                   <button
@@ -2310,6 +2243,7 @@ export default function AdminPanel({
                         className="settings-input"
                         value={cameraForm.name}
                         maxLength={24}
+                        data-testid="point-name-input"
                         required
                         onChange={(event) =>
                           setCameraForm((prev) => ({ ...prev, name: event.target.value }))
@@ -2322,6 +2256,7 @@ export default function AdminPanel({
                         className="settings-input"
                         value={cameraForm.zone}
                         maxLength={32}
+                        data-testid="point-zone-input"
                         required
                         onChange={(event) =>
                           setCameraForm((prev) => ({ ...prev, zone: event.target.value }))
@@ -2534,7 +2469,7 @@ export default function AdminPanel({
                     现场边缘网关使用 edge://网关ID/摄像头标识，由现场设备主动连中心，不需要公网 IP。
                   </p>
                   <div className="admin-form-actions">
-                    <button type="submit" className="btn btn-sm btn-danger" disabled={cameraBusy}>
+                    <button type="submit" className="btn btn-sm btn-danger" disabled={cameraBusy} data-testid="point-save">
                       {cameraBusy ? '保存中…' : '保存点位'}
                     </button>
                   </div>
@@ -2726,69 +2661,7 @@ export default function AdminPanel({
                 </div>
               </div>
               {alarmStats ? (
-                <>
-                  <div className="stats-kpis">
-                    <div className="stats-kpi">
-                      <span>告警总数</span>
-                      <strong>{alarmStats.totals.total}</strong>
-                    </div>
-                    <div className="stats-kpi">
-                      <span>火焰 / 烟雾</span>
-                      <strong>
-                        {alarmStats.totals.fire} / {alarmStats.totals.smoke}
-                      </strong>
-                    </div>
-                    <div className="stats-kpi">
-                      <span>误报率</span>
-                      <strong>{alarmStats.falseRate}%</strong>
-                    </div>
-                    <div className="stats-kpi">
-                      <span>仍待处置</span>
-                      <strong>{alarmStats.totals.pending}</strong>
-                    </div>
-                  </div>
-                  <StatsChart days={alarmStats.days} />
-                  <div className="stats-legend">
-                    <span>
-                      <i className="legend-dot legend-fire" /> 火焰
-                    </span>
-                    <span>
-                      <i className="legend-dot legend-smoke" /> 烟雾
-                    </span>
-                    <span>
-                      <i className="legend-dot legend-offline" /> 设备离线
-                    </span>
-                    <span className="stats-legend-hint">悬停柱体查看当日明细</span>
-                  </div>
-                  {alarmStats.bySite.length > 0 && (
-                    <div className="stats-site-table">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>站点</th>
-                            <th>总数</th>
-                            <th>火焰</th>
-                            <th>烟雾</th>
-                            <th>离线</th>
-                            <th>误报</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {alarmStats.bySite.map((site) => (
-                            <tr key={site.siteId}>
-                              <td>{site.name}</td>
-                              <td>{site.total}</td>
-                              <td>{site.fire}</td>
-                              <td>{site.smoke}</td>
-                              <td>{site.offline}</td>
-                              <td>{site.false}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </>
+                <StatsOverview stats={alarmStats} />
               ) : (
                 <p className="admin-empty">正在加载统计数据…</p>
               )}
@@ -3197,38 +3070,7 @@ export default function AdminPanel({
               {auditLogs.length === 0 ? (
                 <p className="admin-empty">没有符合条件的审计记录。</p>
               ) : (
-                <div className="audit-table-wrap">
-                  <table className="audit-table">
-                    <thead>
-                      <tr>
-                        <th>时间</th>
-                        <th>账号</th>
-                        <th>动作</th>
-                        <th>对象</th>
-                        <th>详情</th>
-                        <th>IP</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {auditLogs.map((log) => (
-                        <tr key={log.id}>
-                          <td className="audit-time">{formatDateTime(log.createdAt)}</td>
-                          <td>{log.username ?? '系统'}</td>
-                          <td>
-                            <span className="audit-action">
-                              {AUDIT_ACTION_LABELS[log.action] ?? log.action}
-                            </span>
-                          </td>
-                          <td className="audit-target">
-                            {log.targetType ? `${log.targetType}${log.targetId ? ` · ${log.targetId.slice(0, 8)}` : ''}` : '—'}
-                          </td>
-                          <td className="audit-detail">{log.detail || '—'}</td>
-                          <td className="audit-ip">{log.ip || '—'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <AuditLogTable logs={auditLogs} actionLabels={AUDIT_ACTION_LABELS} />
               )}
 
               {auditTotal > AUDIT_PAGE_SIZE && (

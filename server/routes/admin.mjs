@@ -12,16 +12,10 @@ import path from 'node:path';
 /**
  * 注册管理类路由。
  * @param {Express} app
- * @param {object} deps
- * @param {object} deps.store 数据库访问层
- * @param {object} deps.streamManager 推流管理器（health/activeCount/maxStreams）
- * @param {object} deps.metrics 运行指标计数器
- * @param {number} deps.startedAt 进程启动时间戳
- * @param {import('express').RequestHandler} deps.requireAuth 登录鉴权中间件
- * @param {(...roles: string[]) => import('express').RequestHandler} deps.requireRole 角色鉴权中间件
- * @param {(value: unknown, maxLength?: number) => string} deps.normalizeText
- * @param {(row: unknown) => unknown} deps.mapAudit
- * @param {(req: import('express').Request) => string} deps.clientIp
+ * @param {import('./deps.mjs').RouteDeps} deps
+ *   store 数据库访问层；streamManager 推流管理器（health/activeCount/maxStreams）；
+ *   metrics 运行指标计数器；startedAt 进程启动时间戳；
+ *   requireAuth 登录鉴权中间件；requireRole 角色鉴权中间件。
  */
 export function registerAdminRoutes(app, deps) {
   const {

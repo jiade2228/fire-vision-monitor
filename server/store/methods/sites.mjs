@@ -32,10 +32,12 @@ getSite(id) {
  * @returns {import('../../types.mjs').Site}
  */
 createSite({ id, name, code, createdAt }) {
+    // sites.id 是 TEXT 主键，last_insert_rowid() 对它无效；统一用同一个 ID 插入并回读。
+    const siteId = id ?? crypto.randomUUID();
     this.db
       .prepare('INSERT INTO sites (id, name, code, created_at) VALUES (?, ?, ?, ?)')
-      .run(id ?? crypto.randomUUID(), name, code, createdAt ?? now());
-    return this.getSite(id ?? this.db.prepare('SELECT last_insert_rowid() AS id').get().id);
+      .run(siteId, name, code, createdAt ?? now());
+    return this.getSite(siteId);
   },
 /**
  * 重命名站点。

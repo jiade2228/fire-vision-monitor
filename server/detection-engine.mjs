@@ -3,6 +3,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
+import { runFfmpegOnce } from './ffmpeg-once.mjs';
 import { FlameDetector, buildRoiMask } from './detector.mjs';
 import { analyzeFrameQuality } from './frame-quality.mjs';
 import { isArmedNow } from './schedule.mjs';
@@ -600,45 +601,21 @@ export class DetectionEngine {
     if (camera.protocol === 'rtsp') args.push('-rtsp_transport', 'tcp');
     args.push('-i', this.sourceFor(camera), '-frames:v', '1', '-q:v', '4', '-an', target);
 
-    return new Promise((resolve) => {
-      let child;
-      try {
-        child = this.spawnImpl(this.ffmpegPath, args, {
-          windowsHide: true,
-          stdio: ['ignore', 'ignore', 'ignore'],
-        });
-      } catch {
-        resolve(null);
-        return;
-      }
-      let settled = false;
-      const finish = (value) => {
-        if (settled) return;
-        settled = true;
-        resolve(value);
-      };
-      const timer = setTimeout(() => {
+    return runFfmpegOnce({
+      spawnImpl: this.spawnImpl,
+      ffmpegPath: this.ffmpegPath,
+      args,
+      timeoutMs: this.snapshotTimeoutMs,
+      stdio: ['ignore', 'ignore', 'ignore'],
+      failureValue: null,
+      onExit: (code) => {
+        if (code !== 0) return null;
         try {
-          child.kill('SIGKILL');
+          return fs.existsSync(target) ? file : null;
         } catch {
-          // ignore
+          return null;
         }
-        finish(null);
-      }, this.snapshotTimeoutMs);
-      timer.unref?.();
-      child.on('error', () => {
-        clearTimeout(timer);
-        finish(null);
-      });
-      child.on('exit', (code) => {
-        clearTimeout(timer);
-        if (code !== 0) return finish(null);
-        try {
-          finish(fs.existsSync(target) ? file : null);
-        } catch {
-          finish(null);
-        }
-      });
+      },
     });
   }
 
@@ -678,45 +655,21 @@ export class DetectionEngine {
       '+faststart',
       target,
     );
-    return new Promise((resolve) => {
-      let child;
-      try {
-        child = this.spawnImpl(this.ffmpegPath, args, {
-          windowsHide: true,
-          stdio: ['ignore', 'ignore', 'ignore'],
-        });
-      } catch {
-        resolve(null);
-        return;
-      }
-      let settled = false;
-      const finish = (value) => {
-        if (settled) return;
-        settled = true;
-        resolve(value);
-      };
-      const timer = setTimeout(() => {
+    return runFfmpegOnce({
+      spawnImpl: this.spawnImpl,
+      ffmpegPath: this.ffmpegPath,
+      args,
+      timeoutMs: this.clipTimeoutMs,
+      stdio: ['ignore', 'ignore', 'ignore'],
+      failureValue: null,
+      onExit: (code) => {
+        if (code !== 0) return null;
         try {
-          child.kill('SIGKILL');
+          return fs.existsSync(target) ? file : null;
         } catch {
-          // ignore
+          return null;
         }
-        finish(null);
-      }, this.clipTimeoutMs);
-      timer.unref?.();
-      child.on('error', () => {
-        clearTimeout(timer);
-        finish(null);
-      });
-      child.on('exit', (code) => {
-        clearTimeout(timer);
-        if (code !== 0) return finish(null);
-        try {
-          finish(fs.existsSync(target) ? file : null);
-        } catch {
-          finish(null);
-        }
-      });
+      },
     });
   }
 

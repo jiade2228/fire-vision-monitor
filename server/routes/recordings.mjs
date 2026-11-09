@@ -11,14 +11,8 @@ import {
  * 因此不暴露 play/export 接口，避免给出必然 404 的入口。
  *
  * @param {import('express').Express} app
- * @param {object} deps
- * @param {object} deps.store
- * @param {string} deps.continuousDir 录像段根目录
- * @param {boolean} deps.recordingEnabled 采集总闸状态
- * @param {(user: any, camera: any, store: object) => boolean} deps.canAccessCameraSite
- * @param {import('express').RequestHandler} deps.requireAuth
- * @param {(...roles: string[]) => import('express').RequestHandler} deps.requireRole
- * @param {(value: any, maxLength?: number) => string} deps.normalizeText
+ * @param {import('./deps.mjs').RouteDeps} deps
+ *   continuousDir 录像段根目录；recordingEnabled 采集总闸状态。
  */
 export function registerRecordingRoutes(app, deps) {
   const {
