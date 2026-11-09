@@ -236,7 +236,12 @@ export function registerMediaRoutes(app, deps) {
     res.setHeader('Content-Type', 'video/mp2t');
     res.setHeader('Cache-Control', 'private, max-age=10');
     res.sendFile(file, (error) => {
-      if (error && !res.headersSent) res.status(404).end();
+      if (!error) return;
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
+      res.status(404).end();
     });
   });
 }

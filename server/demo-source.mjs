@@ -152,6 +152,11 @@ export class DemoSource {
       });
     }
     const token = crypto.randomBytes(16).toString('hex');
+    // 上一次 stop 的目录清理可能仍在进行；等待它结束，避免删掉刚生成的分片。
+    if (this.cleanup) {
+      await this.cleanup;
+      this.cleanup = null;
+    }
     await fsp.rm(this.directory, { recursive: true, force: true });
     await fsp.mkdir(this.directory, { recursive: true, mode: 0o700 });
     let child;
@@ -252,7 +257,10 @@ export class DemoSource {
         }
       }, 3_000).unref?.();
     }
-    void fsp.rm(this.directory, { recursive: true, force: true }).catch(() => undefined);
+    // 串行保存清理任务，供下一次 start 等待，避免 stop→start 或多次 stop 的竞态。
+    this.cleanup = (this.cleanup ?? Promise.resolve())
+      .then(() => fsp.rm(this.directory, { recursive: true, force: true }))
+      .catch(() => undefined);
   }
 
   status() {

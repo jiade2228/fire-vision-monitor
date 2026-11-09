@@ -181,6 +181,23 @@ test('告警保护段豁免水位淘汰，非保护段按最旧优先', async (t
   store.close();
 });
 
+test('目录暂时为空时保留既有索引，不整表清除', async (t) => {
+  const root = await tempDir(t);
+  let deleted = 0;
+  const store = {
+    allRecordingSegmentFiles: () => ['cam-01/20261103/120000.ts'],
+    upsertRecordingSegments: () => ({ inserted: 0, updated: 0 }),
+    deleteRecordingSegments: (files) => {
+      deleted = files.length;
+      return files.length;
+    },
+  };
+  const result = await reconcileRecordingSegments(store, root);
+  assert.equal(result.scanned, 0);
+  assert.equal(result.orphansRemoved, 0);
+  assert.equal(deleted, 0);
+});
+
 test('时间线接口：参数校验、跨站点隐藏与空日时间线', async (t) => {
   const app = express();
   const camera = { id: 'cam-01', siteId: 'site-a' };

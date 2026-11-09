@@ -49,10 +49,11 @@ const dataDir = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.join(projectRoot, 'data');
 const distDir = path.join(projectRoot, 'dist');
-// SPA 回退与 404 兜底共享保留前缀；回退额外排除 /proxy/ 及精确路径 /healthz。
-const commonReservedPaths = ['/api/', '/streams/', '/demo/'];
-const spaReservedPaths = [...commonReservedPaths, '/proxy/'];
+// SPA 回退与 404 兜底共享保留前缀；回退额外排除精确路径 /healthz。
+const commonReservedPaths = ['/api/', '/streams/', '/demo/', '/proxy/'];
+const spaReservedPaths = [...commonReservedPaths];
 const spaReservedExactPaths = ['/healthz'];
+const reservedExactPaths = ['/api', '/streams', '/demo', '/proxy'];
 const legacyJsonFile = path.join(dataDir, 'app.json');
 const databaseFile = path.join(dataDir, 'app.db');
 const snapshotDir = path.join(dataDir, 'snapshots');
@@ -98,12 +99,32 @@ const metrics = {
   alarmsCreated: 0,
 };
 const sseClients = new Set();
+// main() 创建 Store 后赋值；SSE 长连接期间权限可能变更，广播时按实时状态校验。
+let activeStore = null;
 
 function broadcastEvent(event, data, siteId = null) {
   const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const client of sseClients) {
-    // 告警事件按站点投递：避免把 A 区告警推给只有 B 区权限的账号。
-    if (siteId && Array.isArray(client.siteIds) && !client.siteIds.includes(siteId)) {
+    // 不使用建连时的站点快照：撤权/停用后的长连接不应继续收到其它站点告警。
+    if (activeStore) {
+      let allowed;
+      try {
+        const user = activeStore.getUser(client.userId);
+        if (!user || user.disabled) {
+          sseClients.delete(client);
+          continue;
+        }
+        allowed = allowedSiteIdsFor(user, activeStore);
+      } catch {
+        // 查询失败时保守跳过，不按过期快照投递。
+        continue;
+      }
+      if (siteId && allowed !== null && !allowed.includes(siteId)) continue;
+    } else if (
+      siteId &&
+      Array.isArray(client.siteIds) &&
+      !client.siteIds.includes(siteId)
+    ) {
       continue;
     }
     try {
@@ -597,6 +618,7 @@ async function main() {
     });
     const secretBox = new SecretBox(credentialKey);
     store = await openStore({ dataDir, secretBox, legacyData });
+    activeStore = store;
     if (!store.health()) throw new Error('SQLite 健康检查失败');
     // 提前触发凭据解密，避免服务启动后首个点位请求才暴露密钥错误。
     store.listCameras();
@@ -1200,6 +1222,11 @@ async function main() {
       next();
     });
     app.use(express.json({ limit: '2mb' }));
+    // 非 JSON Content-Type 时 body-parser 不会给 req.body 赋值，写接口解构会抛 TypeError。
+    app.use((req, _res, next) => {
+      if (req.body === undefined) req.body = {};
+      next();
+    });
 
     const {
       currentUser,
@@ -1422,7 +1449,8 @@ async function main() {
         if (
           req.method !== 'GET' ||
           spaReservedPaths.some((prefix) => req.path.startsWith(prefix)) ||
-          spaReservedExactPaths.includes(req.path)
+          spaReservedExactPaths.includes(req.path) ||
+          reservedExactPaths.includes(req.path)
         ) {
           return next();
         }
@@ -1432,13 +1460,16 @@ async function main() {
     }
 
     app.use((req, res) => {
-      if (commonReservedPaths.some((prefix) => req.path.startsWith(prefix))) {
+      if (
+        commonReservedPaths.some((prefix) => req.path.startsWith(prefix)) ||
+        reservedExactPaths.includes(req.path)
+      ) {
         return res.status(404).json({ error: '接口不存在' });
       }
       return res.status(404).send('Not found');
     });
 
-    app.use((error, req, res, _next) => {
+    app.use((error, req, res, next) => {
       metrics.errors += 1;
       const status = Number(error?.status ?? error?.statusCode ?? 500);
       if (error?.type === 'entity.parse.failed') {
@@ -1453,7 +1484,8 @@ async function main() {
         status,
         message: String(error?.message ?? error).slice(0, 500),
       });
-      if (res.headersSent) return;
+      // 响应头已发出时交给框架默认处理（会终止连接），不能静默返回让 socket 悬挂。
+      if (res.headersSent) return next(error);
       res.status(status >= 400 && status < 600 ? status : 500).json({
         error: status >= 500 ? '服务器内部错误' : String(error?.message ?? '请求失败'),
       });
@@ -1539,7 +1571,15 @@ async function main() {
           process.exit(0);
         }
       });
-      setTimeout(() => process.exit(1), 8_000).unref();
+      setTimeout(() => {
+        // 活跃 SSE/WebSocket 可能让 server.close 迟迟不回调；强制退出前仍要释放锁与连接。
+        try {
+          store?.close();
+        } catch {
+          // 已关闭则忽略
+        }
+        void releaseLock().finally(() => process.exit(1));
+      }, 8_000).unref();
     };
     process.on('SIGINT', () => void shutdown('SIGINT'));
     process.on('SIGTERM', () => void shutdown('SIGTERM'));
@@ -1569,4 +1609,8 @@ async function main() {
   }
 }
 
-void main();
+main().catch((error) => {
+  // mkdir / 实例锁等前置步骤位于 try 之外，失败时也要留下结构化日志而非裸堆栈。
+  log('error', 'startup_failed', { message: String(error?.message ?? error) });
+  process.exit(1);
+});

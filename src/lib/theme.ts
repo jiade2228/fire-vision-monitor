@@ -19,12 +19,18 @@ export function loadTheme(): Theme {
   }
 }
 
-/** 应用并保存主题；同时同步浏览器 UI 配色与表单控件的 color-scheme。 */
-export function applyTheme(theme: Theme): void {
+/** 只更新 DOM/meta，不写回存储：供其它标签页的 storage 事件同步使用，避免乒乓写入。 */
+export function paintTheme(theme: Theme): void {
   if (typeof document === 'undefined') return;
   document.documentElement.dataset.theme = theme;
   const meta = document.querySelector(META_SELECTOR);
   if (meta) meta.setAttribute('content', THEME_COLORS[theme]);
+}
+
+/** 应用并保存主题；同时同步浏览器 UI 配色与表单控件的 color-scheme。 */
+export function applyTheme(theme: Theme): void {
+  paintTheme(theme);
+  if (typeof window === 'undefined') return;
   try {
     window.localStorage.setItem(STORAGE_KEY, theme);
   } catch {

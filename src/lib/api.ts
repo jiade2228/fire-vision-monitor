@@ -399,6 +399,9 @@ export class ApiError extends Error {
   }
 }
 
+// 单个请求的最长等待：避免网络黑洞让 useAlarms 的防重入标志永不复位。
+const REQUEST_TIMEOUT_MS = 60_000;
+
 async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set('X-Requested-With', 'flame-vision');
@@ -409,19 +412,27 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
   try {
     response = await fetch(url, {
       ...init,
+      signal: init.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       headers,
       credentials: 'same-origin',
     });
-  } catch {
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.name === 'TimeoutError' || error.name === 'AbortError')
+    ) {
+      throw new ApiError('请求超时，请稍后重试', 0);
+    }
     throw new ApiError('无法连接服务器，请检查网络或服务是否运行', 0);
   }
   const text = await response.text();
   let payload: unknown = null;
+  let parseFailed = false;
   if (text) {
     try {
       payload = JSON.parse(text);
     } catch {
-      payload = null;
+      parseFailed = true;
     }
   }
   if (!response.ok) {
@@ -438,7 +449,8 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
         : `请求失败（${response.status}）`;
     throw new ApiError(message, response.status);
   }
-  if (text && payload === null) {
+  // 合法的 JSON `null` 是有效响应，只有解析失败才报错。
+  if (parseFailed) {
     throw new ApiError('服务器返回了无法解析的响应', response.status);
   }
   return payload as T;

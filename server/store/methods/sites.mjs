@@ -33,7 +33,7 @@ getSite(id) {
  */
 createSite({ id, name, code, createdAt }) {
     // sites.id 是 TEXT 主键，last_insert_rowid() 对它无效；统一用同一个 ID 插入并回读。
-    const siteId = id ?? crypto.randomUUID();
+    const siteId = typeof id === 'string' && id.trim() ? id : crypto.randomUUID();
     this.db
       .prepare('INSERT INTO sites (id, name, code, created_at) VALUES (?, ?, ?, ?)')
       .run(siteId, name, code, createdAt ?? now());

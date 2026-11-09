@@ -59,7 +59,14 @@ export function runFfmpegOnce({
     });
     child.on('exit', (code) => {
       clearTimeout(timer);
-      finish(onExit(code));
+      // onExit 在事件回调栈中执行，抛错会变成 uncaughtException 且 Promise 永不 settle。
+      let value;
+      try {
+        value = onExit(code);
+      } catch {
+        value = failureValue;
+      }
+      finish(value);
     });
   });
 }

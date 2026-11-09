@@ -120,24 +120,40 @@ export async function scanRecordingSegments(rootDir, { segmentSeconds = 60 } = {
   for (const camera of cameras) {
     if (!camera.isDirectory() || camera.name.startsWith('.')) continue;
     const cameraDir = path.join(rootDir, camera.name);
-    const days = await fsp.readdir(cameraDir, { withFileTypes: true });
+    // 采集滚动删除/水位淘汰可能与扫描并发；单个目录或文件消失不应中断整轮对账。
+    let days;
+    try {
+      days = await fsp.readdir(cameraDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
     for (const day of days) {
       if (!day.isDirectory()) continue;
       const dayStart = parseUtcDay(day.name);
       if (dayStart === null) continue;
       const dayDir = path.join(cameraDir, day.name);
-      const files = await fsp.readdir(dayDir, { withFileTypes: true });
+      let files;
+      try {
+        files = await fsp.readdir(dayDir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
       for (const file of files) {
         if (!file.isFile()) continue;
         const offset = parseSegmentTime(file.name);
         if (offset === null) continue;
         const full = path.join(dayDir, file.name);
-        const stat = await fsp.stat(full);
+        let bytes;
+        try {
+          bytes = (await fsp.stat(full)).size;
+        } catch {
+          continue;
+        }
         entries.push({
           cameraId: camera.name,
           file: path.posix.join(camera.name, day.name, file.name),
           startedAt: dayStart + offset,
-          bytes: stat.size,
+          bytes,
         });
       }
     }
@@ -152,20 +168,34 @@ export async function scanRecordingSegments(rootDir, { segmentSeconds = 60 } = {
  * @param {string} rootDir
  * @param {{segmentSeconds?:number}} [options]
  */
+// 定时对账与手动 reconcile 可能并发；串行化避免旧快照写回形成僵尸索引行。
+let reconcileInFlight = false;
+
 export async function reconcileRecordingSegments(store, rootDir, options = {}) {
-  const scanned = await scanRecordingSegments(rootDir, options);
-  const present = new Set(scanned.map((segment) => segment.file));
-  const orphans = store
-    .allRecordingSegmentFiles()
-    .filter((file) => !present.has(file));
-  const upserted = store.upsertRecordingSegments(scanned);
-  const removed = store.deleteRecordingSegments(orphans);
-  return {
-    scanned: scanned.length,
-    inserted: upserted.inserted,
-    updated: upserted.updated,
-    orphansRemoved: removed,
-  };
+  if (reconcileInFlight) {
+    return { scanned: 0, inserted: 0, updated: 0, orphansRemoved: 0, skipped: true };
+  }
+  reconcileInFlight = true;
+  try {
+    const scanned = await scanRecordingSegments(rootDir, options);
+    const present = new Set(scanned.map((segment) => segment.file));
+    const indexed = store.allRecordingSegmentFiles();
+    // 目录暂时为空（采集重启/挂载切换）时不清空索引，避免时间线误报「录像全部丢失」。
+    const orphans =
+      scanned.length === 0 && indexed.length > 0
+        ? []
+        : indexed.filter((file) => !present.has(file));
+    const upserted = store.upsertRecordingSegments(scanned);
+    const removed = store.deleteRecordingSegments(orphans);
+    return {
+      scanned: scanned.length,
+      inserted: upserted.inserted,
+      updated: upserted.updated,
+      orphansRemoved: removed,
+    };
+  } finally {
+    reconcileInFlight = false;
+  }
 }
 
 /**

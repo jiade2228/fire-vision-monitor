@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ViewKey } from '../types';
 import { ROLE_LABELS } from '../lib/api';
 import type { SessionUser } from '../lib/api';
 import { formatDate, formatTime } from '../lib/format';
 import { useNow } from '../hooks/useNow';
-import { applyTheme, loadTheme, toggleTheme, type Theme } from '../lib/theme';
+import { applyTheme, loadTheme, paintTheme, toggleTheme, type Theme } from '../lib/theme';
 
 interface Props {
   view: ViewKey;
@@ -52,6 +52,18 @@ export default function TopBar({
     setTheme(next);
     applyTheme(next);
   };
+
+  // 其它标签页切换主题时同步本页状态与 DOM，避免按钮文案与实际主题相反。
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key && event.key !== 'flame-vision.theme.v1') return;
+      const next = loadTheme();
+      setTheme(next);
+      paintTheme(next);
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
 
   return (
     <header className="topbar">

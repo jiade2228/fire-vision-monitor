@@ -78,11 +78,27 @@ export function migrateLegacy(db, secretBox, legacyData) {
     ((Array.isArray(legacyData.users) && legacyData.users.length > 0) ||
       (Array.isArray(legacyData.cameras) && legacyData.cameras.length > 0));
   if (!hasLegacy) {
-    db.prepare("INSERT INTO meta(key, value) VALUES('setup_complete', '0')").run();
-    db.prepare("INSERT INTO meta(key, value) VALUES('initialized', '1')").run();
-    db.prepare("INSERT INTO meta(key, value) VALUES('schema_version', ?)").run(
-      String(SCHEMA_VERSION),
-    );
+    // 三条 meta 写入必须原子且可重入：初始化中途被 kill 后，再次启动不能因唯一约束永久失败。
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.prepare(
+        "INSERT INTO meta(key, value) VALUES('setup_complete', '0') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      ).run();
+      db.prepare(
+        "INSERT INTO meta(key, value) VALUES('initialized', '1') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      ).run();
+      db.prepare(
+        "INSERT INTO meta(key, value) VALUES('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      ).run(String(SCHEMA_VERSION));
+      db.exec('COMMIT');
+    } catch (error) {
+      try {
+        db.exec('ROLLBACK');
+      } catch {
+        // 事务可能已被自动回滚，保留原始错误。
+      }
+      throw error;
+    }
     return;
   }
 
@@ -146,7 +162,11 @@ export function migrateLegacy(db, secretBox, legacyData) {
     ).run(String(SCHEMA_VERSION));
     db.exec('COMMIT');
   } catch (error) {
-    db.exec('ROLLBACK');
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // SQLite 可能已自动回滚；吞掉 ROLLBACK 失败才能抛出真实的迁移错误。
+    }
     throw error;
   }
 }
@@ -347,7 +367,11 @@ export function migrateCameraSchemaV2(db) {
     ).run();
     db.exec('COMMIT');
   } catch (error) {
-    db.exec('ROLLBACK');
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // SQLite 可能已自动回滚；吞掉 ROLLBACK 失败才能抛出真实的迁移错误。
+    }
     throw error;
   }
 }
@@ -389,7 +413,11 @@ export function migrateSchemaV3(db) {
     ).run();
     db.exec('COMMIT');
   } catch (error) {
-    db.exec('ROLLBACK');
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // SQLite 可能已自动回滚；吞掉 ROLLBACK 失败才能抛出真实的迁移错误。
+    }
     throw error;
   }
 }
@@ -509,7 +537,11 @@ export function migrateSchemaV4(db) {
     ).run();
     db.exec('COMMIT');
   } catch (error) {
-    db.exec('ROLLBACK');
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // SQLite 可能已自动回滚；吞掉 ROLLBACK 失败才能抛出真实的迁移错误。
+    }
     throw error;
   }
 }
@@ -532,7 +564,11 @@ export function migrateSchemaV5(db) {
     ).run();
     db.exec('COMMIT');
   } catch (error) {
-    db.exec('ROLLBACK');
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // SQLite 可能已自动回滚；吞掉 ROLLBACK 失败才能抛出真实的迁移错误。
+    }
     throw error;
   }
 }
@@ -588,7 +624,11 @@ export function migrateSchemaV6(db) {
     ).run();
     db.exec('COMMIT');
   } catch (error) {
-    db.exec('ROLLBACK');
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // SQLite 可能已自动回滚；吞掉 ROLLBACK 失败才能抛出真实的迁移错误。
+    }
     throw error;
   }
 }
@@ -684,7 +724,11 @@ export function migrateSchemaV7(db) {
     ).run();
     db.exec('COMMIT');
   } catch (error) {
-    db.exec('ROLLBACK');
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // SQLite 可能已自动回滚；吞掉 ROLLBACK 失败才能抛出真实的迁移错误。
+    }
     throw error;
   }
 }
@@ -709,7 +753,11 @@ export function migrateSchemaV8(db) {
     ).run();
     db.exec('COMMIT');
   } catch (error) {
-    db.exec('ROLLBACK');
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // SQLite 可能已自动回滚；吞掉 ROLLBACK 失败才能抛出真实的迁移错误。
+    }
     throw error;
   }
 }

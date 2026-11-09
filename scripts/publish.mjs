@@ -29,15 +29,37 @@ if (!url) {
 if (!/^(https?:\/\/|git@|ssh:\/\/)/.test(url)) {
   fail('仓库地址格式不正确，应形如 https://github.com/<owner>/<repo>.git 或 git@github.com:<owner>/<repo>.git');
 }
+// 仅校验协议会放过 https:// 这类残缺地址；要求至少有主机与仓库路径两段。
+const hostAndPath = url
+  .replace(/^(https?:\/\/|ssh:\/\/|git@)/, '')
+  .replace(':', '/');
+if (hostAndPath.split('/').filter(Boolean).length < 2) {
+  fail('仓库地址缺少主机或仓库路径，请填写完整地址');
+}
 
-const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+const git = (...args) => {
+  try {
+    return execFileSync('git', args, {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  } catch (error) {
+    return fail(`git ${args.join(' ')} 失败：${String(error?.message ?? error)}`);
+  }
+};
 const branch = git('branch', '--show-current');
 if (branch !== 'main') fail(`当前分支为 ${branch}，请切回 main 再发布`);
 if (git('status', '--porcelain')) fail('工作区有未提交改动，请先提交');
 
 const pkgPath = path.join(root, 'package.json');
 const pkg = JSON.parse(await fs.readFile(pkgPath, 'utf8'));
-const repository = { type: 'git', url };
+// 保留既有 repository 元数据（如 directory），只覆盖 type/url。
+const repository = {
+  ...(pkg.repository && typeof pkg.repository === 'object' ? pkg.repository : {}),
+  type: 'git',
+  url,
+};
 
 let remote = '';
 const remotes = git('remote').split('\n').filter(Boolean);
@@ -60,12 +82,13 @@ await fs.writeFile(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`, 'utf8');
 if (remote) git('remote', 'set-url', 'origin', url);
 else git('remote', 'add', 'origin', url);
 
-// repository 字段变更需要单独提交，避免混入业务提交。
 git('add', 'package.json');
-try {
+// 只有确实产生暂存变更时才提交；git helper 会在 commit 失败时终止，
+// 绝不能吞掉异常后推送不含 repository 变更的旧 HEAD。
+if (git('diff', '--cached', '--name-only', '--', 'package.json')) {
   git('commit', '-m', `chore: 补充 repository 元数据（${url}）`);
-} catch {
-  console.log('[publish] package.json 无变化或已提交，跳过');
+} else {
+  console.log('[publish] repository 元数据无变化，跳过提交');
 }
 git('push', '-u', 'origin', 'main');
 console.log('[publish] 推送完成，请在仓库页面核对 CI 与分支保护。');

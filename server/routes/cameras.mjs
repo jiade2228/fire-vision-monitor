@@ -204,7 +204,12 @@ export function registerCameraRoutes(app, deps) {
         }
         res.setHeader('Cache-Control', 'no-store');
         res.sendFile(target, (error) => {
-          if (error && !res.headersSent) res.status(404).end();
+          if (!error) return;
+          if (res.headersSent) {
+            res.destroy();
+            return;
+          }
+          res.status(404).end();
         });
       } catch (error) {
         res.status(500).json({ error: error.message });
@@ -604,16 +609,27 @@ export function registerCameraRoutes(app, deps) {
       siteIdInput(req) || fallbackSiteIdFor(req.user);
     const guard = siteGuard(req, fallbackSiteId, '无权管理该站点');
     if (guard) return res.status(guard.status).json({ error: guard.error });
+    // 先整体校验设备与站点，避免循环中途失败留下「部分导入 + 4xx」的不一致状态。
+    const safeDevices = devices.filter(
+      (device) => device && typeof device === 'object',
+    );
+    if (safeDevices.length === 0) {
+      return res.status(400).json({ error: '没有可导入的通道' });
+    }
+    for (const device of safeDevices) {
+      const deviceSiteId =
+        normalizeText(String(device.siteId ?? ''), 64) || fallbackSiteId;
+      const guard = siteGuard(req, deviceSiteId, '无权管理目标站点');
+      if (guard) return res.status(guard.status).json({ error: guard.error });
+    }
     const created = [];
     let skipped = 0;
-    for (const device of devices) {
+    for (const device of safeDevices) {
       const label = normalizeText(device.label || device.host || '', 32);
       const zone = normalizeText(device.zone || device.host || '', 32) || 'ONVIF';
       // 前端按设备下发 siteId，缺省时回退到请求级站点，避免全部落到默认站点。
       const deviceSiteId =
         normalizeText(String(device.siteId ?? ''), 64) || fallbackSiteId;
-      const guard = siteGuard(req, deviceSiteId, '无权管理目标站点');
-      if (guard) return res.status(guard.status).json({ error: guard.error });
       const profiles = Array.isArray(device.profiles) ? device.profiles : [];
       for (const profile of profiles) {
         const rtspUri = String(profile.rtspUri || '');

@@ -1,11 +1,13 @@
 const pad = (value: number) => String(value).padStart(2, '0');
 
 export function formatTime(ts: number): string {
+  if (!Number.isFinite(ts)) return '—';
   const d = new Date(ts);
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 export function formatDateTime(ts: number): string {
+  if (!Number.isFinite(ts)) return '—';
   const d = new Date(ts);
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(
     d.getMinutes(),
@@ -13,6 +15,7 @@ export function formatDateTime(ts: number): string {
 }
 
 export function formatDate(ts: number): string {
+  if (!Number.isFinite(ts)) return '—';
   const d = new Date(ts);
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }

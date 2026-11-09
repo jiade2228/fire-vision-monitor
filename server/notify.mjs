@@ -430,7 +430,10 @@ export class Notifier {
         .listNotifyChannels()
         .filter((item) => item.enabled && item.id !== channel.id);
       if (!others.length) return;
-      const dayKey = new Date().toISOString().slice(0, 10);
+      // 与告警按天统计/展示一致使用上海日（固定 +8，无夏令时），否则 00:00-08:00 去重键跨天。
+      const dayKey = new Date(Date.now() + 8 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 10);
       await this.notifyBroadcast(
         'channel.disabled',
         {

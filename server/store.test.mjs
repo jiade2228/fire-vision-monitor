@@ -7,11 +7,27 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { SecretBox } from './secrets.mjs';
 import { openStore, backupCorruptFiles, isDatabaseCorruptionError } from './store.mjs';
-import { SCHEMA_VERSION } from './schema.mjs';
+import { SCHEMA_VERSION, migrateLegacy } from './schema.mjs';
 
 function box() {
   return new SecretBox(crypto.randomBytes(32));
 }
+
+test('migrateLegacy 对已存在的 meta 键可重入（初始化中断后可恢复）', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+  db.prepare("INSERT INTO meta(key, value) VALUES('setup_complete', '0')").run();
+  assert.doesNotThrow(() => migrateLegacy(db, box(), null));
+  assert.equal(
+    db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get().value,
+    String(SCHEMA_VERSION),
+  );
+  assert.equal(
+    db.prepare("SELECT value FROM meta WHERE key = 'initialized'").get().value,
+    '1',
+  );
+  db.close();
+});
 
 test('legacy data migrates and RTSP credentials are encrypted at rest', async (t) => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fire-store-'));

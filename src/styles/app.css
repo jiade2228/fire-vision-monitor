@@ -30,6 +30,12 @@
   --overlay-rgb: 7, 13, 21;
   --scrim-rgb: 11, 19, 28;
   --popover-rgb: 18, 29, 42;
+  /* 容器级渐变：浅色主题需整体覆盖，否则深色文字落在近黑背景上不可读。 */
+  --shell-bg:
+    radial-gradient(1100px 520px at 8% -10%, rgba(255, 122, 47, 0.13), transparent 62%),
+    radial-gradient(900px 460px at 100% -6%, rgba(76, 201, 240, 0.1), transparent 58%),
+    linear-gradient(180deg, #0a1018 0%, #070c14 55%, #060a11 100%);
+  --overlay-bg: linear-gradient(180deg, #111c29, #080e17);
 }
 
 :root[data-theme='light'] {
@@ -60,6 +66,11 @@
   --overlay-rgb: 248, 250, 253;
   --scrim-rgb: 230, 237, 244;
   --popover-rgb: 255, 255, 255;
+  --shell-bg:
+    radial-gradient(1100px 520px at 8% -10%, rgba(255, 122, 47, 0.1), transparent 62%),
+    radial-gradient(900px 460px at 100% -6%, rgba(11, 127, 168, 0.08), transparent 58%),
+    linear-gradient(180deg, #ffffff 0%, #f2f5f9 55%, #e8eef6 100%);
+  --overlay-bg: linear-gradient(180deg, #ffffff, #eef2f7);
   color-scheme: light;
 }
 
@@ -94,10 +105,7 @@ button {
 
 .app-shell {
   min-height: 100dvh;
-  background:
-    radial-gradient(1100px 520px at 8% -10%, rgba(255, 122, 47, 0.13), transparent 62%),
-    radial-gradient(900px 460px at 100% -6%, rgba(76, 201, 240, 0.1), transparent 58%),
-    linear-gradient(180deg, #0a1018 0%, #070c14 55%, #060a11 100%);
+  background: var(--shell-bg);
   padding-bottom: 12px;
 }
 
@@ -2451,7 +2459,7 @@ button {
   overflow: hidden;
   border: 1px solid rgba(var(--line-rgb), 0.32);
   border-radius: 16px;
-  background: linear-gradient(180deg, #111c29, #080e17);
+  background: var(--overlay-bg);
   box-shadow: 0 30px 80px rgba(0, 0, 0, 0.75);
 }
 
@@ -3517,7 +3525,7 @@ button {
   overflow: hidden;
   border: 1px solid rgba(var(--line-rgb), 0.32);
   border-radius: 16px;
-  background: linear-gradient(180deg, #111c29, #080e17);
+  background: var(--overlay-bg);
   box-shadow: 0 30px 80px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(2, 6, 12, 0.6);
 }
 

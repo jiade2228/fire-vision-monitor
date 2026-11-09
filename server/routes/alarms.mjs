@@ -150,7 +150,15 @@ export function registerAlarmRoutes(app, deps) {
     if (!pattern.test(safeName)) return res.status(404).end();
     res.setHeader('Cache-Control', 'private, max-age=3600');
     res.sendFile(path.join(dir, safeName), (error) => {
-      if (error && !res.headersSent) res.status(404).end();
+      if (!error) return;
+      if (res.headersSent) {
+        // 传输中途读失败/文件被清理时终止连接，避免响应悬挂到客户端超时。
+        res.destroy();
+        return;
+      }
+      // 文件缺失时禁止把 404 缓存 1 小时，否则稍后生成的短视频无法重试。
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(404).end();
     });
   };
 

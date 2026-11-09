@@ -141,6 +141,8 @@ export function useVideoPlayback(source: CameraSource | null) {
     const handleVisibility = () => {
       if (cancelled || document.visibilityState !== 'visible') return;
       if (video.error || video.readyState < 2) {
+        // 回到前台是明确的恢复时机：重置重试预算，否则耗尽后永久停在 error。
+        attemptsRef.current = 0;
         scheduleRetry(0);
         return;
       }

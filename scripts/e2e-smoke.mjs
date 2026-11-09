@@ -338,17 +338,24 @@ async function main() {
 
     // 主题切换：手动切换后 CSS 变量生效，刷新后仍保持（验证持久化与防闪烁初始化）。
     if (await page.$('.topbar-theme')) {
+      const shellBefore = await page.evaluate(() =>
+        getComputedStyle(document.querySelector('.app-shell') ?? document.body)
+          .backgroundImage,
+      );
       await page.click('.topbar-theme');
       const switched = await page.evaluate(() => ({
         theme: document.documentElement.dataset.theme,
         scheme: getComputedStyle(document.documentElement).colorScheme,
         bg: getComputedStyle(document.body).backgroundColor,
+        shell: getComputedStyle(document.querySelector('.app-shell') ?? document.body)
+          .backgroundImage,
       }));
       check(
         '切换浅色主题后配色生效',
         switched.theme === 'light' &&
           switched.scheme === 'light' &&
-          switched.bg !== 'rgb(7, 12, 20)',
+          switched.bg !== 'rgb(7, 12, 20)' &&
+          switched.shell !== shellBefore,
         JSON.stringify(switched),
       );
       await page.reload({ waitUntil: 'domcontentloaded' });
