@@ -1,6 +1,6 @@
 # 持续录像时间线回放 · 设计文档
 
-状态：**第一阶段（索引与时间线）已实施，采集 worker / 按需转码 / 导出仍待真机联调**（REVIEW 第三节判定为「暂缓·大」，依赖真机验证磁盘与 FFmpeg 行为）。
+状态：**全部功能已实施（索引、采集、回放、导出、保护段联动、配额淘汰、前端播放器）；§8 真机验收清单仍需在有真实设备的现场执行**。
 关联：`REVIEW.md` 第二节新功能优先级；现有告警短视频（`ALARM_CLIP_SECONDS`）与磁盘水位（`MEDIA_MAX_BYTES`）机制。
 
 > 2026-11-06 实施记录（第一阶段）
@@ -9,9 +9,24 @@
 > - 已落地：schema V8 `recording_segments` 表、`server/recording-index.mjs`（扫描/时长校准/对账/时间线）、
 >   `store/methods/recordings.mjs`、`GET /api/recordings/timeline` 与 `POST /api/recordings/reconcile`（超管）、
 >   5 分钟自动对账、`src/components/RecordingTimeline.tsx`（24h 时间条 + 缺口 + 保护段）。
-> - 未落地：FFmpeg copy 采集 worker、`play`/`export` 按需转码、告警保护段的自动联动、
->   `RECORDING_RETENTION_DAYS` 配额淘汰。这些保留在 §8 真机验证清单之后实施。
-> - `RECORDING=1` 目前只影响时间线返回的 `enabled` 标记，不会启动任何录像进程。
+
+> 2026-11-09 实施记录（第二阶段，本次收口）
+> - `server/recording-capture.mjs`：每个点位一个 FFmpeg copy 分段进程，指数退避重启、
+>   布防时间表生效、并发上限；子进程显式注入 `TZ=UTC`，跨 UTC 日自动重建目录与进程。
+>   真实 FFmpeg 端到端验证通过（段名 `055051.ts` 等，UTC 05 时 / 本地 13 时）。
+> - `server/recording-playback.mjs`：选段/路径穿越校验/concat 列表/HLS 会话/MP4 导出。
+>   会话绑定 userId 与点位，分片请求实时复核站点权限；空闲 90s 回收、并发上限复用
+>   `MAX_CONCURRENT_STREAMS`。单次窗口上限 4 小时（`MAX_PLAYBACK_WINDOW_MS`）。
+> - 新增接口：`GET /api/recordings/status`、`GET /api/recordings/play`、
+>   `GET /api/recordings/play/:sessionId/:file`、`GET /api/recordings/export`。
+> - `store/methods/recordings.mjs`：`protectSegmentsAround` / `unprotectExpiredSegments` /
+>   `recordingUsage`；`onAlarm` 时自动把告警前 120s 至「短视频时长 + 60s」的段置保护。
+> - 配额淘汰：`RECORDING_RETENTION_DAYS`(14) + `RECORDING_MAX_BYTES`(50GB) 双保险，
+>   每小时淘汰最旧非保护段并删文件；保护段 `RECORDING_PROTECT_DAYS`(30) 后解除。
+> - 前端 `RecordingTimeline.tsx` 接入 hls.js 播放与 MP4 导出，点击时间块自动裁剪到 4 小时。
+> - `RECORDING=1` 现在会真正启动采集进程；不开启时索引/对账/回放/导出仍可正常使用已有段。
+> - 新增 18 条回归测试（`recording-capture.test.mjs` / `recording-playback.test.mjs` /
+>   `recording-store.test.mjs`），均为可注入 spawnImpl/clock 的离线夹具，不依赖真机。
 
 ---
 
@@ -89,11 +104,14 @@ CREATE INDEX idx_recording_cam_start ON recording_segments(camera_id, started_at
 
 | 接口 | 说明 |
 |---|---|
-| `GET /api/recordings/timeline?cameraId&date=YYYYMMDD` | 返回该日段列表（起止+gap），前端渲染时间条 |
-| `GET /api/recordings/play?cameraId&from=<epoch>&to=<epoch>` | 校验站点权限 → 选出覆盖时段的段 → 启动按需转码（copy 拼接为 HLS，hls_time 2s）→ 返回 playlist 地址；复用 `MAX_CONCURRENT_STREAMS` 上限与 90s 空闲回收 |
-| `GET /api/recordings/export?...` | 拼接为 MP4 下载（ evenings/取证用，复用现有告警短视频的转 MP4 逻辑） |
+| `GET /api/recordings/timeline?cameraId&date=YYYY-MM-DD` | 返回该日段列表（起止+gap），前端渲染时间条；也支持 `from`/`to`（≤48h） |
+| `GET /api/recordings/status` | 采集状态：`enabled / active / total / skipped / ffmpegAvailable / retentionDays` |
+| `GET /api/recordings/play?cameraId&from=<epoch>&to=<epoch>` | 校验站点权限 → 选出覆盖时段的段 → concat demuxer + `-c copy` 生成 VOD HLS（2s 分片、`ENDLIST`）→ 返回 `{sessionId, playlist, from, to, segmentCount, expiresAt}`；窗口 ≤4h，并发复用 `MAX_CONCURRENT_STREAMS`，空闲 90s 回收 |
+| `GET /api/recordings/play/:sessionId/:file` | 会话内 `index.m3u8` / `segment-NNNNN.ts`；`private, no-store`；按 userId 归属 + 实时站点鉴权，文件白名单防穿越 |
+| `GET /api/recordings/export?cameraId&from=<epoch>&to=<epoch>` | concat demuxer + `-c copy -movflags +faststart` 拼接 MP4 下载，响应后删除临时文件；窗口 ≤4h |
+| `POST /api/recordings/reconcile` | 超管手动触发文件系统→索引对账（定时每 5 分钟自动执行） |
 
-权限：沿用 `canAccessCameraSite`；跨站点 404 防探测与现有媒体接口一致。
+权限：沿用 `canAccessCameraSite`；跨站点 404 防探测与现有媒体接口一致。回放会话额外实时复核点位站点权限，撤权后立即失效。
 
 ## 7. 前端时间线
 
@@ -111,11 +129,14 @@ CREATE INDEX idx_recording_cam_start ON recording_segments(camera_id, started_at
 - [ ] Windows 现场路径（项目当前跑在 Windows）：文件名合法性与 fsync 行为
 - [ ] 按需转码并发上限与 90s 回收在时间线拖拽场景下的体验
 
-## 9. 实施切分（真机验证通过后）
+## 9. 实施切分（全部完成）
 
-1. ✅ 索引层（V8 迁移、目录扫描、时长校准、5 分钟对账、时间线/对账 API、前端时间条）——已完成，纯文件系统可测
-   采集 worker（录像进程、断流补洞、布防联动）仍待真机
-2. 回放 API + 按需转码——1 天
-3. ~~前端时间线组件~~ 骨架已完成（24h 时间条 / gap / 保护段），播放器联动待第 2 步
-4. 水位/保护段/导出——0.5 天
-每步全量测试（`npm test`）+ 构建，遵循既有小步迁移约定。
+1. ✅ 索引层（V8 迁移、目录扫描、时长校准、5 分钟对账、时间线/对账 API、前端时间条）
+2. ✅ 采集 worker（录像进程、断流退避、布防联动、跨 UTC 日切目录、`TZ=UTC` 段名）
+3. ✅ 回放 API + 按需 HLS 转码（会话归属/续期/回收、路径白名单）
+4. ✅ 导出（concat → MP4 下载、临时文件清理）
+5. ✅ 前端播放器联动（hls.js、导出按钮、采集状态、卸载清理、4h 窗口裁剪）
+6. ✅ 保护段自动联动 + 保留天数/容量双淘汰
+7. ⬜ §8 真机验收清单（需真实设备，属验收动作而非实现前置）
+
+全量基线：`npm test` 109/109、`npm run build`、`npm run e2e` 13/13；另有真实 FFmpeg + 独立实例冒烟验证。

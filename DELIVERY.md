@@ -62,7 +62,7 @@
 | 新增浅色主题 + 顶栏手动切换 | ✅ | `be5f228`：`src/lib/theme.ts`、localStorage 持久化、挂载前应用防闪烁、`theme-color` 同步；默认深色外观逐字不变 |
 | 浅色主题剩余硬编码适配 | ✅ | 本轮：81 处半透明边框 + 18 处深色遮罩变量化，light 下给出对比度取值 |
 | 主题切换与持久化的自动化验证 | ✅ | E2E 新增 2 项，共 13 项 |
-| 「增加具体功能」 | ⛔ 未臆测 | 历次均未给出功能清单与验收标准；输入模板见 §5.7 |
+| 「增加具体功能」 | ✅ 持续录像回放全量收口 | 按 `docs/continuous-recording-design.md` 已定稿规格实现采集 worker / play / export / 保护段联动 / 配额淘汰 / 前端播放器；详见 §9 |
 | 「修复具体 bug」 | ⛔ 未臆测 | 多轮审查未发现 P0/P1 功能缺陷；已修的是上述 UI 失效。bug 输入模板见 §5.7 |
 
 ### 2.3 工程与测试
@@ -80,7 +80,7 @@
 
 ### 2.5 需外部环境执行（已给出可直接执行的步骤）
 
-GitHub 推送、持续录像采集/按需转码/导出真机联调、watchdog 生产验证、目标实例管理员强密码与演示数据清理、公网拓扑拍板 —— 全部在 §5 给出命令或验收清单，不再以「请提供 XX」悬空。
+GitHub 推送、watchdog 生产验证、目标实例管理员强密码与演示数据清理、公网拓扑拍板 —— 全部在 §5 给出命令或验收清单，不再以「请提供 XX」悬空。持续录像的代码已全部实现（§9），§5.5 只保留现场设备验收清单。
 
 ---
 
@@ -145,7 +145,7 @@ node scripts/publish.mjs https://github.com/<owner>/<repo>.git --apply     # 实
 - [ ] 跨 NTP 校时/夏令时无时间戳跳变
 - [ ] Windows 现场路径文件名合法性与 fsync 行为
 - [ ] 按需转码并发上限与 90s 回收在时间线拖拽下的体验
-> `RECORDING=1` 目前只影响时间线的 `enabled` 标记，**不会启动录像进程**；采集 worker、`play`/`export`、保护段自动联动需在以上验收通过后实施。
+> 代码已全部实现（见 §9）：`RECORDING=1` 会真正启动采集进程，`play`/`export`/保护段联动/配额淘汰均已可用。以上 6 项只是**现场性能与断电恢复验收**，不再是实现前置；未开启采集时，索引/对账/回放/导出仍可处理已有段文件。
 
 ### 5.6 生产守护 watchdog
 `scripts/fire-watchdog.ps1` 已具备单实例判定、指数退避、45s 启动窗口、5 分钟卡死兜底与 `data/watchdog.log`。部署后验证一次「停止服务 → 自动拉起 → 日志有记录」。
@@ -167,14 +167,14 @@ npm run reset-password -- --username admin      # 生产管理员强密码（不
 2. **前端拆分仅第一步**：`AdminPanel.tsx` 3421 → 3263 行，抽出 3 个纯展示组件；cameras/users/sites/notify 等 Tab 与 `App.tsx` 仍在原文件。如需继续，按 Tab 逐个抽离，每批跑全量测试。
 3. **CSS `rgba(var(--x), a)` 写法**：依赖现代浏览器对 CSS 变量在旧式 `rgba()` 中展开的支持（Chromium/Firefox/Safari 均支持）；代入后计算值与原深色逐字相等。
 4. **E2E 仍保留 1 处中文状态值比对**（`'处置中'`）：这是状态跃迁断言，固定 testid 会让 pending 态提前通过；另 2 处是自建数据的渲染断言，刻意保留。
-5. **真机相关功能未实施**：持续录像采集 worker、按需转码、导出、保护段自动联动（见 §5.5）。
+5. **录像功能已实施，真机参数待现场验收**：采集 worker、按需 HLS 转码、MP4 导出、保护段自动联动与配额淘汰均已落地并用真实 FFmpeg 冒烟通过；§5.5 的 6 项清单仅剩磁盘速率/断电恢复/并发体验等现场验收。
 6. **外部信息未提供**：GitHub 仓库地址、真机环境、目标实例访问，相关动作以脚本/清单交付而非代执行。
 
 ---
 
 ## 7. 可检查的完成标准
 
-- [x] `npm test` 91/91、`npm run build`、`npm run e2e` 13/13 全绿
+- [x] `npm test` 109/109、`npm run build`、`npm run e2e` 13/13 全绿
 - [x] `git diff --check` 干净、`git status` 干净
 - [x] CSS 无未定义变量 / 无自引用 / 无空规则；动态拼接类全部存活
 - [x] 深色主题计算样式与改动前逐字相等；浅色主题切换与刷新持久化通过 E2E
@@ -253,3 +253,53 @@ npm run reset-password -- --username admin      # 生产管理员强密码（不
 | 首屏体验 | 已保存浅色的用户刷新时先闪深色（内联脚本受 CSP 限制） | 新增 `public/theme-init.js` 同源同步脚本，`index.html` head 引用；符合 `script-src 'self'`，已验证构建产物可访问 |
 
 新增 2 条回归测试（`store.test.mjs` 推送日志过滤、`edge-hub.test.mjs` 重连清理 pending），单测 89 → **91/91**；全量构建与 E2E 13/13 通过。
+
+---
+
+## 9. 持续录像回放全量收口（11-09 最终批次）
+
+**依据与范围**：`docs/continuous-recording-design.md` 已定稿、但 §9 列出的采集 worker / 回放 API / 导出 / 保护段联动 / 配额淘汰 / 前端播放器联动一直标注「待真机联调」，是唯一「功能做了一半且有完整规格」的剩余项。本批次一次性实现，全部为**新增能力**：不改任何既有接口签名、响应体、中文文案、schema 版本或前端 props；`RECORDING=0`（默认）时不启动任何 FFmpeg 进程，既有行为零变化。
+
+### 9.1 已完成内容
+
+| 分类 | 文件 | 内容 |
+|---|---|---|
+| 采集 | `server/recording-capture.mjs`（新增） | 每点位一个 `-c copy -f segment` 进程；60s 分段、`-strftime 1`、子进程 `TZ=UTC`；指数退避重启（1s→30s）、布防时间表、`RECORDING_MAX_CAMERAS` 并发上限；跨 UTC 日自动终止旧进程并重建目录；`spawnImpl`/`ffmpegCheck`/`clock`/`armedCheck` 可注入 |
+| 回放/导出核心 | `server/recording-playback.mjs`（新增） | `parsePlaybackWindow`（≤4h）、`selectSegments`（重叠/去重/限流 600 段）、`safeSegmentPath`（严格拒绝穿越）、`concatListContent`（单引号转义 + Windows 路径归一）、HLS/MP4 参数构造；`PlaybackSessionManager`（会话归属、续期、90s 空闲回收、并发淘汰、文件白名单）；`exportRecordingToMp4`（一次性进程、失败清理） |
+| Store | `server/store/methods/recordings.mjs` | `protectSegmentsAround` / `unprotectExpiredSegments` / `recordingUsage` |
+| 路由 | `server/routes/recordings.mjs` | 新增 `status` / `play` / `play/:sessionId/:file` / `export`；保留 `timeline` / `reconcile` 原样；未注入新 deps 的部署受控降级为 503/404 而不崩溃 |
+| 装配 | `server/index.mjs` | 采集/会话管理器创建与点位 sync、60s 换日与会话回收、每小时保留淘汰、`onAlarm` 保护段联动、临时目录启动清空、shutdown/启动失败清理；新增 6 个环境变量 |
+| 前端 | `src/lib/api.ts`、`src/components/RecordingTimeline.tsx`、`src/styles/app.css` | `recordingsPlay / recordingsExportUrl / recordingsStatus`；hls.js 动态 import 播放、MP4 导出、采集状态行、完整卸载清理、点击长块自动裁剪到 4h；新增 `.recording-*` 样式用 CSS 变量适配深浅主题 |
+| 文档 | `README.md`、`REVIEW.md`、`docs/continuous-recording-design.md`、本文件 | 环境变量、目录结构、运维与接口说明、实施状态与验收清单同步 |
+| 测试 | `recording-capture.test.mjs` / `recording-playback.test.mjs` / `recording-store.test.mjs`（新增 3 个文件、18 条） | 采集参数与 UTC 目录、退避/换日/stopAll、布防与并发上限、窗口与选段边界、路径穿越、concat 转义、会话过期与并发淘汰、导出成功/失败清理、store 保护段与用量、路由权限与降级 |
+
+### 9.2 接口、命名与行为约定（与既有实现一致）
+
+- 路由沿用 `registerXxxRoutes(app, deps)` 注入模式；Store 方法经 `Object.assign(Store.prototype, …)` 挂载；新增 deps 字段补入 `routes/deps.mjs` 的 `RouteDeps` typedef。
+- 段目录沿用 `data/continuous/<cameraId>/<YYYYMMDD>/<HHmmss>.ts`（UTC），与告警短视频 `data/recordings/` 隔离；新增临时目录 `data/continuous-play/`、`data/continuous-export/`。
+- 权限：全部 `requireAuth` + 跨站 404 防探测；回放分片额外校验 `session.userId` 并**实时**复核点位站点权限（撤权立即失效）；媒体文件 404 与既有约定一致，`no-store` 不缓存。
+- 环境变量：`RECORDING`（总闸）、`RECORDING_SEGMENT_SECONDS`(60)、`RECORDING_RETENTION_DAYS`(14)、`RECORDING_PROTECT_DAYS`(30)、`RECORDING_MAX_BYTES`(50GB)、`RECORDING_MAX_CAMERAS`(24)；回放并发复用 `MAX_CONCURRENT_STREAMS`。
+- 未改动：`recording_segments` 表结构（仍 V8）、三套时区语义、既有中文错误文案、E2E 13 项断言、CSS 既有规则与 `:root` 变量。
+
+### 9.3 验证证据
+
+- `npm test` **109/109**（failed 0 / skipped 0）、`npm run build`（63 modules，hls.js 独立 chunk）、`npm run e2e` **13/13**、`git diff --check` 干净。
+- **真实 FFmpeg 端到端**：独立临时目录跑 `RecordingCaptureManager` → 生成 `055051.ts` 等 UTC 段名（当时 UTC 05 时 / 本地 13 时，证明 `TZ=UTC` 生效）→ `scanRecordingSegments` 扫到 3 段 → `reconcileRecordingSegments` 入库 3 条 → `buildTimeline` 合成 1 个连续块。
+- **独立实例冒烟**：`DATA_DIR` + 动态端口启动真实服务，`/healthz` 200、未鉴权 `/api/recordings/status` 401、setup 拿会话后 `status` 200 且结构正确（含 `ffmpegAvailable:true`）、`timeline`/`play`/`export`/HLS 未知会话均按预期 404。
+
+### 9.4 前提与假设（必须说明）
+
+1. **段名 UTC 依赖 FFmpeg 对 `TZ` 环境变量的支持**；本机 Windows + FFmpeg 9.0.2 已实测生效。若现场构建不生效，段名会按本地时区，需在部署时用 `RECORDING_SEGMENT_SECONDS` 之外的手段统一（例如改用 Node 侧定时重启命名），并同步调整索引口径。
+2. **TS→MP4 使用 `-c copy` 不转码**：对 H.264/AAC 子码流适用；HEVC、含 B 帧或非标准时间戳的源在现场需按 §5.5 验收，必要时回退到重编码。
+3. **单次回放/导出窗口上限 4 小时**（防一次拼接过多段打满内存/磁盘）；前端点击长连续块时自动从起点裁剪，界面已提示。
+4. **`RECORDING=0` 为默认值**：不开启采集时不会生成新段，但索引、对账、回放、导出对历史段完全可用；这是与上一版「仅 enabled 标记」的唯一行为差异。
+5. **布防时间表对录像同样生效**（设计文档 §3）：撤防时段不录像，时间线上表现为 gap。
+6. 浅色主题仍为第一版，新增 `.recording-*` 样式使用 CSS 变量自动适配，但**逐页截图目视验收**仍需人工执行。
+7. 既有「明确排除」项不变：统一 404 响应体、`/proxy` 方法面收敛、历史迁移重构、拆分 `main()`、告警 PATCH 403→404、登出递增 `tokenVersion` —— 均会改变对外契约，本次未动。
+
+### 9.5 剩余待办（仅外部环境 / 产品决策，无代码缺口）
+
+- **现场验收**（§5.5 六项）：24 路磁盘速率与 CPU、`kill -9` 恢复、超配额淘汰、NTP/夏令时、Windows 路径与 fsync、拖拽并发体验。
+- **外部动作**：GitHub 仓库地址填 `scripts/publish.mjs --apply`、watchdog 生产验证、目标实例强密码与演示数据清理、公网拓扑拍板。
+- **产品决策**（会改变既有契约，未擅自改动）：告警 PATCH 跨站 403 vs 404、登出是否递增 `tokenVersion`、是否统一 404 响应体与收敛 `/proxy` 方法面。
+- **可选大改**：`AdminPanel.tsx` 其余 Tab / `App.tsx` 分步拆分、浅色主题逐页视觉精修。

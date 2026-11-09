@@ -42,6 +42,12 @@ import { registerMediaRoutes } from './routes/media.mjs';
 import { registerAdminRoutes } from './routes/admin.mjs';
 import { registerRecordingRoutes } from './routes/recordings.mjs';
 import { reconcileRecordingSegments } from './recording-index.mjs';
+import { RecordingCaptureManager } from './recording-capture.mjs';
+import {
+  PlaybackSessionManager,
+  exportRecordingToMp4,
+  safeSegmentPath,
+} from './recording-playback.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -60,7 +66,22 @@ const snapshotDir = path.join(dataDir, 'snapshots');
 const recordingsDir = path.join(dataDir, 'recordings');
 // 持续录像段独立存放：data/recordings/ 已被告警短视频 mp4 与媒体水位扫描占用。
 const continuousDir = path.join(dataDir, 'continuous');
+// 回放会话与导出的临时产物：进程重启后不复用，启动时清空。
+const continuousPlayDir = path.join(dataDir, 'continuous-play');
+const continuousExportDir = path.join(dataDir, 'continuous-export');
 const recordingEnabled = process.env.RECORDING === '1';
+const recordingSegmentSeconds = Number(process.env.RECORDING_SEGMENT_SECONDS) || 60;
+const recordingRetentionDays = Number(process.env.RECORDING_RETENTION_DAYS) || 14;
+const recordingProtectDays = Number(process.env.RECORDING_PROTECT_DAYS) || 30;
+const alarmClipSeconds = Number(process.env.ALARM_CLIP_SECONDS) || 10;
+// 告警前 120s 至告警后「短视频时长 + 60s」的段免于水位淘汰（设计文档 §4）。
+const recordingProtectLeadMs = 120_000;
+const recordingProtectTailMs = (alarmClipSeconds + 60) * 1000;
+const recordingMaxBytes =
+  process.env.RECORDING_MAX_BYTES === undefined
+    ? 50 * 1024 * 1024 * 1024
+    : Number(process.env.RECORDING_MAX_BYTES);
+const recordingMaxCameras = Number(process.env.RECORDING_MAX_CAMERAS) || 24;
 const previewDir = path.join(dataDir, 'previews');
 // 运行期目录统一权限：仅属主可读写执行（抓拍/录像/数据库等私有目录）。
 const DIR_MODE = 0o700;
@@ -584,6 +605,11 @@ async function main() {
     return mediaUsageCache;
   };
   const releaseLock = await acquireInstanceLock();
+  // 回放/导出目录只存本次运行的临时产物；拿到实例锁后清空，避免多实例互删。
+  for (const dir of [continuousPlayDir, continuousExportDir]) {
+    await fsp.rm(dir, { recursive: true, force: true });
+    await fsp.mkdir(dir, { recursive: true, mode: DIR_MODE });
+  }
   let store;
   let streamManager;
   let notifier;
@@ -596,6 +622,10 @@ async function main() {
   let mediaTimer;
   let backupTimer;
   let recordingTimer;
+  let recordingRotateTimer;
+  let recordingRetentionTimer;
+  let captureManager;
+  let playbackManager;
 
   try {
     const dbExists = fs.existsSync(databaseFile);
@@ -747,6 +777,16 @@ async function main() {
         void notifier
           ?.notifyAlarm(alarm, 'created', { camera })
           .catch(() => undefined);
+        // 告警前后窗口内的录像段自动免于水位淘汰；索引为空时是 no-op。
+        try {
+          store.protectSegmentsAround({
+            cameraId: alarm.cameraId,
+            from: alarm.createdAt - recordingProtectLeadMs,
+            to: alarm.createdAt + recordingProtectTailMs,
+          });
+        } catch (error) {
+          log('warn', 'recording_protect_failed', { error: error.message });
+        }
       },
     });
     detectionEngine.init();
@@ -757,13 +797,50 @@ async function main() {
       size: `${detectionEngine.width}x${detectionEngine.height}`,
     });
     detectionEngine.sync(store.listCameras());
-    // 定时对齐点位变化（启用/停用、改地址、改站点），避免逐路由埋点。
+
+    // 持续录像采集：仅 RECORDING=1 时启动，默认不产生任何 FFmpeg 进程。
+    captureManager = new RecordingCaptureManager({
+      rootDir: continuousDir,
+      enabled: recordingEnabled,
+      segmentSeconds: recordingSegmentSeconds,
+      maxCameras: recordingMaxCameras,
+      // 与检测引擎一致：演示点位存的是站内相对地址，补成回环绝对地址。
+      resolveSourceUrl: (url) =>
+        typeof url === 'string' && url.startsWith('/')
+          ? `http://127.0.0.1:${port}${url}`
+          : url,
+      logger: {
+        warn: (event, fields) => log('warn', event, fields),
+        info: (event, fields) => log('info', event, fields),
+      },
+    });
+    const captureFfmpegOk = captureManager.init();
+    if (recordingEnabled && !captureFfmpegOk) {
+      log('warn', 'recording_ffmpeg_missing', {
+        message: '未找到 FFmpeg，持续录像采集未启动',
+      });
+    }
+    playbackManager = new PlaybackSessionManager({
+      rootDir: continuousPlayDir,
+      continuousDir,
+      maxSessions: Number(process.env.MAX_CONCURRENT_STREAMS || 8),
+      logger: { warn: (event, fields) => log('warn', event, fields) },
+    });
+    captureManager.sync(store.listCameras());
+
+    // 定时对齐点位变化（检测 + 录像）、换日切目录、回收空闲回放会话。
     detectionTimer = setInterval(syncDetection, 20_000);
     detectionTimer.unref?.();
+    recordingRotateTimer = setInterval(() => {
+      void captureManager?.rotate();
+      playbackManager?.cleanupIdle();
+    }, 60_000);
+    recordingRotateTimer.unref?.();
 
     function syncDetection() {
       try {
         detectionEngine?.sync(store.listCameras());
+        captureManager?.sync(store.listCameras());
       } catch (error) {
         log('warn', 'server_detection_sync_failed', { error: error.message });
       }
@@ -1430,6 +1507,14 @@ async function main() {
       requireAuth,
       requireRole,
       normalizeText,
+      playbackManager,
+      captureManager,
+      exportDir: continuousExportDir,
+      exportRecording: ({ files, continuousDir: dir, exportDir }) =>
+        exportRecordingToMp4({ files, continuousDir: dir, exportDir }),
+      ffmpegAvailable: captureFfmpegOk,
+      retentionDays: recordingRetentionDays,
+      logger: { warn: (event, fields) => log('warn', event, fields) },
     });
 
     if (fs.existsSync(distDir)) {
@@ -1520,6 +1605,51 @@ async function main() {
     recordingTimer = setInterval(() => void recordingReconcileRun(), 5 * 60 * 1000);
     recordingTimer.unref();
 
+    // 录像保留：先解除过期保护，再按保留天数与配额淘汰最旧的非保护段并删文件。
+    const recordingRetentionRun = async () => {
+      try {
+        const dayMs = 24 * 60 * 60 * 1000;
+        const at = Date.now();
+        const unprotected = store.unprotectExpiredSegments(
+          at - recordingProtectDays * dayMs,
+        );
+        const files = store.pruneRecordingSegments({
+          before: at - recordingRetentionDays * dayMs,
+          limit: 500,
+        });
+        const usage = store.recordingUsage();
+        // 仍超配额时再淘汰一批最旧段，限制单轮 IO，剩余留给下一轮。
+        if (recordingMaxBytes > 0 && usage.bytes > recordingMaxBytes) {
+          files.push(...store.pruneRecordingSegments({ before: at, limit: 100 }));
+        }
+        let removed = 0;
+        for (const file of new Set(files)) {
+          const full = safeSegmentPath(continuousDir, file);
+          if (!full) continue;
+          try {
+            await fsp.rm(full, { force: true });
+            removed += 1;
+          } catch {
+            // 采集进程可能仍持有该文件；下轮对账会把仍存在的段补回索引。
+          }
+        }
+        if (unprotected || files.length) {
+          log('info', 'recording_retention_applied', {
+            unprotected,
+            pruned: files.length,
+            filesRemoved: removed,
+            retentionDays: recordingRetentionDays,
+            maxBytes: recordingMaxBytes,
+          });
+        }
+      } catch (error) {
+        log('warn', 'recording_retention_failed', { error: error.message });
+      }
+    };
+    recordingRetentionTimer = setInterval(() => void recordingRetentionRun(), 60 * 60 * 1000);
+    recordingRetentionTimer.unref?.();
+    setTimeout(() => void recordingRetentionRun(), 120_000).unref?.();
+
     const server = app.listen(port, '0.0.0.0', () => {
       log('info', 'server_started', {
         port,
@@ -1544,6 +1674,8 @@ async function main() {
       log('info', 'server_shutdown', { signal });
       if (backupTimer) clearInterval(backupTimer);
       if (recordingTimer) clearInterval(recordingTimer);
+      if (recordingRotateTimer) clearInterval(recordingRotateTimer);
+      if (recordingRetentionTimer) clearInterval(recordingRetentionTimer);
       if (detectionTimer) clearInterval(detectionTimer);
       if (offlineTimer) clearInterval(offlineTimer);
       if (retentionTimer) clearInterval(retentionTimer);
@@ -1552,6 +1684,8 @@ async function main() {
       if (mediaTimer) clearInterval(mediaTimer);
       demoSource?.stop();
       detectionEngine?.stopAll();
+      captureManager?.stopAll();
+      void playbackManager?.stopAll();
       for (const client of sseClients) {
         try {
           client.res.end();
@@ -1588,6 +1722,8 @@ async function main() {
     try {
       if (backupTimer) clearInterval(backupTimer);
       if (recordingTimer) clearInterval(recordingTimer);
+      if (recordingRotateTimer) clearInterval(recordingRotateTimer);
+      if (recordingRetentionTimer) clearInterval(recordingRetentionTimer);
       if (detectionTimer) clearInterval(detectionTimer);
       if (offlineTimer) clearInterval(offlineTimer);
       if (retentionTimer) clearInterval(retentionTimer);
@@ -1595,6 +1731,8 @@ async function main() {
       if (summaryTimer) clearInterval(summaryTimer);
       if (mediaTimer) clearInterval(mediaTimer);
       detectionEngine?.stopAll();
+      captureManager?.stopAll();
+      void playbackManager?.stopAll();
       streamManager?.stopAll();
     } catch {
       // ignore

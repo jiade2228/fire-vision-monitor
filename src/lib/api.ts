@@ -462,7 +462,7 @@ export const ROLE_LABELS: Record<UserRole, string> = {
   viewer: '只读',
 };
 
-/** 持续录像时间线（schema V8 索引；播放/导出待真机联调后开放）。 */
+/** 持续录像时间线（schema V8 索引；回放与导出见 recordingsPlay / recordingsExportUrl）。 */
 export interface RecordingTimelineBlock {
   startedAt: number;
   endedAt: number;
@@ -489,6 +489,26 @@ export interface RecordingTimelineResponse {
   cameraId: string;
   enabled: boolean;
   timeline: RecordingTimeline;
+}
+
+/** 按需回放会话：playlist 为同源 HLS 相对 URL，服务端窗口上限 4 小时。 */
+export interface RecordingPlayResponse {
+  sessionId: string;
+  playlist: string;
+  from: number;
+  to: number;
+  segmentCount: number;
+  expiresAt: number;
+}
+
+/** 持续录像采集/转码状态（/api/recordings/status）。 */
+export interface RecordingStatus {
+  enabled: boolean;
+  active: number;
+  total: number;
+  skipped: number;
+  ffmpegAvailable: boolean;
+  retentionDays: number;
 }
 
 export const api = {
@@ -753,4 +773,21 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  recordingsPlay: ({ cameraId, from, to }: { cameraId: string; from: number; to: number }) => {
+    const search = new URLSearchParams({
+      cameraId,
+      from: String(from),
+      to: String(to),
+    });
+    return request<RecordingPlayResponse>(`/api/recordings/play?${search}`);
+  },
+  recordingsExportUrl: ({ cameraId, from, to }: { cameraId: string; from: number; to: number }) => {
+    const search = new URLSearchParams({
+      cameraId,
+      from: String(from),
+      to: String(to),
+    });
+    return `/api/recordings/export?${search}`;
+  },
+  recordingsStatus: () => request<RecordingStatus>('/api/recordings/status'),
 };

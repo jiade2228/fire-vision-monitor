@@ -181,7 +181,7 @@
 - `server/store/methods/recordings.mjs`：批量补录、时间窗查询、孤儿清理、保护段标记与豁免淘汰；
 - `GET /api/recordings/timeline`（登录 + 站点权限，跨站点 404）与 `POST /api/recordings/reconcile`（超管），5 分钟自动对账，shutdown 清理定时器；
 - 前端 `RecordingTimeline.tsx` 挂在「处置记录」页：24h 时间条、缺口/保护段图例、日期与点位切换、点击定位；
-- `RECORDING=1` 目前只影响 `enabled` 标记，**不会启动录像进程**；`play`/`export`、采集 worker、保护段自动联动仍待真机。
+- `RECORDING=1` 当时只影响 `enabled` 标记，**不会启动录像进程**；`play`/`export`、采集 worker、保护段自动联动当时仍待真机（以上为第一阶段历史状态；第二阶段已于 11-09 全部实现，见第八节）。
 
 **验证**：`npm test` 85/85（新增 7 项录像索引/接口测试）、`npm run build`、`npm run e2e` 11/11 全绿。
 另修正两处把 schema 版本硬编码为 `7` 的测试，改为断言 `SCHEMA_VERSION` 常量，避免后续迁移反复改测试。
@@ -203,13 +203,32 @@
 **浅色主题（新增，用户选定「手动切换」方案）**：`src/lib/theme.ts` + `:root[data-theme='light']`，顶栏「浅色/深色」按钮切换、localStorage 持久化、`main.tsx` 挂载前应用防闪烁、`theme-color` meta 同步。为保证默认深色外观逐字不变，将约 51 处硬编码语义色与强调白字改为 CSS 变量并保留原深色取值；浅色块给出对比度更高的取值。E2E 新增 2 项（切换后 `color-scheme`/背景生效、刷新后保持），共 13 项全绿。
 **已知限制**：仍有大量 `rgba(126,168,214,x)` 半透明边框、深色遮罩与少量硬编码色未适配，浅色主题为第一版，需按页面逐块视觉回归；未做逐页截图验收。
 
-**当前基线**：`npm test` 85/85（skipped 0）、`npm run build`、`npm run e2e` **13/13**；git 工作区干净。
+**当前基线**：`npm test` **109/109**（skipped 0）、`npm run build`、`npm run e2e` **13/13**；git 工作区干净。
 
 **仍未解决 / 需拍板**
-- 代码：`AdminPanel.tsx`(3421 行) / `App.tsx`(982 行) 分步拆分、`e2e-smoke.mjs` 中文文案断言改为稳定选择器、`Dockerfile` build 阶段是否补 FFmpeg（会增大构建层，需决策）。
-- 已闭环：E2E 个人机器路径移除（改 `PUPPETEER_REQUIRE_DIR` + 项目 `node_modules`）、FFmpeg 缺失时输出显式告警、播放重试延时常量收敛、`--muted` 历史别名补齐定义（深色取值与原 fallback 完全一致）。
+- 可选大改：`AdminPanel.tsx`(3263 行) 其余 Tab / `App.tsx`(982 行) 分步拆分、浅色主题逐页视觉精修与截图验收。
+- 已闭环：E2E 个人机器路径移除、中文文案定位改 `data-testid`、`Dockerfile` build 阶段补 FFmpeg、FFmpeg 缺失显式告警、播放重试延时常量收敛、`--muted` 历史别名补齐、首屏主题防闪烁。
 - **取证结论（不再重复评估）**：CSS 死样式选择器含大量后代/伪元素/`@media` 组合（`.settings-section-head h3`、`.camera-help-steps li::marker`、逗号组合等），机械删除易留空规则与孤立片段；`.clip-download` / `.user-row` 的两处定义属属性互补与有意覆盖，合并会改布局。若确要清理，应作为独立样式重构并配视觉回归，收益（约 1–2KB）低于风险。
 - 取证后刻意不统一：notify 三处 payload 结构、`media.mjs` 三处守卫块的 404 形态差异（统一会改行为或引入过度参数化）。
-- 明确排除（会改响应/方法面）：统一 404 响应体、`/proxy/*` 的 `app.all` 收敛、历史迁移重构、拆分 `main()`。
-- 外部阻塞：GitHub 仓库地址（无 remote / 无 gh CLI / 无 token）、持续录像采集与按需转码真机联调、watchdog 生产验证、目标实例管理员强密码与演示数据确认。
-- **新增功能与配色方案**（浅色主题、主题切换、新功能清单）尚无具体需求对象，未实施，需先明确范围。
+- 明确排除（会改响应/方法面）：统一 404 响应体、`/proxy/*` 的 `app.all` 收敛、历史迁移重构、拆分 `main()`、告警 PATCH 跨站 403→404、登出递增 `tokenVersion`。
+- 外部阻塞：GitHub 仓库地址（发布脚本已就绪）、watchdog 生产验证、目标实例管理员强密码与演示数据确认；持续录像真机验收清单（代码已实现，见第八节）。
+
+---
+
+## 八、持续录像回放全量收口（11-09 最终批次）
+
+按 `docs/continuous-recording-design.md` 已定稿规格，把此前标注「待真机联调」的剩余功能一次实现；全部为新增能力，默认 `RECORDING=0` 不启动任何 FFmpeg 进程，既有行为零变化。
+
+| 分类 | 改动 |
+|---|---|
+| 采集 | 新增 `server/recording-capture.mjs`：copy 分段、指数退避、布防时间表、并发上限、子进程 `TZ=UTC`、跨 UTC 日重建目录 |
+| 回放/导出 | 新增 `server/recording-playback.mjs`：窗口校验（≤4h）、选段、路径穿越防护、concat 转义、HLS 会话（归属/续期/90s 回收/并发淘汰）、MP4 导出 |
+| 数据层 | `store/methods/recordings.mjs` 加保护段联动、过期解除、用量统计 |
+| 路由 | `routes/recordings.mjs` 加 `status` / `play` / `play/:sid/:file` / `export`，保留 `timeline` / `reconcile` 原样；未接线部署受控降级 |
+| 装配 | `index.mjs` 接线采集/会话管理器、每小时保留淘汰、`onAlarm` 保护段联动、shutdown 清理、6 个新环境变量 |
+| 前端 | `RecordingTimeline.tsx` 接 hls.js 播放与 MP4 导出，`api.ts` 加 3 个方法，CSS 用变量适配深浅主题 |
+| 测试 | 新增 3 个测试文件、18 条用例（91 → **109/109**） |
+
+**验证**：`npm test` 109/109、`npm run build`（63 modules）、`npm run e2e` 13/13、`git diff --check` 干净；另有真实 FFmpeg 端到端（生成 UTC 段名 → 扫描 → 对账入库 → 时间线成块）与独立实例 HTTP 冒烟（鉴权、status、404 分支）双重验证。详见 `DELIVERY.md §9`。
+
+**前提/假设**：段名 UTC 依赖 FFmpeg 遵守 `TZ`（本机 9.0.2 已实测）；TS→MP4 为 `-c copy`，HEVC/异常时间戳源需现场验收；单次窗口上限 4 小时；布防时段外不录像；浅色主题仍待逐页目视。

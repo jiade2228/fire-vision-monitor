@@ -4611,3 +4611,57 @@ button {
     width: 100%;
   }
 }
+
+/* ---------------- 持续录像：时段操作 / 回放 / 状态（追加） ---------------- */
+/* 按钮直接复用既有 .btn .btn-sm 风格，此处只补充容器布局。 */
+.recording-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.recording-player {
+  margin-top: 12px;
+  padding: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.recording-video {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  max-height: 420px;
+  border-radius: 6px;
+  /* 视频画面黑场为功能底色，与明暗主题无关，两种主题下均为纯黑。 */
+  background: #000;
+}
+
+.recording-player-meta {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.recording-status {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.recording-action-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--danger);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}

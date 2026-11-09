@@ -154,4 +154,46 @@ export const recordingsMethods = {
     this.deleteRecordingSegments(files);
     return files;
   },
+
+  /**
+   * 告警保护段联动：把告警时刻前后窗口内与该点位重叠的段标记为 protected。
+   * @param {{cameraId?:string, from:number, to:number}} options
+   * @returns {number} 新受保护的段数。
+   */
+  protectSegmentsAround({ cameraId, from, to }) {
+    if (!cameraId || !(to > from)) return 0;
+    return this.db
+      .prepare(`
+        UPDATE recording_segments SET protected = 1
+        WHERE camera_id = ? AND protected = 0 AND started_at < ? AND ended_at > ?
+      `)
+      .run(cameraId, to, from).changes;
+  },
+
+  /**
+   * 解除超过保留期的保护（归档告警的录像在保护期后重新可被水位淘汰）。
+   * @param {number} before epoch ms
+   * @returns {number} 解除条数。
+   */
+  unprotectExpiredSegments(before = now()) {
+    return this.db
+      .prepare('UPDATE recording_segments SET protected = 0 WHERE protected = 1 AND ended_at < ?')
+      .run(before).changes;
+  },
+
+  /** @returns {{files:number, bytes:number, protectedFiles:number}} 索引用量快照。 */
+  recordingUsage() {
+    const row = this.db
+      .prepare(`
+        SELECT COUNT(*) AS files, COALESCE(SUM(bytes), 0) AS bytes,
+               COALESCE(SUM(CASE WHEN protected = 1 THEN 1 ELSE 0 END), 0) AS protected_files
+        FROM recording_segments
+      `)
+      .get();
+    return {
+      files: row.files,
+      bytes: row.bytes,
+      protectedFiles: row.protected_files,
+    };
+  },
 };

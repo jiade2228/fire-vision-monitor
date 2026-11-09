@@ -24,6 +24,13 @@
  * @property {number} [mediaMaxBytes] 演示媒体占用上限字节数。
  * @property {boolean} [ffprobeOk] FFprobe 是否可用。
  * @property {boolean} [recordingEnabled] 采集总闸状态。
+ * @property {string} [continuousPlayDir] 回放会话临时目录。
+ * @property {string} [exportDir] 录像导出临时目录。
+ * @property {object} [playbackManager] 按需转码会话管理器。
+ * @property {object} [captureManager] 持续录像采集管理器。
+ * @property {(options: object) => Promise<string|null>} [exportRecording] 录像段拼接导出。
+ * @property {boolean} [ffmpegAvailable] FFmpeg 可用性（录像/回放）。
+ * @property {number} [retentionDays] 录像保留天数。
  * @property {string} [DEMO_CAMERA_CODE] 演示点位编码常量。
  * @property {string} [DEMO_CAMERA_NAME] 演示点位名称常量。
  * @property {string} [DEMO_CAMERA_ZONE] 演示点位区域常量。
