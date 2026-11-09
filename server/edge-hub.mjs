@@ -101,6 +101,15 @@ export class EdgeHub {
       alive: true,
     };
     this.gateways.set(gatewayId, gateway);
+    // 旧连接的 close 事件此时会因 map 已被覆盖而提前 return，需在此主动清掉在途请求，
+    // 否则它们要等满 requestTimeoutMs 才 reject。
+    for (const [id, pending] of this.pending) {
+      if (pending.gatewayId === gatewayId) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error('边缘网关连接已替换'));
+        this.pending.delete(id);
+      }
+    }
     ws.on('pong', () => {
       gateway.alive = true;
     });

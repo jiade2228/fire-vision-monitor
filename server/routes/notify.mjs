@@ -173,19 +173,17 @@ export function registerNotifyRoutes(app, deps) {
   );
 
   app.get('/api/notify/logs', requireAuth, requireManager, (req, res) => {
-    const logs = store.listNotificationLogs(req.query.limit);
     const adminIds = adminSiteIdsFor(req.user);
-    if (adminIds === null) {
-      return res.json({ logs });
-    }
-    // 站点管理员只能看到自己站点渠道的推送记录。
-    const allowed = new Set(
-      store
+    let channelIds = null;
+    if (adminIds !== null) {
+      // 站点管理员只能看到自己站点渠道的推送记录；在 SQL 层先过滤再取 limit。
+      channelIds = store
         .listNotifyChannels()
         .filter((channel) => channel.siteId && adminIds.includes(channel.siteId))
-        .map((channel) => channel.id),
-    );
-    res.json({ logs: logs.filter((log) => allowed.has(log.channelId)) });
+        .map((channel) => channel.id);
+    }
+    const logs = store.listNotificationLogs(req.query.limit, channelIds);
+    res.json({ logs });
   });
 
   // 通知文案模板：可复用的告警消息模板，渠道引用后覆盖默认文案。

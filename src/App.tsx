@@ -61,6 +61,8 @@ export default function App() {
   } = useAlarms();
   const [view, setView] = useState<ViewKey>('monitor');
   const [sources, setSources] = useState<Record<string, CameraSource>>({});
+  // 用户主动断开的网络流不应被 sources 同步 effect 自动接回。
+  const manuallyDisconnected = useRef<Set<string>>(new Set());
   const [selectedCameraId, setSelectedCameraId] = useState('');
   const [focusedCameraId, setFocusedCameraId] = useState<string | null>(null);
   // 大屏自动轮巡：按「有视频源的点位」顺序逐路全屏播放，可暂停 / 上下一路 / 改间隔。
@@ -272,6 +274,7 @@ export default function App() {
       let changed = false;
       const next: Record<string, CameraSource> = { ...prev };
       cameraPoints.forEach((point) => {
+        if (manuallyDisconnected.current.has(point.id)) return;
         const existing = next[point.id];
         if (existing && existing.kind !== 'remote') return;
         const desired = remoteStreams[point.id];
@@ -300,6 +303,7 @@ export default function App() {
         const source = next[cameraId];
         if (source?.kind === 'file') URL.revokeObjectURL(source.url);
         delete next[cameraId];
+        manuallyDisconnected.current.delete(cameraId);
         changed = true;
       });
       return changed ? next : prev;
@@ -409,6 +413,7 @@ export default function App() {
         return;
       }
       primeAlertAudio();
+      manuallyDisconnected.current.delete(cameraId);
       const url = URL.createObjectURL(file);
       setSources((prev) => {
         const existing = prev[cameraId];
@@ -428,6 +433,7 @@ export default function App() {
         showToast('该点位尚未配置视频流，请管理员在系统管理中配置', 'info');
         return;
       }
+      manuallyDisconnected.current.delete(cameraId);
       setSources((prev) => ({
         ...prev,
         [cameraId]: { ...source, label: `${source.label} · 重连` },
@@ -442,6 +448,7 @@ export default function App() {
     (cameraId: string) => {
       const existing = sources[cameraId];
       if (!existing) return;
+      manuallyDisconnected.current.add(cameraId);
       if (existing.kind === 'file') {
         URL.revokeObjectURL(existing.url);
       }

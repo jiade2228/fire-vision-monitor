@@ -100,7 +100,7 @@ GitHub 推送、持续录像采集/按需转码/导出真机联调、watchdog �
 
 | 检查 | 命令 | 结果 |
 |---|---|---|
-| 单元测试 | `npm test` | **89/89**，failed 0 / skipped 0（含 4 条新增边界回归测试） |
+| 单元测试 | `npm test` | **91/91**，failed 0 / skipped 0（含 6 条新增边界回归测试） |
 | 类型检查 + 构建 | `npm run build` | `tsc --noEmit` 通过，Vite 63 modules，产物正常 |
 | E2E 冒烟 | `npm run e2e` | **13/13**（含主题切换与持久化） |
 | CSS 静态自检 | 括号平衡、未定义变量、自引用、死类残留、动态类存活 | 全 PASS；深色计算样式逐字还原对比相等 |
@@ -174,7 +174,7 @@ npm run reset-password -- --username admin      # 生产管理员强密码（不
 
 ## 7. 可检查的完成标准
 
-- [x] `npm test` 89/89、`npm run build`、`npm run e2e` 13/13 全绿
+- [x] `npm test` 91/91、`npm run build`、`npm run e2e` 13/13 全绿
 - [x] `git diff --check` 干净、`git status` 干净
 - [x] CSS 无未定义变量 / 无自引用 / 无空规则；动态拼接类全部存活
 - [x] 深色主题计算样式与改动前逐字相等；浅色主题切换与刷新持久化通过 E2E
@@ -237,5 +237,19 @@ npm run reset-password -- --username admin      # 生产管理员强密码（不
 ### 8.3 仍需确认的需求或限制
 
 - **刻意未改（会破坏既有契约或属产品决策）**：告警 PATCH 跨站仍返回 403 — `sites.test.mjs:273` 明确锁定该行为，改成 404 需先确认接口契约；登出是否递增 `tokenVersion`（会让同一账号其它标签页一并下线）；统一 404 响应体与 `/proxy` 方法面收敛（见 §2.4）。
-- **未在本轮实施（需更大改动或明确取舍）**：推送日志「先截断后按站点过滤」需改 store 查询形态；网关重连时在途请求清理；点位停止后仍在途帧的「幽灵告警」；`AdminPanel` 统计/审计异步竞态；用户主动断开网络流后被 `sources` effect 自动重连；首屏主题防闪烁需内联脚本但受 CSP `script-src 'self'` 限制；浅色主题仍未逐页截图验收（E2E 已补 `.app-shell` 断言）。
+- **已在续批补齐**（见 §8.4）：推送日志 SQL 层先过滤、网关重连在途请求清理、幽灵告警、`AdminPanel` 异步竞态、用户断开后被自动重连、首屏主题防闪烁（改用同源外部脚本，符合 CSP `script-src 'self'`，已验证 `dist/theme-init.js` 与 HTTP 200）。
+- **仍需人工验收**：浅色主题逐页目视核对主界面 / 系统管理弹窗 / 聚焦弹窗（E2E 已补 `.app-shell` 断言与刷新保持检查）。
 - **外部阻塞不变**：GitHub 仓库地址、持续录像真机联调、watchdog 生产验证、目标实例强密码与演示数据清理（命令与清单见 §5）。
+
+### 8.4 续批补齐（同日，不改接口与既有契约）
+
+| 分类 | 问题 | 修复 |
+|---|---|---|
+| 数据一致性 | 推送日志先取全局 N 条再按站点过滤，站点管理员旧日志被淹没 | `listNotificationLogs(limit, channelIds)` 改为 SQL `WHERE ... IN` 后再 `LIMIT`；路由先算站点渠道集合传入；管理员不传过滤，行为不变 |
+| 资源泄漏 | 网关同 ID 重连时旧连接 close 回调因 map 被覆盖而提前返回，在途请求滞留到超时 | `handleConnection` 替换旧连接时主动 reject 并清理该 `gatewayId` 的 pending |
+| 数据一致性 | 点位停止后仍在途的帧写入指向已删除点位的「幽灵告警」 | `handleFrame` 记录抓拍开始时的 worker，await 后若已移除则返回 null；未注册 worker 的直接调用不受影响 |
+| 体验 | `AdminPanel` 快速切天数/翻页/切 Tab 时慢响应覆盖新结果 | stats / audit 各加请求序号 ref，仅最后一次写入并复位 busy |
+| 体验 | 用户主动断开网络流后，点位刷新触发 `sources` effect 自动接回 | `manuallyDisconnected` ref：断开加入、显式重连/接入文件时移除、effect 跳过、点位删除时清理 |
+| 首屏体验 | 已保存浅色的用户刷新时先闪深色（内联脚本受 CSP 限制） | 新增 `public/theme-init.js` 同源同步脚本，`index.html` head 引用；符合 `script-src 'self'`，已验证构建产物可访问 |
+
+新增 2 条回归测试（`store.test.mjs` 推送日志过滤、`edge-hub.test.mjs` 重连清理 pending），单测 89 → **91/91**；全量构建与 E2E 13/13 通过。

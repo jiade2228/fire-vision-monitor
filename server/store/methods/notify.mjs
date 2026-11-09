@@ -306,16 +306,25 @@ consecutiveFailures(channelId, sinceTs = 0, limit = 32) {
  * @param {number} [limit] 返回条数上限（1-500），默认 50。
  * @returns {Array<object>}
  */
-listNotificationLogs(limit = 50) {
+listNotificationLogs(limit = 50, channelIds = null) {
     const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 500);
+    const params = [];
+    let where = '';
+    // 站点过滤必须在 LIMIT 之前完成，否则全局日志会先截断，站点管理员看不到自己的旧记录。
+    if (Array.isArray(channelIds)) {
+      if (channelIds.length === 0) return [];
+      where = `WHERE l.channel_id IN (${channelIds.map(() => '?').join(',')})`;
+      params.push(...channelIds);
+    }
     return this.db
       .prepare(`
         SELECT l.*, c.name AS channel_name, c.kind AS channel_kind
         FROM notification_logs l
         LEFT JOIN notify_channels c ON c.id = l.channel_id
+        ${where}
         ORDER BY l.created_at DESC LIMIT ?
       `)
-      .all(safeLimit)
+      .all(...params, safeLimit)
       .map((row) => ({
         id: row.id,
         alarmId: row.alarm_id,

@@ -473,9 +473,13 @@ export class DetectionEngine {
       return null;
     }
     this.pending.add(camera.id);
+    // 记录抓拍开始时的 worker；stop() 会把它从 workers 移除。
+    const workerAtStart = this.workers.get(camera.id);
     try {
       const id = crypto.randomUUID();
       const snapshotFile = await this.captureSnapshot(camera, id);
+      // 点位在抓拍期间被停止/移除时，不再写入指向已删除点位的幽灵告警。
+      if (workerAtStart && !this.workers.has(camera.id)) return null;
       const alarm = this.store.createAlarm({
         id,
         cameraId: camera.id,

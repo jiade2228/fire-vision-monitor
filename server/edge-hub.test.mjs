@@ -12,6 +12,57 @@ test('edge source parsing', () => {
   assert.equal(parseEdgeSource('rtsp://example/a'), null);
 });
 
+test('gateway reconnect clears pending requests of the replaced connection', async (t) => {
+  const server = http.createServer((_req, res) => res.end('ok'));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const hubPort = server.address().port;
+  const token = '0123456789abcdef0123456789abcdef';
+  const hub = new EdgeHub({
+    token,
+    logger: { info: () => undefined, warn: () => undefined },
+    requestTimeoutMs: 10_000,
+  });
+  hub.attach(server);
+  t.after(async () => {
+    hub.close();
+    await new Promise((resolve) => server.close(resolve));
+  });
+
+  const url = `ws://127.0.0.1:${hubPort}/gateway?gatewayId=site-b&token=${token}`;
+  const hello = JSON.stringify({
+    type: 'hello',
+    name: '一号网关',
+    cameras: [{ key: 'ch01', label: '一号仓库' }],
+  });
+
+  const first = new WebSocket(url);
+  await new Promise((resolve, reject) => {
+    first.once('open', resolve);
+    first.once('error', reject);
+  });
+  first.send(hello);
+  await new Promise((resolve) => first.once('message', resolve));
+
+  // 故意不响应，让请求停留在 pending。
+  const pending = hub.request('edge://site-b/ch01', 'index.m3u8');
+  const rejection = assert.rejects(() => pending, /连接已替换|连接已断开/);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(hub.pending.size, 1);
+
+  const second = new WebSocket(url);
+  await new Promise((resolve, reject) => {
+    second.once('open', resolve);
+    second.once('error', reject);
+  });
+  second.send(hello);
+  await new Promise((resolve) => second.once('message', resolve));
+
+  await rejection;
+  assert.equal(hub.pending.size, 0);
+  first.close();
+  second.close();
+});
+
 test('gateway connects, registers and relays HLS requests', async (t) => {
   const server = http.createServer((_req, res) => res.end('ok'));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));

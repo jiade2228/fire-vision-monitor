@@ -381,11 +381,18 @@ export default function AdminPanel({
     }
   };
 
+  // 慢的旧响应不得覆盖新请求结果（快速切天数/翻页/切 Tab 时会出现数据与筛选错位）。
+  const statsRequestRef = useRef(0);
+  const auditRequestRef = useRef(0);
+
   const loadAlarmStats = async (days = 30) => {
+    const seq = ++statsRequestRef.current;
     try {
       const result = await api.alarmStats(days);
+      if (seq !== statsRequestRef.current) return;
       setAlarmStats(result);
     } catch (requestError) {
+      if (seq !== statsRequestRef.current) return;
       setError(
         requestError instanceof ApiError ? requestError.message : '统计数据加载失败',
       );
@@ -416,6 +423,7 @@ export default function AdminPanel({
           ? new Date(new Date().toDateString()).getTime()
           : Date.now() - rangeOption.ms;
     setAuditBusy(true);
+    const seq = ++auditRequestRef.current;
     try {
       const result: AuditLogPage = await api.auditLogs({
         limit: AUDIT_PAGE_SIZE,
@@ -424,6 +432,7 @@ export default function AdminPanel({
         q: filter.q,
         from,
       });
+      if (seq !== auditRequestRef.current) return;
       setAuditLogs(result.logs);
       setAuditTotal(result.total);
       setAuditFilter({
@@ -433,12 +442,13 @@ export default function AdminPanel({
       });
       setAuditOffset(filter.offset);
     } catch (requestError) {
+      if (seq !== auditRequestRef.current) return;
       onNotify(
         requestError instanceof ApiError ? requestError.message : '审计日志加载失败',
         'danger',
       );
     } finally {
-      setAuditBusy(false);
+      if (seq === auditRequestRef.current) setAuditBusy(false);
     }
   };
 

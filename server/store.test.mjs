@@ -29,6 +29,36 @@ test('migrateLegacy 对已存在的 meta 键可重入（初始化中断后可恢
   db.close();
 });
 
+test('listNotificationLogs 在 LIMIT 之前完成渠道过滤', async (t) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fire-notify-logs-'));
+  t.after(() =>
+    fs.rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
+  );
+  const store = await openStore({ dataDir, secretBox: box() });
+  const db = store.db;
+  const insertChannel = db.prepare(`
+    INSERT INTO notify_channels (id, site_id, kind, name, url, created_at, updated_at)
+    VALUES (?, ?, 'webhook', ?, 'https://example.com/hook', 1, 1)
+  `);
+  insertChannel.run('ch-a', null, 'A');
+  insertChannel.run('ch-b', null, 'B');
+  const insertLog = db.prepare(`
+    INSERT INTO notification_logs (id, channel_id, event, status, created_at)
+    VALUES (?, ?, 'alarm.created', 'sent', ?)
+  `);
+  insertLog.run('log-old', 'ch-a', 1_000);
+  for (let i = 0; i < 5; i += 1) {
+    insertLog.run(`log-b-${i}`, 'ch-b', 2_000 + i);
+  }
+  // 全局最新 5 条都是 ch-b；若先截断，站点管理员将看不到 ch-a 的旧记录。
+  const filtered = store.listNotificationLogs(2, ['ch-a']);
+  assert.equal(filtered.length, 1);
+  assert.equal(filtered[0].channelId, 'ch-a');
+  assert.equal(store.listNotificationLogs(2, []).length, 0);
+  assert.equal(store.listNotificationLogs(2).length, 2);
+  store.close();
+});
+
 test('legacy data migrates and RTSP credentials are encrypted at rest', async (t) => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fire-store-'));
   const secretBox = box();
