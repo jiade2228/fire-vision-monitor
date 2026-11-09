@@ -40,11 +40,8 @@ const pkg = JSON.parse(await fs.readFile(pkgPath, 'utf8'));
 const repository = { type: 'git', url };
 
 let remote = '';
-try {
-  remote = git('remote', 'get-url', 'origin');
-} catch {
-  remote = '';
-}
+const remotes = git('remote').split('\n').filter(Boolean);
+if (remotes.includes('origin')) remote = git('remote', 'get-url', 'origin');
 
 console.log('[publish] 计划：');
 console.log(`  1. package.json repository = ${JSON.stringify(repository)}`);
