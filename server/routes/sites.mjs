@@ -1,3 +1,4 @@
+import { apiNotFound } from '../http/not-found.mjs';
 import crypto from 'node:crypto';
 
 /**
@@ -61,7 +62,7 @@ export function registerSiteRoutes(app, deps) {
 
   app.patch('/api/sites/:id', requireAuth, requireManager, (req, res) => {
     const site = store.getSite(req.params.id);
-    if (!site) return res.status(404).json({ error: '站点不存在' });
+    if (!site) return apiNotFound(res, '站点不存在');
     if (!canManageSite(req.user, site.id)) {
       return res.status(403).json({ error: '无权管理该站点' });
     }
@@ -82,7 +83,7 @@ export function registerSiteRoutes(app, deps) {
   app.delete('/api/sites/:id', requireAuth, requireRole('admin'), (req, res) => {
     try {
       const ok = store.deleteSite(req.params.id);
-      if (!ok) return res.status(404).json({ error: '站点不存在' });
+      if (!ok) return apiNotFound(res, '站点不存在');
       store.recordAudit({
         user: req.user,
         action: 'site.delete',

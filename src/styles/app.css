@@ -4665,3 +4665,14 @@ button {
   border: 1px solid var(--line);
   border-radius: 8px;
 }
+
+/* 导出失败提示：blob 下载无浏览器原生错误展示，需显式反馈。 */
+.recording-export-error {
+  margin-top: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--danger);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}

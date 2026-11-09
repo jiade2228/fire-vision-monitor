@@ -209,8 +209,8 @@
 - 可选大改：`AdminPanel.tsx`(3263 行) 其余 Tab / `App.tsx`(982 行) 分步拆分、浅色主题逐页视觉精修与截图验收。
 - 已闭环：E2E 个人机器路径移除、中文文案定位改 `data-testid`、`Dockerfile` build 阶段补 FFmpeg、FFmpeg 缺失显式告警、播放重试延时常量收敛、`--muted` 历史别名补齐、首屏主题防闪烁。
 - **取证结论（不再重复评估）**：CSS 死样式选择器含大量后代/伪元素/`@media` 组合（`.settings-section-head h3`、`.camera-help-steps li::marker`、逗号组合等），机械删除易留空规则与孤立片段；`.clip-download` / `.user-row` 的两处定义属属性互补与有意覆盖，合并会改布局。若确要清理，应作为独立样式重构并配视觉回归，收益（约 1–2KB）低于风险。
-- 取证后刻意不统一：notify 三处 payload 结构、`media.mjs` 三处守卫块的 404 形态差异（统一会改行为或引入过度参数化）。
-- 明确排除（会改响应/方法面）：统一 404 响应体、`/proxy/*` 的 `app.all` 收敛、历史迁移重构、拆分 `main()`、告警 PATCH 跨站 403→404、登出递增 `tokenVersion`。
+- 取证后刻意不统一：notify 三处 payload 结构（统一会改变推送语义，收益低）。注意：API 层 404 出口与 `/proxy` 方法面已在 11-09 续批统一/收敛（见第九节）。
+- 明确排除（仍属高风险低收益，需独立评估）：历史迁移重构、拆分 `main()`。告警 PATCH 跨站 403→404、登出递增 `tokenVersion`、统一 API 404 出口、`/proxy` 方法收敛已在本批次实现（见第九节）。
 - 外部阻塞：GitHub 仓库地址（发布脚本已就绪）、watchdog 生产验证、目标实例管理员强密码与演示数据确认；持续录像真机验收清单（代码已实现，见第八节）。
 
 ---
@@ -232,3 +232,35 @@
 **验证**：`npm test` 109/109、`npm run build`（63 modules）、`npm run e2e` 13/13、`git diff --check` 干净；另有真实 FFmpeg 端到端（生成 UTC 段名 → 扫描 → 对账入库 → 时间线成块）与独立实例 HTTP 冒烟（鉴权、status、404 分支）双重验证。详见 `DELIVERY.md §9`。
 
 **前提/假设**：段名 UTC 依赖 FFmpeg 遵守 `TZ`（本机 9.0.2 已实测）；TS→MP4 为 `-c copy`，HEVC/异常时间戳源需现场验收；单次窗口上限 4 小时；布防时段外不录像；浅色主题仍待逐页目视。
+
+---
+
+## 九、后续全量推进批次（11-09 续批）
+
+用户授权「全做」上一轮清单的全部事项。本批次在已收口的录像回放之上，补齐可落地的开发项并收敛四项产品决策（均会改变对外契约，此前被标记为「明确排除」，本次经授权实现）。
+
+| 分类 | 改动 |
+|---|---|
+| #1 保护段联动下沉 | `store/methods/alarms.mjs` 的 `createAlarm` 事务内统一保护段（手动/演示/离线/画质告警与识别告警同路径），移除 `index.mjs` 上层 `onAlarm` 单点；`protectionWindow` 抽到 `recording-config.mjs` 供 store 与装配层共用 |
+| #11 误报即时解除 | `updateAlarm` 处置为 `false` 时，若该窗口无其它未处置告警则立即解除保护，提前释放配额 |
+| #2 用量接口 | `GET /api/system` 暴露 `storage.continuous`（files/bytes/protectedFiles）与 `recording`（enabled/active/retentionDays/maxBytes），取索引值不扫盘 |
+| #3 回放失败反馈 | `PlaybackSessionManager` 会话记录 `state`(pending/ready/failed) 与 `error`；`GET /api/recordings/play/<sid>/status` 暴露状态，转码失败不再无限重试 |
+| #4 ffprobe 校准 | 新增 `recording-duration.mjs`，对账时对新增/大小变化的段读 `format.duration` 写回 `ended_at`，失败回退 nominal；默认不注入则行为完全不变 |
+| #8 临时目录兜底 | 每小时清理超时的 `continuous-export` 文件与孤儿 `continuous-play` 目录（单实例锁保证不误删活跃会话） |
+| #5 导出错误可见 | 前端 `api.recordingsExport` 改原生 `fetch + blob`，非 2xx 解析 `{error}` 展示，成功才下载并 `revokeObjectURL` |
+| #7 状态随刷新 | `RecordingTimeline` 采集状态并入 `load()`，切点位/日期/刷新均更新，卸载清 timer |
+| #9 seek | 后端 `buildHlsArgs` 支持输入侧 `-ss`（位于 `-i` 前）；前端点击块内位置换算 `startAt` 并传入，按点击时刻起播（copy 模式精度受关键帧限制） |
+| #10 共享源（默认关） | 新增 `shared-source.mjs`：一路 FFmpeg 输入两路输出（检测抽帧 + 录制 copy），`RECORDING_SHARE_SOURCE=1` 开启；默认关闭，不影响既有双进程路径 |
+| 产品决策·403→404 | `routes/alarms.mjs` 跨站 PATCH 改为 404 防探测；`sites.test.mjs` 断言同步 |
+| 产品决策·logout | `routes/auth.mjs` 登出递增 `tokenVersion`，会话校验（`session.mjs:102`）比对版本，其它标签页一并失效 |
+| 产品决策·统一 404 | 新增 `http/not-found.mjs`，API 层 28 处 `status(404).json` 收敛到统一出口与文案，行为不变 |
+| 产品决策·/proxy | `routes/media.mjs` 代理由 `app.all` 收敛为 `GET`/`HEAD`（前端仅经 `<video>/<img>` 加载，均 GET） |
+| #6 E2E | `scripts/e2e-smoke.mjs` 新增录像端点回归（写入假段→reconcile→timeline→status→play→play status→缺失点位 404）与浅色主题容器对比度断言 |
+| AdminPanel 拆分 | 新增 `src/components/admin/` 五个纯展示组件（UserList/NotifyTemplateList/NotifyChannelList/NotifyLogList/AuditPager），主文件 3263→3100 行 |
+
+**验证**：`npm test` **115/115**（109 + 本次 6 条，`recording-followup.test.mjs`）、`npm run build`（68 modules，hls.js 独立 chunk）、`npm run e2e` **23/23**（13 原 + 录像回归 + 浅色对比度）、`git diff --check` 干净。
+
+**注意事项**：
+- 测试曾暴露两处测试夹具缺陷（已修正）：`segment` 辅助函数把 cam-02 段写死 `cameraId`，以及误报解除断言与「单点位同时仅一个活跃告警」的 schema 唯一约束矛盾；实现本身正确（按 `camera_id` 隔离、误报即时解除）。
+- `RECORDING_SHARE_SOURCE` 为默认关闭的开关式能力，未做真机双路验证；开启后需现场验收检测与录制的帧同步。
+- 浅色主题对比度已用自动化断言守护主容器，但逐页人工目视仍建议执行一次。

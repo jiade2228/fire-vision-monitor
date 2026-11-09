@@ -1,3 +1,4 @@
+import { apiNotFound } from '../http/not-found.mjs';
 import crypto from 'node:crypto';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -116,7 +117,7 @@ export function registerCameraRoutes(app, deps) {
     requireManager,
     async (req, res) => {
       const camera = store.getCamera(req.params.id);
-      if (!camera) return res.status(404).json({ error: '点位不存在' });
+      if (!camera) return apiNotFound(res, '点位不存在');
       if (!canManageCamera(req.user, camera)) {
         return res.status(403).json({ error: '无权管理该站点的点位' });
       }
@@ -178,7 +179,7 @@ export function registerCameraRoutes(app, deps) {
     async (req, res) => {
       const camera = store.getCamera(req.params.id);
       if (!camera || !camera.sourceUrl || camera.protocol === 'none') {
-        return res.status(404).json({ error: '该点位没有可预览的视频源' });
+        return apiNotFound(res, '该点位没有可预览的视频源');
       }
       if (!canManageCamera(req.user, camera)) {
         return res.status(403).json({ error: '无权管理该站点的点位' });
@@ -263,7 +264,7 @@ export function registerCameraRoutes(app, deps) {
 
   app.patch('/api/cameras/:id', requireAuth, requireManager, (req, res) => {
     const camera = store.getCamera(req.params.id);
-    if (!camera) return res.status(404).json({ error: '点位不存在' });
+    if (!camera) return apiNotFound(res, '点位不存在');
     if (!canManageCamera(req.user, camera)) {
       return res.status(403).json({ error: '无权管理该站点的点位' });
     }
@@ -333,7 +334,7 @@ export function registerCameraRoutes(app, deps) {
 
   app.delete('/api/cameras/:id', requireAuth, requireManager, async (req, res) => {
     const camera = store.getCamera(req.params.id);
-    if (!camera) return res.status(404).json({ error: '点位不存在' });
+    if (!camera) return apiNotFound(res, '点位不存在');
     if (!canManageCamera(req.user, camera)) {
       return res.status(403).json({ error: '无权管理该站点的点位' });
     }

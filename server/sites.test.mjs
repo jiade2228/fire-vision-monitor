@@ -270,7 +270,7 @@ test('multi-site isolation, scoping and site lifecycle', async (t) => {
     cookie: operatorCookie,
     body: { status: 'confirmed' },
   });
-  assert.equal(operatorPatch.status, 403);
+  assert.equal(operatorPatch.status, 404);
 
   const operatorEvents = await request(`/api/alarms/${alarmB.body.alarm.id}/events`, {
     cookie: operatorCookie,

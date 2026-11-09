@@ -511,6 +511,37 @@ export interface RecordingStatus {
   retentionDays: number;
 }
 
+/** 按需回放会话转码状态（/api/recordings/play/<sessionId>/status）。 */
+export interface RecordingPlayStatus {
+  state: 'pending' | 'ready' | 'failed';
+  error: string | null;
+}
+
+/** 录像导出结果：MP4 二进制与服务端建议的文件名。 */
+export interface RecordingExportResult {
+  blob: Blob;
+  filename: string;
+}
+
+/** 从 Content-Disposition 解析导出文件名，缺失或非法时回退 recording.mp4。 */
+function parseRecordingFilename(disposition: string | null): string {
+  if (!disposition) return 'recording.mp4';
+  const extended = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(disposition);
+  if (extended) {
+    try {
+      const decoded = decodeURIComponent(
+        extended[1].trim().replace(/^["']|["']$/g, ''),
+      );
+      if (decoded) return decoded;
+    } catch {
+      /* 百分号编码非法时回退到普通 filename */
+    }
+  }
+  const plain = /filename\s*=\s*["']?([^"';]+)["']?/i.exec(disposition);
+  const value = plain?.[1]?.trim();
+  return value || 'recording.mp4';
+}
+
 export const api = {
   authStatus: () =>
     request<{ needsSetup: boolean; authenticated: boolean; user: SessionUser | null }>(
@@ -773,14 +804,29 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
-  recordingsPlay: ({ cameraId, from, to }: { cameraId: string; from: number; to: number }) => {
+  recordingsPlay: ({
+    cameraId,
+    from,
+    to,
+    startAt,
+  }: {
+    cameraId: string;
+    from: number;
+    to: number;
+    startAt?: number;
+  }) => {
     const search = new URLSearchParams({
       cameraId,
       from: String(from),
       to: String(to),
     });
+    if (typeof startAt === 'number') search.set('startAt', String(startAt));
     return request<RecordingPlayResponse>(`/api/recordings/play?${search}`);
   },
+  recordingsPlayStatus: (sessionId: string) =>
+    request<RecordingPlayStatus>(
+      `/api/recordings/play/${encodeURIComponent(sessionId)}/status`,
+    ),
   recordingsExportUrl: ({ cameraId, from, to }: { cameraId: string; from: number; to: number }) => {
     const search = new URLSearchParams({
       cameraId,
@@ -788,6 +834,55 @@ export const api = {
       to: String(to),
     });
     return `/api/recordings/export?${search}`;
+  },
+  /**
+   * 导出 MP4：响应是二进制流，不能用只解析 JSON 的 request<T>。
+   * 非 2xx 读取 JSON 的 {error} 抛 ApiError；调用方可传入 signal 以在卸载时中止下载。
+   */
+  recordingsExport: async ({
+    cameraId,
+    from,
+    to,
+    signal,
+  }: {
+    cameraId: string;
+    from: number;
+    to: number;
+    signal?: AbortSignal;
+  }): Promise<RecordingExportResult> => {
+    const search = new URLSearchParams({
+      cameraId,
+      from: String(from),
+      to: String(to),
+    });
+    let response: Response;
+    try {
+      response = await fetch(`/api/recordings/export?${search}`, {
+        headers: { 'X-Requested-With': 'flame-vision' },
+        credentials: 'same-origin',
+        signal,
+      });
+    } catch (cause) {
+      if (signal?.aborted) throw cause;
+      throw new ApiError('无法连接服务器，请检查网络或服务是否运行', 0);
+    }
+    if (!response.ok) {
+      let message = `请求失败（${response.status}）`;
+      try {
+        const payload: unknown = await response.json();
+        if (payload && typeof payload === 'object' && 'error' in payload) {
+          message = String((payload as { error: unknown }).error);
+        }
+      } catch {
+        /* 错误响应非 JSON 时保留通用文案 */
+      }
+      throw new ApiError(message, response.status);
+    }
+    const blob = await response.blob();
+    return {
+      blob,
+      filename: parseRecordingFilename(response.headers.get('Content-Disposition')),
+    };
   },
   recordingsStatus: () => request<RecordingStatus>('/api/recordings/status'),
 };

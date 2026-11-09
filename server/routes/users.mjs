@@ -1,3 +1,4 @@
+import { apiNotFound } from '../http/not-found.mjs';
 import crypto from 'node:crypto';
 
 /**
@@ -70,7 +71,7 @@ export function registerUserRoutes(app, deps) {
 
   app.patch('/api/users/:id', requireAuth, requireRole('admin'), (req, res) => {
     const user = store.getUser(req.params.id);
-    if (!user) return res.status(404).json({ error: '账号不存在' });
+    if (!user) return apiNotFound(res, '账号不存在');
     if (req.body.role !== undefined) {
       if (!['admin', 'operator', 'viewer'].includes(req.body.role)) {
         return res.status(400).json({ error: '角色无效' });
@@ -141,7 +142,7 @@ export function registerUserRoutes(app, deps) {
 
   app.delete('/api/users/:id', requireAuth, requireRole('admin'), (req, res) => {
     const user = store.getUser(req.params.id);
-    if (!user) return res.status(404).json({ error: '账号不存在' });
+    if (!user) return apiNotFound(res, '账号不存在');
     if (user.id === req.user.id) return res.status(400).json({ error: '不能删除当前账号' });
     if (user.role === 'admin' && store.countActiveAdmins() <= 1) {
       return res.status(400).json({ error: '必须保留至少一个管理员' });
@@ -160,13 +161,13 @@ export function registerUserRoutes(app, deps) {
 
   app.get('/api/users/:id/sites', requireAuth, requireRole('admin'), (req, res) => {
     const user = store.getUser(req.params.id);
-    if (!user) return res.status(404).json({ error: '账号不存在' });
+    if (!user) return apiNotFound(res, '账号不存在');
     res.json({ siteIds: store.siteMemberSiteIds(user.id), sites: store.listSites() });
   });
 
   app.put('/api/users/:id/sites', requireAuth, requireRole('admin'), (req, res) => {
     const user = store.getUser(req.params.id);
-    if (!user) return res.status(404).json({ error: '账号不存在' });
+    if (!user) return apiNotFound(res, '账号不存在');
     if (user.role === 'admin') {
       return res.status(400).json({ error: '管理员默认可见全部站点，无需单独授权' });
     }

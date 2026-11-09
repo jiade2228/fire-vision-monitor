@@ -84,8 +84,12 @@ export function concatListContent(files) {
     .join('\n')}\n`;
 }
 
-/** @param {{listFile: string, playlist: string, segmentPattern: string}} options */
-export function buildHlsArgs({ listFile, playlist, segmentPattern }) {
+/**
+ * @param {{listFile: string, playlist: string, segmentPattern: string, seekSeconds?: number}} options
+ *   seekSeconds 为相对 concat 输入起点的偏移；copy 模式下精度受关键帧限制。
+ */
+export function buildHlsArgs({ listFile, playlist, segmentPattern, seekSeconds = 0 }) {
+  const offset = Number(seekSeconds) > 0 ? Number(seekSeconds).toFixed(3) : null;
   return [
     '-hide_banner',
     '-loglevel',
@@ -98,6 +102,8 @@ export function buildHlsArgs({ listFile, playlist, segmentPattern }) {
     'concat',
     '-safe',
     '0',
+    // 输入侧 -ss 必须位于 -i 之前，才能从点击时刻而非首段开头起播。
+    ...(offset ? ['-ss', offset] : []),
     '-i',
     listFile,
     '-c',
@@ -174,7 +180,7 @@ export class PlaybackSessionManager {
    * @returns {Promise<{sessionId: string, playlist: string, from: number, to: number,
    *   segmentCount: number, expiresAt: number} | null>} 无可用段或启动失败返回 null
    */
-  async create({ userId, cameraId, siteId, from, to, files }) {
+  async create({ userId, cameraId, siteId, from, to, files, startAt, firstStartedAt }) {
     const absolute = (files || [])
       .map((file) => safeSegmentPath(this.continuousDir, file))
       .filter(Boolean);
@@ -202,15 +208,17 @@ export class PlaybackSessionManager {
       return null;
     }
 
+    const seekSeconds =
+      Number.isFinite(startAt) && Number.isFinite(firstStartedAt)
+        ? Math.max(0, (startAt - firstStartedAt) / 1000)
+        : 0;
     let child;
     try {
       child = this.spawnImpl(
         this.ffmpegPath,
-        buildHlsArgs({ listFile, playlist, segmentPattern }),
+        buildHlsArgs({ listFile, playlist, segmentPattern, seekSeconds }),
         { windowsHide: true, stdio: ['ignore', 'ignore', 'ignore'] },
       );
-      // 必须挂 error 监听，否则可执行文件缺失会变成 uncaughtException。
-      child.on?.('error', () => undefined);
     } catch (error) {
       this.logger?.warn?.('recording_playback_spawn_failed', { message: error.message });
       await fsp.rm(dir, { recursive: true, force: true }).catch(() => undefined);
@@ -218,7 +226,7 @@ export class PlaybackSessionManager {
     }
 
     const touched = this.now();
-    this.sessions.set(id, {
+    const session = {
       id,
       userId,
       cameraId,
@@ -230,6 +238,23 @@ export class PlaybackSessionManager {
       segmentCount: absolute.length,
       lastTouch: touched,
       expiresAt: touched + this.idleMs,
+      // pending → ready / failed；失败原因供前端展示，不再让 hls.js 无限重试。
+      state: 'pending',
+      error: null,
+    };
+    this.sessions.set(id, session);
+    const markFailed = (message) => {
+      if (this.sessions.get(id) !== session) return;
+      session.state = 'failed';
+      session.error = message;
+      this.logger?.warn?.('recording_playback_process_failed', { sessionId: id, message });
+    };
+    // 必须挂 error 监听，否则可执行文件缺失会变成 uncaughtException。
+    child.on?.('error', (error) => markFailed(`回放转码启动失败：${error.message}`));
+    child.on?.('exit', (code) => {
+      if (this.sessions.get(id) !== session) return;
+      if (code === 0) session.state = 'ready';
+      else markFailed(`回放转码进程退出（code=${code}）`);
     });
     return {
       sessionId: id,
@@ -253,6 +278,13 @@ export class PlaybackSessionManager {
     session.lastTouch = at;
     session.expiresAt = at + this.idleMs;
     return session;
+  }
+
+  /** @returns {{state: string, error: string|null} | null} 会话转码状态（不续期）。 */
+  sessionStatus(sessionId) {
+    const session = this.sessions.get(String(sessionId ?? ''));
+    if (!session) return null;
+    return { state: session.state, error: session.error };
   }
 
   /** @returns {string | null} 会话目录内允许访问的文件绝对路径。 */

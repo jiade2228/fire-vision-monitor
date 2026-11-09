@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { now } from '../../schema.mjs';
 import { alarmRowToObject } from '../helpers.mjs';
+import { protectionWindow } from '../../recording-config.mjs';
 
 export const alarmMethods = {
 /**
@@ -170,6 +171,17 @@ createAlarm(alarm) {
         'created',
         alarm.eventDetail ?? '识别引擎生成告警',
       );
+      // 保护段联动放在数据层事务内：手动/演示告警、离线告警、画面异常告警与
+      // 识别告警走同一条 createAlarm，不再依赖上层 onAlarm 回调单点覆盖。
+      if (alarm.cameraId) {
+        const window = protectionWindow(timestamp);
+        this.db
+          .prepare(`
+            UPDATE recording_segments SET protected = 1
+            WHERE camera_id = ? AND protected = 0 AND started_at < ? AND ended_at > ?
+          `)
+          .run(alarm.cameraId, window.to, window.from);
+      }
     });
     return this.getAlarm(alarm.id);
   },
@@ -215,6 +227,25 @@ updateAlarm(id, changes, actor) {
     this.db
       .prepare(`UPDATE alarms SET ${fields.join(', ')} WHERE id = ?`)
       .run(...values);
+    // 误报即时解除保护：该告警窗口内若仍有其它未误报告警则保留保护，避免误伤取证段。
+    if (changes.status === 'false' && current.cameraId) {
+      const window = protectionWindow(current.createdAt ?? now());
+      const remaining = this.db
+        .prepare(`
+          SELECT COUNT(*) AS count FROM alarms
+          WHERE id <> ? AND camera_id = ? AND status <> 'false'
+            AND created_at >= ? AND created_at <= ?
+        `)
+        .get(id, current.cameraId, window.from, window.to).count;
+      if (!remaining) {
+        this.db
+          .prepare(`
+            UPDATE recording_segments SET protected = 0
+            WHERE camera_id = ? AND started_at < ? AND ended_at > ?
+          `)
+          .run(current.cameraId, window.to, window.from);
+      }
+    }
     return this.getAlarm(id);
   },
 /**

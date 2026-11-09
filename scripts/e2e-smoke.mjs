@@ -358,11 +358,203 @@ async function main() {
           switched.shell !== shellBefore,
         JSON.stringify(switched),
       );
+      // 浅色主题逐容器对比度：只判定前景/背景色都明确（不透明、非渐变）的容器；
+      // 透明 / 半透明 / 渐变背景会与父级混合，无法单独判定，按规格跳过，避免假失败。
+      let contrast = null;
+      let contrastError = '';
+      try {
+        contrast = await page.evaluate(() => {
+          const selectors = ['.app-shell', '.topbar', '.panel', '.topbar-user', 'body'];
+          const parse = (value) => {
+            const nums = String(value ?? '').match(/[\d.]+/g);
+            if (!nums || nums.length < 3) return null;
+            return {
+              rgb: [Number(nums[0]), Number(nums[1]), Number(nums[2])],
+              alpha: nums.length > 3 ? Number(nums[3]) : 1,
+            };
+          };
+          const lum = (rgb) => (0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255;
+          const results = [];
+          for (const selector of selectors) {
+            const el = document.querySelector(selector);
+            if (!el) {
+              results.push({ selector, skipped: true, reason: '未找到元素' });
+              continue;
+            }
+            const style = getComputedStyle(el);
+            const color = style.color;
+            const backgroundColor = style.backgroundColor;
+            const fg = parse(color);
+            const bg = parse(backgroundColor);
+            if (!fg || !bg || bg.alpha < 1) {
+              results.push({
+                selector,
+                color,
+                backgroundColor,
+                skipped: true,
+                reason: '透明/半透明/渐变背景或颜色不可解析',
+              });
+              continue;
+            }
+            const textLum = lum(fg.rgb);
+            const bgLum = lum(bg.rgb);
+            results.push({
+              selector,
+              color,
+              backgroundColor,
+              skipped: false,
+              textLum: Number(textLum.toFixed(3)),
+              bgLum: Number(bgLum.toFixed(3)),
+              diff: Number(Math.abs(textLum - bgLum).toFixed(3)),
+            });
+          }
+          return results;
+        });
+      } catch (error) {
+        contrastError = error.message;
+      }
+      const judged = (contrast ?? []).filter((item) => !item.skipped);
+      const contrastOk =
+        !contrastError && (judged.length === 0 || judged.every((item) => item.diff >= 0.25));
+      let contrastDetail;
+      if (contrastError) {
+        contrastDetail = `取值失败：${contrastError}`;
+      } else if (judged.length === 0) {
+        contrastDetail = `全部透明背景，已跳过 — ${JSON.stringify(contrast)}`;
+      } else {
+        contrastDetail = JSON.stringify(contrast);
+      }
+      check('浅色主题主要容器文字/背景对比度达标', contrastOk, contrastDetail);
       await page.reload({ waitUntil: 'domcontentloaded' });
       const persisted = await page.evaluate(() => document.documentElement.dataset.theme);
       check('刷新后主题保持', persisted === 'light', String(persisted));
     } else {
       check('主题切换按钮存在', false, '未找到 .topbar-theme');
+    }
+
+    // ---------- 持续录像回放端点回归（追加） ----------
+    // 只写假 TS 段：FFmpeg 无法解码，故仅断言会话创建/状态字段，不断言分片内容。
+    const cameraId = target.id; // E2E 已建真实点位（UUID，仅含 [A-Za-z0-9_-]）
+    const continuousRoot = path.join(dataDir, 'continuous');
+    const cameraSegDir = path.join(continuousRoot, cameraId);
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const now = new Date();
+    // 目录 YYYYMMDD / 文件 HHmmss.ts 与 epoch ms 一律按 UTC 解释（对齐 recording-index.mjs）。
+    const segmentStartMs = Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate(),
+      now.getUTCHours(),
+      now.getUTCMinutes(),
+      now.getUTCSeconds(),
+    );
+    const utcDate = `${now.getUTCFullYear()}-${pad2(now.getUTCMonth() + 1)}-${pad2(now.getUTCDate())}`;
+    const segPathOf = (epochMs) => {
+      const d = new Date(epochMs);
+      const day = `${d.getUTCFullYear()}${pad2(d.getUTCMonth() + 1)}${pad2(d.getUTCDate())}`;
+      const file = `${pad2(d.getUTCHours())}${pad2(d.getUTCMinutes())}${pad2(d.getUTCSeconds())}.ts`;
+      return path.join(cameraSegDir, day, file);
+    };
+    const segmentFiles = [segmentStartMs, segmentStartMs + 30_000].map(segPathOf);
+
+    check('录像点位 ID 符合段路径字符集', /^[A-Za-z0-9_-]+$/.test(cameraId), String(cameraId));
+
+    let wrote = 0;
+    let writeError = '';
+    try {
+      for (const file of segmentFiles) {
+        await fs.mkdir(path.dirname(file), { recursive: true });
+        await fs.writeFile(file, 'E2E fake recording segment');
+        wrote += 1;
+      }
+    } catch (error) {
+      writeError = error.message;
+    }
+    check(
+      '写入假录像段文件',
+      wrote === segmentFiles.length,
+      writeError || `${wrote}/${segmentFiles.length}`,
+    );
+
+    try {
+      const reconcile = await api('/api/recordings/reconcile', {
+        method: 'POST',
+        cookie: adminCookie,
+      });
+      check(
+        '录像对账补录假段',
+        (reconcile.body?.inserted ?? 0) >= 1,
+        JSON.stringify(reconcile.body),
+      );
+
+      const timeline = await api(
+        `/api/recordings/timeline?cameraId=${encodeURIComponent(cameraId)}&date=${utcDate}`,
+        { cookie: adminCookie },
+      );
+      const blocks = timeline.body?.timeline?.blocks;
+      check(
+        '录像时间线出现可用块',
+        timeline.status === 200 && Array.isArray(blocks) && blocks.length >= 1,
+        JSON.stringify(timeline.body?.timeline ?? timeline.body),
+      );
+
+      const recStatus = await api('/api/recordings/status', { cookie: adminCookie });
+      check(
+        '录像状态端点返回采集字段',
+        recStatus.status === 200 &&
+          recStatus.body !== null &&
+          typeof recStatus.body === 'object' &&
+          'enabled' in recStatus.body &&
+          'ffmpegAvailable' in recStatus.body &&
+          'retentionDays' in recStatus.body,
+        JSON.stringify(recStatus.body),
+      );
+
+      const playFrom = segmentStartMs - 1000;
+      const playTo = segmentStartMs + 120000;
+      const play = await api(
+        `/api/recordings/play?cameraId=${encodeURIComponent(cameraId)}&from=${playFrom}&to=${playTo}`,
+        { cookie: adminCookie },
+      );
+      const playlist = typeof play.body?.playlist === 'string' ? play.body.playlist : '';
+      const sessionId = typeof play.body?.sessionId === 'string' ? play.body.sessionId : '';
+      check(
+        '回放会话创建成功且返回 playlist',
+        play.status === 200 && playlist.startsWith('/api/recordings/play/'),
+        `status=${play.status}, sessionId=${sessionId}, playlist=${playlist}`,
+      );
+
+      const playStatus = sessionId
+        ? await api(`/api/recordings/play/${encodeURIComponent(sessionId)}/status`, {
+            cookie: adminCookie,
+          })
+        : { status: 0, body: null };
+      check(
+        '回放会话状态端点返回 state',
+        ['pending', 'ready', 'failed'].includes(playStatus.body?.state),
+        `status=${playStatus.status}, body=${JSON.stringify(playStatus.body)}`,
+      );
+
+      const missingCamera = await api(
+        `/api/recordings/play?cameraId=__not_exist__&from=${playFrom}&to=${playTo}`,
+        { cookie: adminCookie },
+      );
+      check('不存在点位回放返回 404', missingCamera.status === 404, `status=${missingCamera.status}`);
+    } catch (error) {
+      check('录像端点回归未抛异常', false, error.message);
+    } finally {
+      // 只删本次写入的 cameraId 子目录，不动 continuous 下其它内容；失败用 check 记录。
+      try {
+        await fs.rm(cameraSegDir, {
+          recursive: true,
+          force: true,
+          maxRetries: 5,
+          retryDelay: 100,
+        });
+        check('清理假录像段目录', true);
+      } catch (error) {
+        check('清理假录像段目录', false, error.message);
+      }
     }
 
     console.log(failures === 0 ? 'E2E 全部通过' : `E2E 失败 ${failures} 项`);

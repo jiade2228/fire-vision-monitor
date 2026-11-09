@@ -3,6 +3,7 @@ import type Hls from 'hls.js';
 import type { Camera } from '../types';
 import {
   api,
+  ApiError,
   type RecordingTimelineResponse,
   type RecordingPlayResponse,
   type RecordingStatus,
@@ -50,12 +51,17 @@ export default function RecordingTimeline({ cameras }: Props) {
   const [playLoading, setPlayLoading] = useState(false);
   const [playerError, setPlayerError] = useState('');
   const [exportLoading, setExportLoading] = useState(false);
+  const [exportError, setExportError] = useState('');
+  // 点击块时换算的段内精确起播时刻（epoch ms）。
+  const [startAt, setStartAt] = useState<number | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
   // 每次播放/刷新/停止/卸载自增，用于丢弃在途请求与异步回调，避免卸载后 setState。
   const generationRef = useRef(0);
-  const exportTimerRef = useRef<number | null>(null);
+  // 导出请求与 objectURL：卸载时中止 fetch、释放临时 URL。
+  const exportAbortRef = useRef<AbortController | null>(null);
+  const exportObjectUrlRef = useRef<string | null>(null);
 
   /**
    * 幂等地销毁 HLS 实例并释放 <video> 资源。
@@ -75,6 +81,14 @@ export default function RecordingTimeline({ cameras }: Props) {
     }
   }, []);
 
+  /** 释放导出产生的临时 objectURL（正常结束与卸载兜底共用）。 */
+  const revokeExportUrl = useCallback(() => {
+    if (exportObjectUrlRef.current) {
+      URL.revokeObjectURL(exportObjectUrlRef.current);
+      exportObjectUrlRef.current = null;
+    }
+  }, []);
+
   const load = useCallback(async () => {
     if (!cameraId) return;
     // 点位/日期变化或刷新：让在途播放请求失效并释放播放器。
@@ -85,8 +99,19 @@ export default function RecordingTimeline({ cameras }: Props) {
     setPlayLoading(false);
     setSelected(null);
     setSelectedRange(null);
+    setStartAt(null);
     setLoading(true);
     setError('');
+    const generation = generationRef.current;
+    // 采集状态并入每次刷新：失败静默降级，不影响时间线结果。
+    void api
+      .recordingsStatus()
+      .then((result) => {
+        if (generationRef.current === generation) setStatus(result);
+      })
+      .catch(() => {
+        /* 状态接口不可用时静默降级 */
+      });
     try {
       const { from, to } = localDayRange(date);
       setData(await api.recordingsTimeline({ cameraId, from, to }));
@@ -102,33 +127,16 @@ export default function RecordingTimeline({ cameras }: Props) {
     void load();
   }, [load]);
 
-  // 采集状态：挂载时拉取一次，失败静默降级，不影响时间线。
-  useEffect(() => {
-    let cancelled = false;
-    void api
-      .recordingsStatus()
-      .then((result) => {
-        if (!cancelled) setStatus(result);
-      })
-      .catch(() => {
-        /* 状态接口不可用时静默降级 */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // 卸载：失效在途请求、销毁播放器、清理导出计时器。
+  // 卸载：失效在途请求、销毁播放器、中止导出请求并释放临时 URL。
   useEffect(
     () => () => {
       generationRef.current += 1;
       cleanupPlayback();
-      if (exportTimerRef.current !== null) {
-        window.clearTimeout(exportTimerRef.current);
-        exportTimerRef.current = null;
-      }
+      exportAbortRef.current?.abort();
+      exportAbortRef.current = null;
+      revokeExportUrl();
     },
-    [cleanupPlayback],
+    [cleanupPlayback, revokeExportUrl],
   );
 
   // 会话就绪后附着 hls.js（或回退到原生 HLS）；cleanup 成对释放。
@@ -137,6 +145,7 @@ export default function RecordingTimeline({ cameras }: Props) {
     const video = videoRef.current;
     if (!video) return;
     const generation = generationRef.current;
+    const sessionId = session.sessionId;
     let cancelled = false;
     void (async () => {
       try {
@@ -153,9 +162,21 @@ export default function RecordingTimeline({ cameras }: Props) {
             }
           });
           hls.on(HlsPlayer.Events.ERROR, (_event, data) => {
-            if (data.fatal && !cancelled && generationRef.current === generation) {
-              setPlayerError('回放流加载失败，请点击重试');
-            }
+            if (!data.fatal || cancelled || generationRef.current !== generation) return;
+            void api
+              .recordingsPlayStatus(sessionId)
+              .then((result) => {
+                if (cancelled || generationRef.current !== generation) return;
+                setPlayerError(
+                  result.state === 'failed' && result.error
+                    ? result.error
+                    : '回放失败，请稍后重试',
+                );
+              })
+              .catch(() => {
+                if (cancelled || generationRef.current !== generation) return;
+                setPlayerError('回放失败，请稍后重试');
+              });
           });
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
           video.src = session.playlist;
@@ -182,10 +203,16 @@ export default function RecordingTimeline({ cameras }: Props) {
     setPlayerError('');
     setPlayLoading(true);
     try {
+      // 点击位置换算的精确起播时刻，裁剪到回放窗口内避免越界。
+      const clampedStartAt =
+        startAt === null
+          ? undefined
+          : Math.min(Math.max(startAt, selectedRange.from), selectedRange.to);
       const result = await api.recordingsPlay({
         cameraId,
         from: selectedRange.from,
         to: selectedRange.to,
+        startAt: clampedStartAt,
       });
       if (generationRef.current !== generation) return;
       setSession(result);
@@ -195,7 +222,7 @@ export default function RecordingTimeline({ cameras }: Props) {
     } finally {
       if (generationRef.current === generation) setPlayLoading(false);
     }
-  }, [cameraId, selectedRange, cleanupPlayback]);
+  }, [cameraId, selectedRange, startAt, cleanupPlayback]);
 
   const handleStop = useCallback(() => {
     generationRef.current += 1;
@@ -205,25 +232,43 @@ export default function RecordingTimeline({ cameras }: Props) {
     setPlayLoading(false);
   }, [cleanupPlayback]);
 
-  const handleExport = useCallback(() => {
+  const handleExport = useCallback(async () => {
     if (!selectedRange || exportLoading) return;
-    setExportLoading(true);
     const { from, to } = selectedRange;
-    const url = api.recordingsExportUrl({ cameraId, from, to });
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `recording-${cameraId}-${from}-${to}.mp4`;
-    anchor.style.display = 'none';
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-    // 浏览器下载不会回调，用短计时器复位 loading 防重复点击。
-    if (exportTimerRef.current !== null) window.clearTimeout(exportTimerRef.current);
-    exportTimerRef.current = window.setTimeout(() => {
-      exportTimerRef.current = null;
-      setExportLoading(false);
-    }, 1500);
-  }, [cameraId, selectedRange, exportLoading]);
+    const controller = new AbortController();
+    exportAbortRef.current?.abort();
+    exportAbortRef.current = controller;
+    setExportLoading(true);
+    setExportError('');
+    try {
+      const { blob, filename } = await api.recordingsExport({
+        cameraId,
+        from,
+        to,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      const objectUrl = URL.createObjectURL(blob);
+      exportObjectUrlRef.current = objectUrl;
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = filename;
+      anchor.style.display = 'none';
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      revokeExportUrl();
+    } catch (cause) {
+      revokeExportUrl();
+      if (controller.signal.aborted) return;
+      setExportError(
+        cause instanceof ApiError ? cause.message : '导出失败，请稍后重试',
+      );
+    } finally {
+      if (!controller.signal.aborted) setExportLoading(false);
+      if (exportAbortRef.current === controller) exportAbortRef.current = null;
+    }
+  }, [cameraId, selectedRange, exportLoading, revokeExportUrl]);
 
   const timeline = data?.timeline;
   const span = timeline ? timeline.to - timeline.from : 1;
@@ -298,13 +343,22 @@ export default function RecordingTimeline({ cameras }: Props) {
                 className={`recording-block${block.protected ? ' is-protected' : ''}`}
                 style={{ left: `${percent(block.startedAt)}%`, width: `${width(block.startedAt, block.endedAt)}%` }}
                 title={`${formatDateTime(block.startedAt)} 起，${block.segmentCount} 段，${formatBytes(block.bytes)}${block.protected ? '（告警保护）' : ''}`}
-                onClick={() => {
+                onClick={(event) => {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  const ratio = Math.min(
+                    Math.max((event.clientX - rect.left) / rect.width, 0),
+                    1,
+                  );
+                  const clickedAt = Math.round(
+                    block.startedAt + ratio * (block.endedAt - block.startedAt),
+                  );
                   setSelected(block.startedAt);
                   // 服务端单次回放/导出窗口上限 4 小时；长连续块从起点截断，避免请求被拒。
                   setSelectedRange({
                     from: block.startedAt,
                     to: Math.min(block.endedAt, block.startedAt + 4 * 60 * 60 * 1000),
                   });
+                  setStartAt(clickedAt);
                 }}
               />
             ))}
@@ -335,7 +389,7 @@ export default function RecordingTimeline({ cameras }: Props) {
             <button
               type="button"
               className="btn btn-sm"
-              onClick={handleExport}
+              onClick={() => void handleExport()}
               disabled={!canAct || exportLoading}
             >
               {exportLoading ? '导出中…' : '导出该时段'}
@@ -346,6 +400,8 @@ export default function RecordingTimeline({ cameras }: Props) {
               </button>
             )}
           </div>
+
+          {exportError && <div className="recording-export-error">{exportError}</div>}
 
           {playerError && (
             <div className="recording-action-error">
@@ -379,7 +435,7 @@ export default function RecordingTimeline({ cameras }: Props) {
             <p className="recording-hint">
               {selected === null
                 ? '点击时间条上的蓝色/红色区块可定位到该时刻。'
-                : `已定位 ${formatDateTime(selected)}；可播放该时段或导出 MP4（单次最多 4 小时）。`}
+                : `已定位 ${formatDateTime(selected)}；可播放该时段或导出 MP4（单次最多 4 小时），播放从点击位置开始。`}
             </p>
           )}
           {!data?.enabled && (

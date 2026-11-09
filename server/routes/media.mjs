@@ -1,3 +1,4 @@
+import { apiNotFound } from '../http/not-found.mjs';
 import fsp from 'node:fs/promises';
 
 import { StreamError } from '../streams.mjs';
@@ -44,7 +45,8 @@ export function registerMediaRoutes(app, deps) {
 
   // 跨域 HLS/HTTP 视频代理：浏览器只连中心，解决跨域无法读帧识别的问题。
   // 仅允许代理与该点位已配置源站同源的资源，杜绝被当作通用代理（SSRF）。
-  app.all(
+  // 只暴露 GET/HEAD：HLS 播放列表与分片均不需要其它方法，缩小代理面。
+  app.get(
     /^\/proxy\/(?<cameraId>[^/]+)(?:\/(?<tail>.*))?$/,
     requireAuth,
     async (req, res) => {
@@ -52,7 +54,7 @@ export function registerMediaRoutes(app, deps) {
       const tail = req.params.tail || '';
       const camera = mediaCameraFor(req, cameraId, { protocols: ['hls', 'http'] });
       if (!camera) {
-        return res.status(404).json({ error: '该点位不支持代理取流或不存在' });
+        return apiNotFound(res, '该点位不支持代理取流或不存在');
       }
       let targetUrl;
       if (!tail) {

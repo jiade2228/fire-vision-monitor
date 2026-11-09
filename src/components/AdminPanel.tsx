@@ -32,6 +32,11 @@ import { downloadAuditCsv } from '../lib/export';
 import RoiEditor from './RoiEditor';
 import StatsOverview from './StatsOverview';
 import AuditLogTable from './AuditLogTable';
+import UserList from './admin/UserList';
+import NotifyTemplateList from './admin/NotifyTemplateList';
+import NotifyChannelList from './admin/NotifyChannelList';
+import NotifyLogList from './admin/NotifyLogList';
+import AuditPager from './admin/AuditPager';
 
 interface Props {
   cameras: ManagedCamera[];
@@ -2773,36 +2778,12 @@ export default function AdminPanel({
                     </div>
                   </div>
                 )}
-                <div className="template-list">
-                  {!showTemplateEditor && notifyTemplates.length === 0 && (
-                    <p className="admin-empty">暂无模板，使用默认文案。可新建可复用模板。</p>
-                  )}
-                  {notifyTemplates.map((tpl) => (
-                    <div className="template-item" key={tpl.id}>
-                      <div className="template-meta">
-                        <strong>{tpl.name}</strong>
-                        {tpl.builtin && <span className="chip chip--mini">内置</span>}
-                      </div>
-                      <code className="template-preview">{tpl.body}</code>
-                      <div className="template-item-actions">
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-ghost"
-                          onClick={() => openTemplateEditor(tpl)}
-                        >
-                          编辑
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-ghost"
-                          onClick={() => void removeTemplate(tpl)}
-                        >
-                          删除
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                <NotifyTemplateList
+                  notifyTemplates={notifyTemplates}
+                  showTemplateEditor={showTemplateEditor}
+                  openTemplateEditor={openTemplateEditor}
+                  removeTemplate={removeTemplate}
+                />
               </div>
 
               <form className="admin-form admin-notify-form" onSubmit={submitNotify}>
@@ -2921,88 +2902,21 @@ export default function AdminPanel({
                 </div>
               </form>
 
-              {notifyChannels.length === 0 ? (
-                <p className="admin-empty">
-                  还没有通知渠道。创建后，告警会按站点自动推送，不再依赖有人盯屏。
-                </p>
-              ) : (
-                <div className="site-list">
-                  {notifyChannels.map((channel) => (
-                    <div className="site-row" key={channel.id}>
-                      <div className="site-main">
-                        <strong>{channel.name}</strong>
-                        <span>
-                          {NOTIFY_KIND_LABELS[channel.kind]} ·{' '}
-                          {channel.siteName ?? '全部站点'} · {channel.urlHint}
-                          {channel.hasSecret ? ' · 已配置签名' : ''}
-                          {channel.templateId
-                            ? ` · 模板：${notifyTemplates.find((t) => t.id === channel.templateId)?.name ?? '已删除'}`
-                            : ''}
-                        </span>
-                      </div>
-                      <div className="point-actions">
-                        <span className={`point-state ${channel.enabled ? 'is-on' : ''}`}>
-                          {channel.enabled ? '启用' : '停用'}
-                        </span>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-ghost"
-                          disabled={testingChannel === channel.id}
-                          onClick={() => void testNotifyChannel(channel)}
-                        >
-                          {testingChannel === channel.id ? '发送中…' : '测试'}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-ghost"
-                          onClick={() => void toggleNotifyChannel(channel)}
-                        >
-                          {channel.enabled ? '停用' : '启用'}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-ghost"
-                          onClick={() => void removeNotifyChannel(channel)}
-                        >
-                          删除
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <NotifyChannelList
+                notifyChannels={notifyChannels}
+                notifyTemplates={notifyTemplates}
+                testingChannel={testingChannel}
+                kindLabels={NOTIFY_KIND_LABELS}
+                testNotifyChannel={testNotifyChannel}
+                toggleNotifyChannel={toggleNotifyChannel}
+                removeNotifyChannel={removeNotifyChannel}
+              />
 
-              <div className="admin-subhead">
-                <h4>最近推送</h4>
-                <span>最多 30 条</span>
-              </div>
-              {notifyLogs.length === 0 ? (
-                <p className="admin-empty">暂无推送记录。</p>
-              ) : (
-                <div className="notify-log-list">
-                  {notifyLogs.map((log) => (
-                    <div className="notify-log" key={log.id}>
-                      <span className={`notify-log-status is-${log.status}`}>
-                        {log.status === 'sent'
-                          ? '成功'
-                          : log.status === 'failed'
-                            ? '失败'
-                            : '待发送'}
-                      </span>
-                      <span className="notify-log-event">
-                        {NOTIFY_EVENT_LABELS[log.event] ?? log.event}
-                      </span>
-                      <span className="notify-log-channel">
-                        {log.channelName ?? '已删除渠道'}
-                      </span>
-                      <span className="notify-log-time">
-                        {formatDateTime(log.createdAt)}
-                      </span>
-                      {log.error && <span className="notify-log-error">{log.error}</span>}
-                    </div>
-                  ))}
-                </div>
-              )}
+              <NotifyLogList
+                notifyLogs={notifyLogs}
+                eventLabels={NOTIFY_EVENT_LABELS}
+                formatDateTime={formatDateTime}
+              />
             </div>
           ) : tab === 'audit' ? (
             <div className="admin-section">
@@ -3083,34 +2997,13 @@ export default function AdminPanel({
                 <AuditLogTable logs={auditLogs} actionLabels={AUDIT_ACTION_LABELS} />
               )}
 
-              {auditTotal > AUDIT_PAGE_SIZE && (
-                <div className="audit-pager">
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-ghost"
-                    disabled={auditBusy || auditOffset === 0}
-                    onClick={() =>
-                      void loadAuditLogs({
-                        offset: Math.max(0, auditOffset - AUDIT_PAGE_SIZE),
-                      })
-                    }
-                  >
-                    上一页
-                  </button>
-                  <span>
-                    第 {Math.floor(auditOffset / AUDIT_PAGE_SIZE) + 1} 页 / 共{' '}
-                    {Math.ceil(auditTotal / AUDIT_PAGE_SIZE)} 页
-                  </span>
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-ghost"
-                    disabled={auditBusy || auditOffset + AUDIT_PAGE_SIZE >= auditTotal}
-                    onClick={() => void loadAuditLogs({ offset: auditOffset + AUDIT_PAGE_SIZE })}
-                  >
-                    下一页
-                  </button>
-                </div>
-              )}
+              <AuditPager
+                auditBusy={auditBusy}
+                auditOffset={auditOffset}
+                auditTotal={auditTotal}
+                pageSize={AUDIT_PAGE_SIZE}
+                loadAuditLogs={loadAuditLogs}
+              />
             </div>
           ) : (
             <div className="admin-section">
@@ -3189,81 +3082,15 @@ export default function AdminPanel({
                 </button>
               </form>
 
-              <div className="user-list">
-                {usersLoading && users.length === 0 ? (
-                  <p className="admin-empty">正在加载账号…</p>
-                ) : (
-                  users.map((user) => (
-                    <div className="user-row" key={user.id}>
-                      <div className="user-main">
-                        <strong>{user.displayName}</strong>
-                        <span>
-                          @{user.username}
-                          {user.siteAdmin ? ' · 站点管理员' : ''}
-                          {user.id === currentUser.id ? ' · 当前账号' : ''}
-                        </span>
-                      </div>
-                      <select
-                        className="settings-input user-role-select"
-                        value={user.role}
-                        disabled={user.id === currentUser.id}
-                        aria-label={`${user.displayName} 角色`}
-                        onChange={(event) =>
-                          void updateUser(user, { role: event.target.value as UserRole })
-                        }
-                      >
-                        <option value="admin">管理员</option>
-                        <option value="operator">值班员</option>
-                        <option value="viewer">只读</option>
-                      </select>
-                      <span className={`point-state ${user.disabled ? '' : 'is-on'}`}>
-                        {user.disabled ? '已停用' : '正常'}
-                      </span>
-                      <div className="point-actions">
-                        {user.role !== 'admin' && (
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-ghost"
-                            onClick={() =>
-                              void updateUser(user, { siteAdmin: !user.siteAdmin })
-                            }
-                          >
-                            {user.siteAdmin ? '取消站点管理员' : '设为站点管理员'}
-                          </button>
-                        )}
-                        {user.role !== 'admin' && (
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-ghost"
-                            onClick={() => void openAssignUser(user)}
-                          >
-                            管理可见站点
-                          </button>
-                        )}
-                        <button type="button" className="btn btn-sm btn-ghost" onClick={() => void resetPassword(user)}>
-                          重置密码
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-ghost"
-                          disabled={user.id === currentUser.id}
-                          onClick={() => void updateUser(user, { disabled: !user.disabled })}
-                        >
-                          {user.disabled ? '启用' : '停用'}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-ghost"
-                          disabled={user.id === currentUser.id}
-                          onClick={() => void deleteUser(user)}
-                        >
-                          删除
-                        </button>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
+              <UserList
+                users={users}
+                usersLoading={usersLoading}
+                currentUser={currentUser}
+                updateUser={updateUser}
+                openAssignUser={openAssignUser}
+                resetPassword={resetPassword}
+                deleteUser={deleteUser}
+              />
             </div>
           )}
         </div>

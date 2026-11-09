@@ -48,6 +48,8 @@ import {
   exportRecordingToMp4,
   safeSegmentPath,
 } from './recording-playback.mjs';
+import { probeSegmentDurations } from './recording-duration.mjs';
+import { SharedSourceHub } from './shared-source.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -73,10 +75,6 @@ const recordingEnabled = process.env.RECORDING === '1';
 const recordingSegmentSeconds = Number(process.env.RECORDING_SEGMENT_SECONDS) || 60;
 const recordingRetentionDays = Number(process.env.RECORDING_RETENTION_DAYS) || 14;
 const recordingProtectDays = Number(process.env.RECORDING_PROTECT_DAYS) || 30;
-const alarmClipSeconds = Number(process.env.ALARM_CLIP_SECONDS) || 10;
-// 告警前 120s 至告警后「短视频时长 + 60s」的段免于水位淘汰（设计文档 §4）。
-const recordingProtectLeadMs = 120_000;
-const recordingProtectTailMs = (alarmClipSeconds + 60) * 1000;
 const recordingMaxBytes =
   process.env.RECORDING_MAX_BYTES === undefined
     ? 50 * 1024 * 1024 * 1024
@@ -573,6 +571,7 @@ async function main() {
     at: 0,
     snapshots: { files: 0, bytes: 0 },
     recordings: { files: 0, bytes: 0 },
+    continuous: { files: 0, bytes: 0, protectedFiles: 0 },
   };
   const scanMediaDir = async (dir) => {
     let files = 0;
@@ -601,7 +600,14 @@ async function main() {
       scanMediaDir(snapshotDir),
       scanMediaDir(recordingsDir),
     ]);
-    mediaUsageCache = { at: Date.now(), snapshots, recordings };
+    // 录像段按点位/日期分目录，递归扫盘代价高且索引就是事实源，直接取索引用量。
+    let continuous = { files: 0, bytes: 0, protectedFiles: 0 };
+    try {
+      continuous = store.recordingUsage();
+    } catch {
+      // schema 尚未就绪时降级为 0，不影响 /api/system 其它字段。
+    }
+    mediaUsageCache = { at: Date.now(), snapshots, recordings, continuous };
     return mediaUsageCache;
   };
   const releaseLock = await acquireInstanceLock();
@@ -689,6 +695,32 @@ async function main() {
         message: '未找到 FFprobe，一键测流功能不可用',
       });
     }
+    // 录像段实际时长校准：ffprobe 缺失或探测失败时保持名义段长行为。
+    const recordingProbe = ffprobeOk
+      ? (segments) =>
+          probeSegmentDurations({
+            segments,
+            rootDir: continuousDir,
+            nominalMs: recordingSegmentSeconds * 1000,
+          })
+      : null;
+
+    // 共享源模式（默认关闭）：RECORDING=1 且显式开启时，检测与录像复用同一 FFmpeg 进程。
+    // 必须先于 DetectionEngine 构造创建，并在首次 sync 前建立会话，检测引擎才会跳过自己的进程。
+    const sharedHub =
+      recordingEnabled &&
+      streamManager.ffmpegAvailable &&
+      process.env.RECORDING_SHARED_SOURCE === '1'
+        ? new SharedSourceHub({
+            rootDir: continuousDir,
+            segmentSeconds: recordingSegmentSeconds,
+            width: Number(process.env.DETECTION_WIDTH) || 160,
+            height: Number(process.env.DETECTION_HEIGHT) || 90,
+            fps: Number(process.env.DETECTION_FPS) || 1,
+            logger: { warn: (event, fields) => log('warn', event, fields) },
+          })
+        : null;
+    if (sharedHub) log('info', 'recording_shared_source_enabled', {});
 
     // 本地演示视频源：没有真实摄像头时也能跑通完整闭环（播放/识别/告警/推送）。
     const demoSource = new DemoSource({
@@ -750,6 +782,7 @@ async function main() {
           ? `http://127.0.0.1:${port}${url}`
           : url,
       onQualityEvent: handleQualityEvent,
+      frameSource: sharedHub,
       logger: {
         warn: (message) => log('warn', 'server_detection', { message }),
         info: (message) => log('info', 'server_detection', { message }),
@@ -777,16 +810,7 @@ async function main() {
         void notifier
           ?.notifyAlarm(alarm, 'created', { camera })
           .catch(() => undefined);
-        // 告警前后窗口内的录像段自动免于水位淘汰；索引为空时是 no-op。
-        try {
-          store.protectSegmentsAround({
-            cameraId: alarm.cameraId,
-            from: alarm.createdAt - recordingProtectLeadMs,
-            to: alarm.createdAt + recordingProtectTailMs,
-          });
-        } catch (error) {
-          log('warn', 'recording_protect_failed', { error: error.message });
-        }
+        // 保护段联动已下沉到 store.createAlarm 事务内，覆盖全部告警来源。
       },
     });
     detectionEngine.init();
@@ -796,6 +820,7 @@ async function main() {
       sensitivity: detectionEngine.sensitivity,
       size: `${detectionEngine.width}x${detectionEngine.height}`,
     });
+    if (sharedHub) await sharedHub.sync(store.listCameras());
     detectionEngine.sync(store.listCameras());
 
     // 持续录像采集：仅 RECORDING=1 时启动，默认不产生任何 FFmpeg 进程。
@@ -804,6 +829,7 @@ async function main() {
       enabled: recordingEnabled,
       segmentSeconds: recordingSegmentSeconds,
       maxCameras: recordingMaxCameras,
+      sharedHub,
       // 与检测引擎一致：演示点位存的是站内相对地址，补成回环绝对地址。
       resolveSourceUrl: (url) =>
         typeof url === 'string' && url.startsWith('/')
@@ -839,6 +865,9 @@ async function main() {
 
     function syncDetection() {
       try {
+        if (sharedHub) {
+          void sharedHub.sync(store.listCameras()).catch(() => undefined);
+        }
         detectionEngine?.sync(store.listCameras());
         captureManager?.sync(store.listCameras());
       } catch (error) {
@@ -1381,6 +1410,17 @@ async function main() {
       demoPurgeFilter,
       rememberDemoCameraId,
       computeMediaUsage,
+      recordingStatus: () => {
+        const state = captureManager?.status?.() ?? {};
+        return {
+          enabled: recordingEnabled,
+          active: state.active ?? 0,
+          skipped: state.skipped ?? 0,
+          ffmpegAvailable: Boolean(state.ffmpegAvailable),
+          retentionDays: recordingRetentionDays,
+          maxBytes: recordingMaxBytes,
+        };
+      },
       syncDetection,
       streamManager,
       detectionEngine,
@@ -1514,6 +1554,7 @@ async function main() {
         exportRecordingToMp4({ files, continuousDir: dir, exportDir }),
       ffmpegAvailable: captureFfmpegOk,
       retentionDays: recordingRetentionDays,
+      recordingProbe: recordingProbe ?? undefined,
       logger: { warn: (event, fields) => log('warn', event, fields) },
     });
 
@@ -1593,7 +1634,9 @@ async function main() {
     // 持续录像索引每 5 分钟对账一次：文件系统是事实源，崩溃后自动补录缺失段。
     const recordingReconcileRun = async () => {
       try {
-        const result = await reconcileRecordingSegments(store, continuousDir);
+        const result = await reconcileRecordingSegments(store, continuousDir, {
+          probe: recordingProbe ?? undefined,
+        });
         if (result.inserted || result.updated || result.orphansRemoved) {
           log('info', 'recording_index_reconciled', result);
         }
@@ -1633,11 +1676,38 @@ async function main() {
             // 采集进程可能仍持有该文件；下轮对账会把仍存在的段补回索引。
           }
         }
-        if (unprotected || files.length) {
+        // 临时产物兜底：下载中断会留下 export 文件，会话异常退出会留下孤儿 play 目录。
+        // 仅清理超过 30 分钟、且不属于活跃回放会话的条目，避免误删正在播放的分片。
+        let tempRemoved = 0;
+        const cutoff = at - 30 * 60_000;
+        for (const dir of [continuousExportDir, continuousPlayDir]) {
+          let entries = [];
+          try {
+            entries = await fsp.readdir(dir, { withFileTypes: true });
+          } catch {
+            continue;
+          }
+          for (const entry of entries) {
+            if (dir === continuousPlayDir && playbackManager?.sessions.has(entry.name)) {
+              continue;
+            }
+            const full = path.join(dir, entry.name);
+            try {
+              const stat = await fsp.stat(full);
+              if (stat.mtimeMs >= cutoff) continue;
+              await fsp.rm(full, { recursive: true, force: true });
+              tempRemoved += 1;
+            } catch {
+              // 文件可能正被下载，下一轮再试。
+            }
+          }
+        }
+        if (unprotected || files.length || tempRemoved) {
           log('info', 'recording_retention_applied', {
             unprotected,
             pruned: files.length,
             filesRemoved: removed,
+            tempRemoved,
             retentionDays: recordingRetentionDays,
             maxBytes: recordingMaxBytes,
           });

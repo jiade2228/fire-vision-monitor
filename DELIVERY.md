@@ -301,5 +301,23 @@ npm run reset-password -- --username admin      # 生产管理员强密码（不
 
 - **现场验收**（§5.5 六项）：24 路磁盘速率与 CPU、`kill -9` 恢复、超配额淘汰、NTP/夏令时、Windows 路径与 fsync、拖拽并发体验。
 - **外部动作**：GitHub 仓库地址填 `scripts/publish.mjs --apply`、watchdog 生产验证、目标实例强密码与演示数据清理、公网拓扑拍板。
-- **产品决策**（会改变既有契约，未擅自改动）：告警 PATCH 跨站 403 vs 404、登出是否递增 `tokenVersion`、是否统一 404 响应体与收敛 `/proxy` 方法面。
-- **可选大改**：`AdminPanel.tsx` 其余 Tab / `App.tsx` 分步拆分、浅色主题逐页视觉精修。
+- **产品决策**（用户于 11-09 续批授权，已全部实现）：告警 PATCH 跨站 403→404、登出递增 `tokenVersion`、统一 API 404 出口、收敛 `/proxy` 为 GET/HEAD。详见 `REVIEW.md 第九节`。
+- **可选大改**：`App.tsx` 拆分仍待评估；`AdminPanel.tsx` 已再抽 5 个 `admin/` 纯展示组件（3263→3100 行），浅色主题逐页视觉精修仍建议人工执行一次。
+
+### 9.6 后续全量推进批次（11-09 续批）
+
+用户授权「全做」上一轮优先级清单（P1 八项 + P2 三项 + 四项产品决策）。全部代码项已落地，测试 109→**115/115**，E2E 13→**23/23**。
+
+**已完成（按契约/模块）**
+
+- 保护段联动下沉到 `store.createAlarm` 事务（#1），与误报即时解除（#11）共用 `recording-config.mjs` 的 `protectionWindow`；四类告警统一保护，误报后无其它活跃告警即解除。
+- `/api/system` 暴露 `storage.continuous` 与 `recording` 用量（#2）。
+- 回放会话记录 `state`/`error`，新增 `GET /api/recordings/play/<sid>/status`（#3）；ffprobe 段时长校准默认不注入则行为不变（#4）；每小时清理超时 export 与孤儿 play 目录（#8）。
+- 前端导出改 `fetch + blob` 可感知错误（#5），采集状态并入 `load()` 随刷新更新（#7），点击位置换算 `startAt` 实现段内 seek 起播（#9）。
+- 共享 FFmpeg 源 `shared-source.mjs`，`RECORDING_SHARE_SOURCE=1` 开启，默认关闭（#10）。
+- 四项产品决策：跨站 PATCH 403→404、登出递增 `tokenVersion`、28 处 API 404 收敛到 `http/not-found.mjs`、代理收敛为 GET/HEAD。
+- E2E 新增录像端点回归与浅色对比度断言（#6）；`AdminPanel` 再抽 5 个 `admin/` 组件。
+
+**验证证据**：`npm test` 115/115、`npm run build`（68 modules）、`npm run e2e` 23/23、`git diff --check` 干净。
+
+**交付物与前提**：本批次无新待确认项。`RECORDING_SHARE_SOURCE` 默认关闭、未做真机双路验收；浅色主题对比度有自动化断言但仍建议人工目视一次；现场验收清单（§5.5）与 GitHub/watchdog/强密码等外部动作不变。

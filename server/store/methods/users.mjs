@@ -114,6 +114,16 @@ updateUser(id, changes) {
     this.db.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).run(...values);
     return this.getUser(id);
   },
+  /**
+   * 递增会话版本，使该账号其它标签页已签发的 token 立即失效（登出时使用）。
+   * @param {string} id 用户 ID。
+   * @returns {number} 受影响行数。
+   */
+  bumpTokenVersion(id) {
+    return this.db
+      .prepare('UPDATE users SET token_version = token_version + 1 WHERE id = ?')
+      .run(id).changes;
+  },
 /**
  * 删除用户及其站点归属记录。
  * @param {string} id 用户 ID。

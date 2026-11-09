@@ -1,3 +1,4 @@
+import { apiNotFound } from '../http/not-found.mjs';
 import crypto from 'node:crypto';
 
 /**
@@ -93,7 +94,7 @@ export function registerNotifyRoutes(app, deps) {
     requireManager,
     (req, res) => {
       const current = store.getNotifyChannel(req.params.id);
-      if (!current) return res.status(404).json({ error: '通知渠道不存在' });
+      if (!current) return apiNotFound(res, '通知渠道不存在');
       if (!canManageSite(req.user, current.siteId)) {
         return res.status(403).json({ error: '无权管理该通知渠道' });
       }
@@ -136,12 +137,12 @@ export function registerNotifyRoutes(app, deps) {
     requireManager,
     (req, res) => {
       const current = store.getNotifyChannel(req.params.id);
-      if (!current) return res.status(404).json({ error: '通知渠道不存在' });
+      if (!current) return apiNotFound(res, '通知渠道不存在');
       if (!canManageSite(req.user, current.siteId)) {
         return res.status(403).json({ error: '无权管理该通知渠道' });
       }
       const ok = store.deleteNotifyChannel(req.params.id);
-      if (!ok) return res.status(404).json({ error: '通知渠道不存在' });
+      if (!ok) return apiNotFound(res, '通知渠道不存在');
       store.recordAudit({
         user: req.user,
         action: 'notify.delete',
@@ -159,7 +160,7 @@ export function registerNotifyRoutes(app, deps) {
     requireManager,
     async (req, res) => {
       const channel = store.getNotifyChannel(req.params.id);
-      if (!channel) return res.status(404).json({ error: '通知渠道不存在' });
+      if (!channel) return apiNotFound(res, '通知渠道不存在');
       if (!canManageSite(req.user, channel.siteId)) {
         return res.status(403).json({ error: '无权管理该通知渠道' });
       }
@@ -217,7 +218,7 @@ export function registerNotifyRoutes(app, deps) {
     requireManager,
     (req, res) => {
       const current = store.getNotificationTemplate(req.params.id);
-      if (!current) return res.status(404).json({ error: '模板不存在' });
+      if (!current) return apiNotFound(res, '模板不存在');
       const name =
         req.body.name !== undefined
           ? normalizeText(String(req.body.name ?? ''), 32)
@@ -246,9 +247,9 @@ export function registerNotifyRoutes(app, deps) {
     requireManager,
     (req, res) => {
       const current = store.getNotificationTemplate(req.params.id);
-      if (!current) return res.status(404).json({ error: '模板不存在' });
+      if (!current) return apiNotFound(res, '模板不存在');
       const ok = store.deleteNotificationTemplate(req.params.id);
-      if (!ok) return res.status(404).json({ error: '模板不存在' });
+      if (!ok) return apiNotFound(res, '模板不存在');
       store.recordAudit({
         user: req.user,
         action: 'notify.template.delete',

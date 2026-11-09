@@ -252,6 +252,7 @@ export class RecordingCaptureManager {
     resolveSourceUrl = null,
     clock = () => Date.now(),
     armedCheck = isArmedNow,
+    sharedHub = null,
     logger = console,
     dirMode = 0o700,
   } = {}) {
@@ -267,6 +268,7 @@ export class RecordingCaptureManager {
     this.resolveSourceUrl = resolveSourceUrl;
     this.clock = clock;
     this.armedCheck = armedCheck;
+    this.sharedHub = sharedHub;
     this.logger = logger;
     this.dirMode = dirMode;
     this.workers = new Map();
@@ -299,6 +301,18 @@ export class RecordingCaptureManager {
       this.stopAll();
       return this.status();
     }
+    // 共享源模式：hub 统一拉流并产段，本管理器只负责布防与并发过滤。
+    if (this.sharedHub) {
+      const supported = cameras.filter((camera) => this.supports(camera));
+      const eligible = supported
+        .filter((camera) => this.armedCheck(camera.schedule))
+        .slice(0, this.maxCameras);
+      this.skipped = Math.max(0, supported.length - eligible.length);
+      void this.sharedHub.sync(eligible).catch((error) => {
+        this.logger?.warn?.('recording_shared_sync_failed', { message: error.message });
+      });
+      return this.status();
+    }
     const keep = new Set();
     let skipped = 0;
     for (const camera of cameras) {
@@ -326,6 +340,10 @@ export class RecordingCaptureManager {
 
   /** 定时换日检查；串行执行避免同一轮内多个进程同时重建。 */
   async rotate() {
+    if (this.sharedHub) {
+      this.sharedHub.rotate();
+      return;
+    }
     for (const worker of this.workers.values()) {
       try {
         await worker.rotateIfNeeded();
@@ -347,18 +365,22 @@ export class RecordingCaptureManager {
   stopAll() {
     for (const worker of this.workers.values()) worker.stop();
     this.workers.clear();
+    this.sharedHub?.stopAll();
   }
 
   status() {
+    const shared = this.sharedHub?.status?.();
     return {
       enabled: this.enabled,
       ffmpegAvailable: this.ffmpegAvailable,
-      active: this.workers.size,
-      total: this.workers.size,
+      active: shared ? shared.active : this.workers.size,
+      total: shared ? shared.active : this.workers.size,
       skipped: this.skipped,
       maxCameras: this.maxCameras,
       segmentSeconds: this.segmentSeconds,
-      cameras: [...this.workers.values()].map((worker) => worker.status()),
+      cameras: shared
+        ? shared.cameras
+        : [...this.workers.values()].map((worker) => worker.status()),
     };
   }
 }

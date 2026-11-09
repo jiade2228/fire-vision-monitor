@@ -129,6 +129,15 @@ export function registerAuthRoutes(app, deps) {
   });
 
   app.post('/api/auth/logout', (req, res) => {
+    // 递增 tokenVersion 让同一账号其它标签页的已签发 token 一并失效。
+    const user = currentUser(req);
+    if (user?.id) {
+      try {
+        store.bumpTokenVersion(user.id);
+      } catch {
+        // 版本递增失败不阻断本次登出。
+      }
+    }
     clearSessionCookie(res);
     res.json({ ok: true });
   });

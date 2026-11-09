@@ -24,6 +24,7 @@ export function registerDemoRoutes(app, deps) {
     demoPurgeFilter,
     rememberDemoCameraId,
     computeMediaUsage,
+    recordingStatus = null,
     syncDetection,
     streamManager,
     detectionEngine,
@@ -209,10 +210,13 @@ export function registerDemoRoutes(app, deps) {
       database: 'sqlite',
       schemaVersion: store.schemaVersion,
       detection: detectionEngine.status(),
+      // 持续录像独立配额与采集状态；continuous 取索引用量，不与短视频水位混算。
+      recording: recordingStatus ? recordingStatus() : null,
       storage: {
         dbBytes: dbStat?.size ?? 0,
         snapshots: usage.snapshots,
         recordings: usage.recordings,
+        continuous: usage.continuous ?? { files: 0, bytes: 0, protectedFiles: 0 },
         mediaBytes: usage.snapshots.bytes + usage.recordings.bytes,
         mediaMaxBytes,
       },

@@ -159,9 +159,10 @@ node scripts/detect-file.mjs test-videos/火灾-酒精壁炉明火.webm standard
 | `RECORDING` | 关（`1` 开启） | 持续录像采集总闸；开启后按点位布防时间表启动 copy 分段进程，关闭时索引/对账/回放/导出仍可用 |
 | `RECORDING_SEGMENT_SECONDS` | 60 | 单段时长（10-600）；须与索引校准口径一致 |
 | `RECORDING_RETENTION_DAYS` | 14 | 录像保留天数（保护段豁免，过期后仍可被容量淘汰） |
-| `RECORDING_PROTECT_DAYS` | 30 | 告警保护段的保护期，到期自动解除 |
+| `RECORDING_PROTECT_DAYS` | 30 | 告警保护段的保护期，到期自动解除；告警误报处置（`status=false`）且同窗口无其它未处置告警时立即解除，提前释放配额 |
 | `RECORDING_MAX_BYTES` | 50GB（0 关闭） | 录像独立容量配额，与告警短视频水位分离 |
 | `RECORDING_MAX_CAMERAS` | 24 | 同时录像路数上限，超出记 `skipped` |
+| `RECORDING_SHARE_SOURCE` | 关（`1` 开启） | 实验性：检测与录制共用一路 FFmpeg 输入（省一路解码）；默认关闭，不影响既有双进程路径 |
 | `ALARM_RETENTION_DAYS` / `NOTIFY_RETENTION_DAYS` / `AUDIT_RETENTION_DAYS` | 180 / 30 / 180 | 数据保留天数（告警 / 推送日志 / 审计日志） |
 | `MEDIA_MAX_BYTES` | 2GB（0 关闭） | 媒体磁盘水位 |
 | `DAILY_SUMMARY_AT` / `DAILY_SUMMARY_FORCE` | 08:00（上海时区）/ 关 | 每日摘要推送时间；`FORCE=1` 启动即跑一次（演练用） |

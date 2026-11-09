@@ -1,3 +1,4 @@
+import { apiNotFound } from '../http/not-found.mjs';
 import fsp from 'node:fs/promises';
 import {
   buildTimeline,
@@ -37,6 +38,7 @@ export function registerRecordingRoutes(app, deps) {
     exportDir = null,
     ffmpegAvailable = false,
     retentionDays = 14,
+    recordingProbe = undefined,
     logger = null,
   } = deps;
 
@@ -50,12 +52,12 @@ export function registerRecordingRoutes(app, deps) {
     // 按主键查询，避免全表加载点位并逐个解密 RTSP 凭据；不存在的 ID 返回 null。
     const camera = store.getCamera(cameraId);
     if (!camera) {
-      res.status(404).json({ error: '点位不存在' });
+      apiNotFound(res, '点位不存在');
       return null;
     }
     // 跨站点一律 404，与现有媒体接口一致，避免泄露点位是否存在。
     if (!canAccessCameraSite(req.user, camera, store)) {
-      res.status(404).json({ error: '点位不存在' });
+      apiNotFound(res, '点位不存在');
       return null;
     }
     const window = parsePlaybackWindow(req.query, { maxWindowMs });
@@ -65,23 +67,42 @@ export function registerRecordingRoutes(app, deps) {
       });
       return null;
     }
-    return { camera, cameraId, ...window };
+    // 可选起点（前端点击时间条换算）；非法值报错，越界值裁剪到窗口内。
+    let startAt = null;
+    if (req.query.startAt !== undefined) {
+      const value = Number(req.query.startAt);
+      if (!Number.isFinite(value)) {
+        res.status(400).json({ error: 'startAt 无效' });
+        return null;
+      }
+      startAt = Math.min(Math.max(value, window.from), window.to);
+    }
+    return { camera, cameraId, ...window, startAt };
   };
 
-  const segmentsFor = (context) =>
-    selectSegments(
-      store.listRecordingSegments({ cameraId: context.cameraId, from: context.from, to: context.to }),
-      context.from,
-      context.to,
-    );
+  const segmentsFor = (context) => {
+    const rows = store.listRecordingSegments({
+      cameraId: context.cameraId,
+      from: context.from,
+      to: context.to,
+    });
+    return {
+      files: selectSegments(rows, context.from, context.to),
+      // concat 输入的时间轴从第一段起点开始，seek 偏移量以此为基准。
+      firstStartedAt: rows.reduce(
+        (min, row) => Math.min(min, row.startedAt),
+        Number.POSITIVE_INFINITY,
+      ),
+    };
+  };
 
   app.get('/api/recordings/timeline', requireAuth, (req, res) => {
     const cameraId = normalizeText(req.query.cameraId, 64);
     if (!cameraId) return res.status(400).json({ error: '缺少 cameraId' });
     const camera = store.getCamera(cameraId);
-    if (!camera) return res.status(404).json({ error: '点位不存在' });
+    if (!camera) return apiNotFound(res, '点位不存在');
     if (!canAccessCameraSite(req.user, camera, store)) {
-      return res.status(404).json({ error: '点位不存在' });
+      return apiNotFound(res, '点位不存在');
     }
 
     let from;
@@ -130,8 +151,8 @@ export function registerRecordingRoutes(app, deps) {
     const context = resolveRequest(req, res);
     if (!context) return;
     if (!playbackManager) return res.status(503).json({ error: '回放服务未启用' });
-    const files = segmentsFor(context);
-    if (!files.length) return res.status(404).json({ error: '所选时段暂无录像段' });
+    const { files, firstStartedAt } = segmentsFor(context);
+    if (!files.length) return apiNotFound(res, '所选时段暂无录像段');
     try {
       const session = await playbackManager.create({
         userId: req.user?.id ?? '',
@@ -140,6 +161,8 @@ export function registerRecordingRoutes(app, deps) {
         from: context.from,
         to: context.to,
         files,
+        startAt: context.startAt,
+        firstStartedAt,
       });
       if (!session) return res.status(503).json({ error: '回放服务暂不可用' });
       return res.json(session);
@@ -147,6 +170,20 @@ export function registerRecordingRoutes(app, deps) {
       logger?.warn?.('recording_play_failed', { message: error?.message ?? String(error) });
       return res.status(503).json({ error: '回放服务暂不可用' });
     }
+  });
+
+  /** 会话转码状态：必须注册在 :sessionId/:file 之前，否则会被分片路由吞掉。 */
+  app.get('/api/recordings/play/:sessionId/status', requireAuth, (req, res) => {
+    if (!playbackManager) return res.status(404).end();
+    const session = playbackManager.touch(req.params.sessionId);
+    if (!session || session.userId !== (req.user?.id ?? '')) return res.status(404).end();
+    const camera = store.getCamera(session.cameraId);
+    if (!camera || !canAccessCameraSite(req.user, camera, store)) {
+      return res.status(404).end();
+    }
+    return res.json(
+      playbackManager.sessionStatus(session.id) ?? { state: 'failed', error: '会话已过期' },
+    );
   });
 
   /** HLS 分片与播放列表；每次命中续期，并实时复核会话归属与站点权限。 */
@@ -183,8 +220,8 @@ export function registerRecordingRoutes(app, deps) {
     if (!exportRecording || !exportDir) {
       return res.status(503).json({ error: '导出服务未启用' });
     }
-    const files = segmentsFor(context);
-    if (!files.length) return res.status(404).json({ error: '所选时段暂无录像段' });
+    const { files } = segmentsFor(context);
+    if (!files.length) return apiNotFound(res, '所选时段暂无录像段');
     let target;
     try {
       target = await exportRecording({ files, continuousDir, exportDir });
@@ -209,7 +246,9 @@ export function registerRecordingRoutes(app, deps) {
   // 手动触发一次「文件系统 → 索引」对账，便于部署后校验与故障排查。
   app.post('/api/recordings/reconcile', requireAuth, requireRole('admin'), async (req, res) => {
     try {
-      const result = await reconcileRecordingSegments(store, continuousDir);
+      const result = await reconcileRecordingSegments(store, continuousDir, {
+        probe: recordingProbe,
+      });
       res.json(result);
     } catch (error) {
       res.status(500).json({ error: String(error?.message ?? error) });

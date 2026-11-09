@@ -1,3 +1,4 @@
+import { apiNotFound } from '../http/not-found.mjs';
 import crypto from 'node:crypto';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -134,7 +135,7 @@ export function registerAlarmRoutes(app, deps) {
     const alarm = store.getAlarm(req.params.id);
     // 越权站点统一按"不存在"处理，避免通过 403 探测其他站点的告警 ID。
     if (!alarm || !canAccessAlarmSite(req.user, alarm, store)) {
-      return res.status(404).json({ error: '告警不存在' });
+      return apiNotFound(res, '告警不存在');
     }
     res.json({ events: store.listAlarmEvents(alarm.id).map(mapAlarmEvent) });
   });
@@ -184,7 +185,7 @@ export function registerAlarmRoutes(app, deps) {
     requireRole('operator', 'admin'),
     async (req, res) => {
       const camera = store.getCamera(String(req.body.cameraId ?? ''));
-      if (!camera) return res.status(404).json({ error: '点位不存在' });
+      if (!camera) return apiNotFound(res, '点位不存在');
       if (!canAccessCameraSite(req.user, camera, store)) {
         return res.status(403).json({ error: '无权操作该站点的点位' });
       }
@@ -258,9 +259,10 @@ export function registerAlarmRoutes(app, deps) {
     requireRole('operator', 'admin'),
     (req, res) => {
       const alarm = store.getAlarm(req.params.id);
-      if (!alarm) return res.status(404).json({ error: '告警不存在' });
+      if (!alarm) return apiNotFound(res, '告警不存在');
       if (!canAccessAlarmSite(req.user, alarm, store)) {
-        return res.status(403).json({ error: '无权操作该站点的告警' });
+        // 与 events / snapshot / clip 一致：跨站按「不存在」处理，避免用 403 探测告警 ID。
+        return apiNotFound(res, '告警不存在');
       }
       const changes = {};
       const events = [];

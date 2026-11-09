@@ -104,11 +104,15 @@ export function finalizeSegmentDurations(entries, { segmentSeconds = 60 } = {}) 
 /**
  * 扫描录像目录；目录不存在时返回空数组（首次启动的正常状态）。
  * @param {string} rootDir
- * @param {{segmentSeconds?:number}} [options]
+ * @param {{segmentSeconds?:number, durations?:Map<string, number>|null}} [options]
+ *   durations 为可选的 ffprobe 实际时长（file → ms），不传时沿用 nominal 校准。
  * @returns {Promise<Array<{id:string, cameraId:string, file:string,
  *   startedAt:number, endedAt:number, bytes:number, protected:boolean}>>}
  */
-export async function scanRecordingSegments(rootDir, { segmentSeconds = 60 } = {}) {
+export async function scanRecordingSegments(
+  rootDir,
+  { segmentSeconds = 60, durations = null } = {},
+) {
   let cameras;
   try {
     cameras = await fsp.readdir(rootDir, { withFileTypes: true });
@@ -158,7 +162,18 @@ export async function scanRecordingSegments(rootDir, { segmentSeconds = 60 } = {
       }
     }
   }
-  return finalizeSegmentDurations(entries, { segmentSeconds });
+  const result = finalizeSegmentDurations(entries, { segmentSeconds });
+  // 可选的实际时长覆盖：仅当调用方显式注入 ffprobe 结果时生效，
+  // 默认（无 durations）与原有 nominal 校准逐字等价。
+  if (durations?.size) {
+    for (const segment of result) {
+      const actual = durations.get(segment.file);
+      if (Number.isFinite(actual) && actual > 0) {
+        segment.endedAt = segment.startedAt + actual;
+      }
+    }
+  }
+  return result;
 }
 
 /**
@@ -166,7 +181,9 @@ export async function scanRecordingSegments(rootDir, { segmentSeconds = 60 } = {
  * @param {{upsertRecordingSegments:Function, allRecordingSegmentFiles:Function,
  *   deleteRecordingSegments:Function}} store
  * @param {string} rootDir
- * @param {{segmentSeconds?:number}} [options]
+ * @param {{segmentSeconds?:number,
+ *   probe?: (segments: Array<object>) => Promise<Map<string, number>>}} [options]
+ *   probe 为可选的 ffprobe 时长探测回调；失败或未注入时保持原有校准结果。
  */
 // 定时对账与手动 reconcile 可能并发；串行化避免旧快照写回形成僵尸索引行。
 let reconcileInFlight = false;
@@ -177,7 +194,22 @@ export async function reconcileRecordingSegments(store, rootDir, options = {}) {
   }
   reconcileInFlight = true;
   try {
-    const scanned = await scanRecordingSegments(rootDir, options);
+    let scanned = await scanRecordingSegments(rootDir, options);
+    if (typeof options.probe === 'function') {
+      try {
+        const durations = await options.probe(scanned);
+        if (durations?.size) {
+          scanned = scanned.map((segment) => {
+            const actual = durations.get(segment.file);
+            return Number.isFinite(actual) && actual > 0
+              ? { ...segment, endedAt: segment.startedAt + actual }
+              : segment;
+          });
+        }
+      } catch {
+        // 探测失败不改变扫描结果，下一轮对账再试。
+      }
+    }
     const present = new Set(scanned.map((segment) => segment.file));
     const indexed = store.allRecordingSegmentFiles();
     // 目录暂时为空（采集重启/挂载切换）时不清空索引，避免时间线误报「录像全部丢失」。

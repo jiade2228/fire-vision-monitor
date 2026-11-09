@@ -230,6 +230,8 @@ export class DetectionEngine {
     resolveSourceUrl = null,
     logger = console,
     spawnImpl = spawn,
+    // 可选共享帧源（SharedSourceHub）：启用后同一点位不再额外拉一路 FFmpeg。
+    frameSource = null,
   } = {}) {
     this.store = store;
     this.snapshotDir = snapshotDir;
@@ -256,6 +258,8 @@ export class DetectionEngine {
     this.spawnImpl = spawnImpl;
     this.ffmpegOk = true;
     this.workers = new Map();
+    this.frameSource = frameSource;
+    this.sharedCameras = new Map();
     this.detectors = new Map();
     this.masks = new Map();
     this.pending = new Set();
@@ -347,6 +351,12 @@ export class DetectionEngine {
         existing.camera = camera;
         continue;
       }
+      // 共享源模式下由外部 tee 进程供帧，不再为该点位额外拉一路 FFmpeg。
+      if (this.frameSource?.has(camera.id)) {
+        keep.add(camera.id);
+        this.ensureSharedSubscription(camera);
+        continue;
+      }
       // 全局并发上限：超出部分跳过，避免几十路同时解码把 CPU 打满。
       if (this.workers.size >= this.maxCameras) {
         skipped += 1;
@@ -358,6 +368,15 @@ export class DetectionEngine {
     for (const id of [...this.workers.keys()]) {
       if (!keep.has(id)) this.stop(id);
     }
+    for (const [id, entry] of [...this.sharedCameras]) {
+      if (keep.has(id)) continue;
+      try {
+        entry.unsubscribe?.();
+      } catch {
+        // ignore
+      }
+      this.sharedCameras.delete(id);
+    }
     this.skipped = skipped;
     if (skipped > 0 && skipped !== this.lastSkipped) {
       this.logger?.warn?.(
@@ -366,6 +385,20 @@ export class DetectionEngine {
     }
     this.lastSkipped = skipped;
     return this.status();
+  }
+
+  /** 为共享源点位建立帧订阅；重复 sync 时只刷新 camera 引用。 */
+  ensureSharedSubscription(camera) {
+    const existing = this.sharedCameras.get(camera.id);
+    if (existing) {
+      existing.camera = camera;
+      return;
+    }
+    const entry = { camera, unsubscribe: null };
+    entry.unsubscribe = this.frameSource?.subscribe(camera.id, (frame) => {
+      void this.handleFrame(entry.camera, frame).catch(() => undefined);
+    }) ?? null;
+    this.sharedCameras.set(camera.id, entry);
   }
 
   /**
@@ -389,6 +422,14 @@ export class DetectionEngine {
   /** 停止全部检测进程（关机/重载时调用）。 @returns {void} */
   stopAll() {
     for (const id of [...this.workers.keys()]) this.stop(id);
+    for (const [id, entry] of this.sharedCameras) {
+      try {
+        entry.unsubscribe?.();
+      } catch {
+        // ignore
+      }
+      this.sharedCameras.delete(id);
+    }
   }
 
   /**
@@ -705,7 +746,8 @@ export class DetectionEngine {
       keyframesOnly: this.keyframesOnly,
       clipSeconds: this.clipSeconds,
       stats: { ...this.stats },
-      cameras: [...this.workers.values()].map((worker) => ({
+      cameras: [
+        ...[...this.workers.values()].map((worker) => ({
         cameraId: worker.camera.id,
         code: worker.camera.code,
         name: worker.camera.name,
@@ -720,6 +762,24 @@ export class DetectionEngine {
         lastFrameAt: worker.lastFrameAt || null,
         lastError: worker.lastError,
       })),
+        ...[...this.sharedCameras.values()].map((entry) => ({
+          cameraId: entry.camera.id,
+          code: entry.camera.code,
+          name: entry.camera.name,
+          siteId: entry.camera.siteId ?? null,
+          sensitivity: entry.camera.detectSensitivity ?? this.sensitivity,
+          roiCount: Array.isArray(entry.camera.detectRoi)
+            ? entry.camera.detectRoi.length
+            : 0,
+          running: true,
+          frames: this.frameSource?.status?.()?.cameras?.find(
+            (item) => item.cameraId === entry.camera.id,
+          )?.frames ?? 0,
+          startedAt: this.startedAt ?? Date.now(),
+          lastFrameAt: null,
+          lastError: null,
+        })),
+      ],
     };
   }
 }
