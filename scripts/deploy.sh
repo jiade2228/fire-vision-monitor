@@ -116,8 +116,43 @@ log OK "Node $NODE_VERSION"
 command -v npm >/dev/null 2>&1 || fail 1 "未找到 npm"
 log OK "npm $(npm -v)"
 
-if command -v ffmpeg >/dev/null 2>&1; then log OK "FFmpeg 可用"; else log WARN "未找到 FFmpeg：RTSP 转码/录像/抓拍不可用"; fi
-if command -v ffprobe >/dev/null 2>&1; then log OK "ffprobe 可用"; else log WARN "未找到 ffprobe：测流与段时长校准不可用"; fi
+# FFmpeg 发现：macOS 经 GUI/launchd 启动时 PATH 不含 Homebrew 目录，
+# 这里显式检查常见安装位置，命中则导出 FFMPEG_PATH（服务进程会继承）。
+find_tool() {
+  local name="$1"
+  if command -v "$name" >/dev/null 2>&1; then command -v "$name"; return 0; fi
+  for dir in /opt/homebrew/bin /usr/local/bin /opt/local/bin /usr/bin; do
+    if [[ -x "$dir/$name" ]]; then echo "$dir/$name"; return 0; fi
+  done
+  return 1
+}
+FFMPEG_FOUND="$(find_tool ffmpeg || true)"
+FFPROBE_FOUND="$(find_tool ffprobe || true)"
+if [[ -n "$FFMPEG_FOUND" ]]; then
+  log OK "FFmpeg 可用：$FFMPEG_FOUND"
+  case "$FFMPEG_FOUND" in
+    /*) [[ -z "${FFMPEG_PATH:-}" ]] && export FFMPEG_PATH="$FFMPEG_FOUND" ;;
+  esac
+else
+  log WARN "未找到 FFmpeg：RTSP 转码/录像/抓拍不可用（macOS 可 brew install ffmpeg）"
+fi
+if [[ -n "$FFPROBE_FOUND" ]]; then
+  log OK "ffprobe 可用：$FFPROBE_FOUND"
+  case "$FFPROBE_FOUND" in
+    /*) [[ -z "${FFPROBE_PATH:-}" ]] && export FFPROBE_PATH="$FFPROBE_FOUND" ;;
+  esac
+else
+  log WARN "未找到 ffprobe：测流与段时长校准不可用"
+fi
+
+# macOS 默认文件描述符软上限偏低（常见 256），多路视频 + 长连接易 EMFILE。
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  FD_LIMIT="$(ulimit -n 2>/dev/null || echo "")"
+  if [[ -n "$FD_LIMIT" && "$FD_LIMIT" -lt 1024 ]]; then
+    log WARN "文件描述符软上限 ${FD_LIMIT} 偏低，建议 4096+（见 docs/MACOS-COMPAT.md）"
+    log WARN "  临时生效：ulimit -n 4096；持久生效需写入 launchd plist 的 SoftResourceLimits"
+  fi
+fi
 
 mkdir -p "$DATA_DIR" || fail 1 "无法创建数据目录：$DATA_DIR" "检查目录权限"
 probe="$DATA_DIR/.deploy-probe-$STAMP"
@@ -195,12 +230,32 @@ if [[ $NO_RESTART -eq 1 ]]; then
 fi
 
 step "重启服务"
-if systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE_NAME}\.service"; then
+# 平台差异：
+#   Linux  → systemd（若存在对应单元）
+#   macOS  → launchd（若已加载对应 label），否则后台进程
+#   其它   → 后台进程
+# 注意 macOS 默认没有 setsid，旧写法会直接失败，这里按可用性降级。
+OS_NAME="$(uname -s)"
+if [[ "$OS_NAME" == "Darwin" ]]; then
+  if launchctl list 2>/dev/null | grep -q "$SERVICE_NAME"; then
+    log INFO "检测到 launchd 任务 $SERVICE_NAME，执行 kickstart"
+    launchctl kickstart -k "gui/$(id -u)/$SERVICE_NAME" \
+      || fail 4 "launchctl kickstart $SERVICE_NAME 失败" "launchctl print gui/$(id -u)/$SERVICE_NAME 查看状态" "确认 plist 见 docs/MACOS-COMPAT.md"
+    log OK "服务已重启（launchd）"
+  else
+    log INFO "未检测到 launchd 任务，使用后台进程方式重启（建议改用 launchd，见 docs/MACOS-COMPAT.md）"
+    RESTART_VIA_BACKGROUND=1
+  fi
+elif systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE_NAME}\.service"; then
   log INFO "检测到 systemd 单元 ${SERVICE_NAME}.service，执行 restart"
   systemctl restart "$SERVICE_NAME" || fail 4 "systemctl restart $SERVICE_NAME 失败" "journalctl -u $SERVICE_NAME -n 50 查看原因"
   log OK "服务已重启（systemd）"
 else
   log INFO "未检测到 systemd 单元，使用后台进程方式重启"
+  RESTART_VIA_BACKGROUND=1
+fi
+
+if [[ "${RESTART_VIA_BACKGROUND:-0}" -eq 1 ]]; then
   if [[ -f "$INSTANCE_LOCK" ]]; then
     OLD_PID="$(node -e 'try{console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).pid||"")}catch{console.log("")}' "$INSTANCE_LOCK")"
     if [[ -n "$OLD_PID" ]] && kill -0 "$OLD_PID" 2>/dev/null; then
@@ -212,9 +267,15 @@ else
     fi
     rm -f "$INSTANCE_LOCK"
   fi
-  # setsid 让进程脱离当前会话；输出重定向便于排查
-  setsid node "$ROOT/server/boot.mjs" --port "$PORT" \
-    >>"$DATA_DIR/server.out.log" 2>>"$DATA_DIR/server.err.log" < /dev/null &
+  # setsid 让进程脱离当前会话（Linux 有、macOS 默认无）；都没有时退回 nohup/普通后台。
+  LAUNCH_CMD=(node "$ROOT/server/boot.mjs" --port "$PORT")
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "${LAUNCH_CMD[@]}" >>"$DATA_DIR/server.out.log" 2>>"$DATA_DIR/server.err.log" < /dev/null &
+  elif command -v nohup >/dev/null 2>&1; then
+    nohup "${LAUNCH_CMD[@]}" >>"$DATA_DIR/server.out.log" 2>>"$DATA_DIR/server.err.log" < /dev/null &
+  else
+    "${LAUNCH_CMD[@]}" >>"$DATA_DIR/server.out.log" 2>>"$DATA_DIR/server.err.log" < /dev/null &
+  fi
   log OK "服务已后台启动"
 fi
 

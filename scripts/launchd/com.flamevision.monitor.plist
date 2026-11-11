@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS launchd 守护模板（替代 Linux systemd / Windows 守护脚本）。
+
+  安装步骤见 docs/MACOS-COMPAT.md，摘要：
+    1. 替换下方 __ROOT__ / __DATA_DIR__ 为实际路径（建议绝对路径）
+    2. 复制到 ~/Library/LaunchAgents/com.flamevision.monitor.plist
+    3. launchctl load -w ~/Library/LaunchAgents/com.flamevision.monitor.plist
+    4. launchctl kickstart -k gui/$(id -u)/com.flamevision.monitor
+
+  关键配置说明：
+    - PATH 必须包含 Homebrew 目录，否则 launchd 环境下找不到 ffmpeg
+      （Apple Silicon: /opt/homebrew/bin；Intel: /usr/local/bin）
+    - SoftResourceLimits.NumberOfFiles 提升文件描述符上限，
+      macOS 默认 256，多路 HLS + SSE + 录像并发易触发 EMFILE
+    - KeepAlive 用 SuccessfulExit=false：仅在异常退出时重启，
+      避免「配置错误导致启动即崩」时无限重启（与 watchdog 熔断同思路）
+    - StandardOutPath / StandardErrorPath 落盘，便于排查启动失败
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.flamevision.monitor</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>__ROOT__/server/boot.mjs</string>
+    <string>--port</string>
+    <string>4173</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__ROOT__</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>DATA_DIR</key>
+    <string>__DATA_DIR__</string>
+    <key>NODE_ENV</key>
+    <string>production</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>4096</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>__DATA_DIR__/server.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__DATA_DIR__/server.err.log</string>
+</dict>
+</plist>

@@ -61,6 +61,7 @@ import {
 import { probeSegmentDurations } from './recording-duration.mjs';
 import { SharedSourceHub } from './shared-source.mjs';
 import { detectFfmpegCapabilities } from './ffmpeg-capabilities.mjs';
+import { applyResolvedBinaries } from './binary-locate.mjs';
 import { assertOutboundUrl, blockedOutboundHost } from './net-guard.mjs';
 import { SHANGHAI_OFFSET_MS, toShanghaiParts } from './time.mjs';
 import { envBoolean, envNumber, normalizeClock, normalizePort } from './config.mjs';
@@ -616,6 +617,10 @@ function capturePreview(camera, target) {
 }
 
 async function main() {
+  // 兼容以 index.mjs 直接启动的场景（如既有守护脚本）：同样补齐 ffmpeg/ffprobe 路径。
+  // 已通过 boot.mjs 启动时这里是幂等的（环境变量已设置则不再改动）。
+  applyResolvedBinaries();
+
   // 全进程共享的运行期配置：同一变量只解析一次，避免不同 manager 得到不同值
   // （改造前 MAX_CONCURRENT_STREAMS 在 StreamManager 得到 NaN、在回放得到 8）。
   const maxConcurrentStreams = envNumber('MAX_CONCURRENT_STREAMS', {

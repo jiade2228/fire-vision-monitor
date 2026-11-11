@@ -7,6 +7,7 @@
  * 用法：npm run e2e   （或 E2E_HEADED=1 npm run e2e 打开窗口调试）
  */
 import { spawn } from 'node:child_process';
+import { findChrome as locateChrome } from './lib/chrome-locate.mjs';
 import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -45,13 +46,9 @@ function loadPuppeteer() {
   return null;
 }
 
+// 浏览器定位统一到 scripts/lib/chrome-locate.mjs（支持 macOS/Linux/Windows）。
 function findChrome() {
-  const candidates = [
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    process.env.CHROME_PATH,
-  ].filter(Boolean);
-  return candidates.find((candidate) => fsSyncExists(candidate)) ?? null;
+  return locateChrome({ exists: fsSyncExists });
 }
 
 async function waitFor(predicate, timeoutMs = 10_000, step = 100) {

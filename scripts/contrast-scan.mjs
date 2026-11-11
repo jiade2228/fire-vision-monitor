@@ -7,6 +7,7 @@
  * 用法：node scripts/contrast-scan.mjs   （可选 CONTRAST_OUT=report.json）
  */
 import { spawn } from 'node:child_process';
+import { findChrome as locateChrome } from './lib/chrome-locate.mjs';
 import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -42,12 +43,7 @@ function loadPuppeteer() {
   return null;
 }
 function findChrome() {
-  const candidates = [
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    process.env.CHROME_PATH,
-  ].filter(Boolean);
-  return candidates.find(fsSyncExists) ?? null;
+  return locateChrome({ exists: fsSyncExists });
 }
 async function waitFor(predicate, timeoutMs = 10_000, step = 100) {
   const deadline = Date.now() + timeoutMs;

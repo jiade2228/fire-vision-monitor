@@ -27,8 +27,12 @@
 
 - **Node.js ≥ 22.5**（使用内置 `node:sqlite`，Experimental）
 - **FFmpeg**（必须，加入 PATH 或用 `FFMPEG_PATH` 指定；FFprobe 可选，用于一键测流）
+  - 无需 `libx264`：启动时自动探测编码器并回退（`libx264 → h264 → mpeg4`）
+  - macOS 会自动探测 Homebrew 的 `/opt/homebrew/bin` 与 `/usr/local/bin`
+- 操作系统：**Windows 10/11**、**Linux**、**macOS 11 (Big Sur) 及以上**
+  - macOS 适配范围与安装步骤（含 launchd 守护）见 [docs/MACOS-COMPAT.md](./docs/MACOS-COMPAT.md)
 - 内存 / CPU：每路检测约一个 FFmpeg 抽帧进程（160×90@1fps，CPU 占用低）；每路观看转码一个 FFmpeg 进程。单路演示 + 观看总计 3 个进程，普通服务器无压力
-- Chrome（可选）：仅 E2E 测试需要
+- Chrome（可选）：仅 E2E 测试与对比度扫描需要（macOS/Linux/Windows 路径均已支持）
 
 ## 3. 快速开始
 

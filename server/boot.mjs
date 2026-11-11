@@ -13,6 +13,7 @@
  *   node server/boot.mjs --port 4173
  */
 import { assertNodeVersion, checkLongPathRisk } from './runtime-check.mjs';
+import { applyResolvedBinaries, readFileDescriptorLimit } from './binary-locate.mjs';
 import path from 'node:path';
 
 try {
@@ -33,6 +34,41 @@ try {
       }),
     );
   }
+  // macOS 经 launchd 启动时 PATH 不含 Homebrew 目录，这里仅在 PATH 未命中时
+  // 用常见安装目录补位；显式配置与「PATH 能找到」两种情形行为完全不变。
+  const binaries = applyResolvedBinaries();
+  if (binaries.changed.length) {
+    console.log(
+      JSON.stringify({
+        time: new Date().toISOString(),
+        level: 'warn',
+        event: 'binary_resolved_from_default_dir',
+        message:
+          `PATH 中未找到 ${binaries.changed.join('/')}，已改用常见安装目录。` +
+          '若目录不固定，建议在启动环境中显式设置 FFMPEG_PATH / FFPROBE_PATH。',
+        ffmpeg: binaries.ffmpeg.command,
+        ffprobe: binaries.ffprobe.command,
+      }),
+    );
+  }
+
+  // macOS 默认文件描述符软上限偏低（常见 256），多路流/SSE/录像并发时可能 EMFILE。
+  // 只提示不修改：调整需在 launchd plist 或 shell 里设置。
+  const fdLimit = await readFileDescriptorLimit();
+  if (fdLimit !== null && fdLimit < 1024) {
+    console.warn(
+      JSON.stringify({
+        time: new Date().toISOString(),
+        level: 'warn',
+        event: 'fd_limit_low',
+        message:
+          `文件描述符软上限为 ${fdLimit}，多路视频/长连接场景可能耗尽（EMFILE）。` +
+          '建议提升到 4096 以上（macOS 见 docs/MACOS-COMPAT.md）。',
+        limit: fdLimit,
+      }),
+    );
+  }
+
   console.log(
     JSON.stringify({
       time: new Date().toISOString(),
