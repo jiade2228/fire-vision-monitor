@@ -108,7 +108,7 @@ async function main() {
   }
 
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fire-e2e-'));
-  const child = spawn(process.execPath, ['server/index.mjs', '--port', String(port)], {
+  const child = spawn(process.execPath, ['server/boot.mjs', '--port', String(port)], {
     cwd: root,
     env: {
       ...process.env,

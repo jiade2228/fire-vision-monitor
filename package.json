@@ -17,14 +17,14 @@
   "scripts": {
     "dev": "concurrently -k -n web,api -c cyan,yellow \"vite --host 127.0.0.1\" \"node server/index.mjs --port 8787\"",
     "dev:web": "vite --host 127.0.0.1",
-    "dev:api": "node server/index.mjs --port 8787",
+    "dev:api": "node server/boot.mjs --port 8787",
     "build": "tsc --noEmit && vite build",
     "test": "node --test --test-concurrency=1 \"server/**/*.test.mjs\"",
     "e2e": "node scripts/e2e-smoke.mjs",
     "reset-password": "node server/reset-password.mjs",
     "nvr:probe": "node server/nvr-probe.mjs",
     "edge": "node server/edge-gateway.mjs",
-    "start": "node server/index.mjs --port 4173",
+    "start": "node server/boot.mjs --port 4173",
     "preview": "node server/index.mjs --port 4173"
   },
   "engines": {

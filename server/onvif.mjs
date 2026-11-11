@@ -91,31 +91,73 @@ function buildSecurityToken(username, password) {
 </wsse:Security>`;
 }
 
-function buildEnvelope(bodyXml, credentials) {
+/**
+ * 构造 SOAP 信封。
+ *
+ * ONVIF 规范早期版本基于 SOAP 1.1（`schemas.xmlsoap.org`，Content-Type 为
+ * text/xml + SOAPAction 头），2.0 起改用 SOAP 1.2（`w3.org/2003/05`，
+ * application/soap+xml，动作放在 Content-Type 的 action 参数里）。
+ * 国产与老款设备常只实现 1.1：直接用 1.2 会收到 400/415，表现为「扫描不到设备」。
+ *
+ * @param {string} bodyXml Body 内容。
+ * @param {{username?:string,password?:string}} credentials 凭据。
+ * @param {'1.1'|'1.2'} version SOAP 版本。
+ * @returns {string} 完整 XML。
+ */
+function buildEnvelope(bodyXml, credentials, version = '1.2') {
   const security = buildSecurityToken(credentials?.username, credentials?.password);
+  const envelopeNs =
+    version === '1.1'
+      ? 'http://schemas.xmlsoap.org/soap/envelope/'
+      : 'http://www.w3.org/2003/05/soap-envelope';
   return `<?xml version="1.0" encoding="UTF-8"?>
-<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope">
+<soap:Envelope xmlns:soap="${envelopeNs}">
   <soap:Header>${security}</soap:Header>
   <soap:Body>${bodyXml}</soap:Body>
 </soap:Envelope>`;
 }
 
+/**
+ * 发送 SOAP 请求；SOAP 1.2 被拒（400/415/500）时自动用 1.1 重试一次。
+ *
+ * @param {string} url 目标地址。
+ * @param {string} action 动作名。
+ * @param {string} bodyXml Body。
+ * @param {object} credentials 凭据。
+ * @param {number} [timeoutMs] 超时。
+ * @returns {Promise<object>} 解析后的 XML。
+ */
 async function soapRequest(url, action, bodyXml, credentials, timeoutMs = 8000) {
-  const envelope = buildEnvelope(bodyXml, credentials);
-  const response = await guardedFetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/soap+xml; charset=utf-8',
-      SOAPAction: `"${action}"`,
-    },
-    body: envelope,
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  const xml = await response.text();
-  if (!response.ok) {
-    throw new Error(`ONVIF ${action} 返回 HTTP ${response.status}`);
+  const attempt = async (version) => {
+    const headers =
+      version === '1.1'
+        ? {
+            'Content-Type': 'text/xml; charset=utf-8',
+            SOAPAction: `"${action}"`,
+          }
+        : {
+            'Content-Type': `application/soap+xml; charset=utf-8; action="${action}"`,
+            SOAPAction: `"${action}"`,
+          };
+    const response = await guardedFetch(url, {
+      method: 'POST',
+      headers,
+      body: buildEnvelope(bodyXml, credentials, version),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const xml = await response.text();
+    return { ok: response.ok, status: response.status, xml };
+  };
+
+  const first = await attempt('1.2');
+  if (first.ok) return parser.parse(first.xml);
+  // 仅对这些状态回退 1.1：认证失败(401/403)回退无意义，还会掩盖凭据问题。
+  if ([400, 415, 500, 501].includes(first.status)) {
+    const second = await attempt('1.1');
+    if (second.ok) return parser.parse(second.xml);
+    throw new Error(`ONVIF ${action} 返回 HTTP ${second.status}（已尝试 SOAP 1.2/1.1）`);
   }
-  return parser.parse(xml);
+  throw new Error(`ONVIF ${action} 返回 HTTP ${first.status}`);
 }
 
 async function getStreamUri(mediaUrl, token, credentials) {

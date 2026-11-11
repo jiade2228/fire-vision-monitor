@@ -48,6 +48,21 @@ npm run dev           # Vite 5173 + API 8787
 
 ## 4. 部署
 
+### 4.0 一键部署（推荐）
+
+仓库内置幂等部署脚本，**可重复执行**，失败会保留备份并打印回滚步骤。
+
+- Windows：`scripts\deploy.ps1`（参数示例见脚本头部注释或 `-Help`）
+- Linux / macOS：`scripts\deploy.sh --help`
+
+常用参数（两者同名）：`-DryRun/--dry-run` 只检查、`-NoRestart/--no-restart` 只准备不重启、`-SkipInstall/--skip-install` 离线环境、`-SkipBuild/--skip-build`、`-SkipTests/--skip-tests`、`-SkipBackup/--skip-backup`、`-DataDir/--data-dir`、`-Port/--port`。
+
+脚本按固定顺序执行：**前置检查 → 数据库备份（VACUUM INTO + integrity_check）→ 依赖安装 → 构建 → 测试 → 重启 → 健康校验**，日志写入 `data/logs/deploy-<时间戳>.log`。
+
+退出码：`0` 成功、`1` 前置检查失败、`2` 备份失败、`3` 依赖/构建/测试失败、`4` 重启失败、`5` 健康检查失败。
+
+前置要求：**Node >= 22.5**（内置 `node:sqlite`）、npm；FFmpeg/ffprobe 缺失不阻断部署，但对应的转码/录像/测流能力不可用（脚本会明确告警）。
+
 ### 4.1 裸机 + 守护（当前现场在用）
 
 `scripts/fire-watchdog.ps1` 每 30 秒健康检查 `/healthz`，失败自动重启实例；`scripts/start-fire-watchdog.cmd` 已可放入用户启动文件夹实现登录自启（本项目 Windows 机器已配置）。Linux 可用 systemd 包装同样命令：
@@ -59,7 +74,7 @@ After=network.target
 
 [Service]
 WorkingDirectory=/opt/fire-vision
-ExecStart=/usr/bin/node server/index.mjs --port 4173
+ExecStart=/usr/bin/node server/boot.mjs --port 4173
 Restart=always
 Environment=DATA_DIR=/var/lib/fire-vision
 

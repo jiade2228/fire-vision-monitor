@@ -58,7 +58,7 @@ function Get-RunningInstance {
     $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction Stop
     if ($null -eq $proc) { return $null }
     if ($proc.Name -notmatch '^node(\.exe)?$') { return $null }
-    if ($proc.CommandLine -notmatch 'server[\\/]index\.mjs') { return $null }
+    if ($proc.CommandLine -notmatch 'server[\\/](index|boot)\.mjs') { return $null }
     return $proc
   } catch {
     return $null
@@ -144,7 +144,7 @@ while ($true) {
   try {
     # 把 stdout/stderr 落盘：启动即崩时，watchdog.log 只有 "starting service"，
     # 真正的错误（如 startup_failed: file is not a database）在子进程输出里。
-    Start-Process -FilePath "node" -ArgumentList "`"$root\server\index.mjs`" --port 4173" -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+    Start-Process -FilePath "node" -ArgumentList "`"$root\server\boot.mjs`" --port 4173" -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
   } catch {
     Write-WatchdogLog ("start failed: {0}" -f $_.Exception.Message)
   }

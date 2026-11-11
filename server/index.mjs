@@ -60,6 +60,7 @@ import {
 } from './recording-playback.mjs';
 import { probeSegmentDurations } from './recording-duration.mjs';
 import { SharedSourceHub } from './shared-source.mjs';
+import { detectFfmpegCapabilities } from './ffmpeg-capabilities.mjs';
 import { assertOutboundUrl, blockedOutboundHost } from './net-guard.mjs';
 import { SHANGHAI_OFFSET_MS, toShanghaiParts } from './time.mjs';
 import { envBoolean, envNumber, normalizeClock, normalizePort } from './config.mjs';
@@ -829,9 +830,29 @@ async function main() {
       }
     }
 
+    // 转码编码器不能假定 libx264 一定存在：现场 FFmpeg 可能是裁剪版/发行版包。
+    // 启动时探测一次，选可用编码器并记录降级原因，避免前端只看到「一直转圈」。
+    const ffmpegCapabilities = await detectFfmpegCapabilities({
+      ffmpegPath: process.env.FFMPEG_PATH || 'ffmpeg',
+    });
+    if (!ffmpegCapabilities.ok) {
+      log('warn', 'ffmpeg_capabilities_unavailable', {
+        message: ffmpegCapabilities.reason,
+        error: ffmpegCapabilities.error,
+      });
+    } else if (ffmpegCapabilities.degraded) {
+      log('warn', 'ffmpeg_codec_degraded', {
+        message: ffmpegCapabilities.reason,
+        codec: ffmpegCapabilities.codec,
+      });
+    } else {
+      log('info', 'ffmpeg_codec_ready', { codec: ffmpegCapabilities.codec });
+    }
+
     streamManager = new StreamManager({
       dataDir,
       maxStreams: maxConcurrentStreams,
+      videoCodec: ffmpegCapabilities.codec,
       logger: {
         warn: (event, fields) => log('warn', event, fields),
         info: (event, fields) => log('info', event, fields),

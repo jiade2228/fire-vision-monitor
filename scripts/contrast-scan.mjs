@@ -211,7 +211,7 @@ async function main() {
     process.exit(0);
   }
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fire-contrast-'));
-  const child = spawn(process.execPath, ['server/index.mjs', '--port', String(port)], {
+  const child = spawn(process.execPath, ['server/boot.mjs', '--port', String(port)], {
     cwd: root,
     env: { ...process.env, DATA_DIR: dataDir, MAX_CONCURRENT_STREAMS: '1', OFFLINE_TIMEOUT_MS: '120000', OFFLINE_CHECK_INTERVAL_MS: '15000' },
     stdio: ['ignore', 'ignore', 'pipe'],

@@ -23,9 +23,12 @@ export class StreamManager {
     logger = console,
     // RES-1：全局 FFmpeg 进程预算（可注入，便于测试）。
     budget = ffmpegBudget,
+    // 由启动时的 FFmpeg 能力探测注入；缺省时回退环境变量/首选编码器。
+    videoCodec = process.env.FFMPEG_VIDEO_CODEC || 'libx264',
   }) {
     this.dataDir = dataDir;
     this.ffmpegPath = ffmpegPath;
+    this.videoCodec = videoCodec;
     // Math.max(NaN, 1) 仍是 NaN —— 会让 activeCount() >= maxStreams 恒假，
     // 并发上限彻底失效。显式把非法值回退到 8 再钳制。
     const requested = Number(maxStreams);
@@ -156,7 +159,7 @@ export class StreamManager {
       camera.sourceUrl,
       '-an',
       '-c:v',
-      process.env.FFMPEG_VIDEO_CODEC || 'libx264',
+      this.videoCodec,
       ...(copyVideo
         ? []
         : [
