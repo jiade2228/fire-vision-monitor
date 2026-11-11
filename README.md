@@ -118,7 +118,7 @@ docker compose up -d     # 构建时自动跑 npm test，数据落命名卷 fire
 | 录像保留 | 每小时按 `RECORDING_RETENTION_DAYS` / `RECORDING_MAX_BYTES` 淘汰最旧的非保护段并删文件；告警保护段在 `RECORDING_PROTECT_DAYS` 后解除；`GET /api/recordings/status` 查看采集状态，`POST /api/recordings/reconcile`（超管）手动对账 |
 | 录像回放 | 「处置记录」页时间线点选时段 → 播放（按需 HLS）或导出 MP4；单次窗口上限 4 小时，会话空闲 90 秒回收 |
 | 数据保留 | 告警 180 天（`ALARM_RETENTION_DAYS`）、推送日志 30 天，每日清理 |
-| 升级部署 | `git pull` → `npm ci` → `npm run build` → 重启服务；schema 自动迁移（当前 V8，新增录像分段索引表；V1→V8 升级路径均有测试覆盖，V7 含告警表重建） |
+| 升级部署 | `git pull` → `npm ci` → `npm run build` → 重启服务；schema 自动迁移（当前 **V10**：V9 性能索引、V10 `auth_sessions` 会话表；V1→V10 升级路径均有测试覆盖，V7 含告警表重建） |
 | 健康检查 | `GET /healthz`（数据库 / FFmpeg / 磁盘 / 存活） |
 
 **数据目录**（`data/`，已被 .gitignore 排除，含 SQLite 库、凭据密钥、备份、媒体）：迁移时整体拷贝，注意 `credentials.key` 与 `app.db` 必须一起走，否则已加密的通知渠道配置将无法解密。
@@ -127,7 +127,7 @@ docker compose up -d     # 构建时自动跑 npm test，数据落命名卷 fire
 
 ```bash
 npm test        # 65 项单元 / 接口测试（串行，约 1-2 分钟）
-npm run e2e     # 11 项端到端断言（无 Chrome 时自动跳过）
+npm run e2e     # 25+ 项端到端断言（含失败登录、未登录 401；无 Chrome 时自动跳过）
 npm run build   # tsc --noEmit + vite build
 ```
 
@@ -162,7 +162,7 @@ node scripts/detect-file.mjs test-videos/火灾-酒精壁炉明火.webm standard
 | `RECORDING_PROTECT_DAYS` | 30 | 告警保护段的保护期，到期自动解除；告警误报处置（`status=false`）且同窗口无其它未处置告警时立即解除，提前释放配额 |
 | `RECORDING_MAX_BYTES` | 50GB（0 关闭） | 录像独立容量配额，与告警短视频水位分离 |
 | `RECORDING_MAX_CAMERAS` | 24 | 同时录像路数上限，超出记 `skipped` |
-| `RECORDING_SHARE_SOURCE` | 关（`1` 开启） | 实验性：检测与录制共用一路 FFmpeg 输入（省一路解码）；默认关闭，不影响既有双进程路径 |
+| `RECORDING_SHARED_SOURCE` | 关（`1` 开启） | 实验性：检测与录制共用一路 FFmpeg 输入（省一路解码）；默认关闭，不影响既有双进程路径 |
 | `ALARM_RETENTION_DAYS` / `NOTIFY_RETENTION_DAYS` / `AUDIT_RETENTION_DAYS` | 180 / 30 / 180 | 数据保留天数（告警 / 推送日志 / 审计日志） |
 | `MEDIA_MAX_BYTES` | 2GB（0 关闭） | 媒体磁盘水位 |
 | `DAILY_SUMMARY_AT` / `DAILY_SUMMARY_FORCE` | 08:00（上海时区）/ 关 | 每日摘要推送时间；`FORCE=1` 启动即跑一次（演练用） |
@@ -176,6 +176,14 @@ node scripts/detect-file.mjs test-videos/火灾-酒精壁炉明火.webm standard
 | `TRUST_PROXY` | 关 | 反代后按层数信任 `X-Forwarded-For` |
 | `CHROME_PATH` / `E2E_PORT` / `E2E_HEADED` | — | E2E 测试专用 |
 | `E2E_ADMIN_PASSWORD` | 内置测试默认值 | E2E/集成测试临时实例的管理员密码覆盖（仅测试用，不影响生产） |
+| `BACKUP_RETAIN` / `BACKUP_MAX_BYTES` | 14 / 0（不限） | 每日备份份数上限（1-200）与备份目录总量上限（`0` 不限） |
+| `CAMERA_BLOCK_PRIVATE` | 关（`1` 开启） | 相机视频源代理额外拦截私网/环回目标（默认放行，摄像头多在内网） |
+| `PUBLIC_BASE_URL` | 空 | 推送文案里回链到本平台的外部地址，末尾斜杠会被去掉 |
+| `FFPROBE_PATH` / `PROBE_TIMEOUT_MS` | ffprobe / 12000 | 测流工具路径与超时 |
+| `FFMPEG_MAX_PROCESSES` / `FFMPEG_WAIT_TIMEOUT_MS` | 8 / 30000 | FFmpeg 全局进程预算上限与排队超时 |
+| `ONVIF_DISCOVERY_ADDRESS` / `ONVIF_DISCOVERY_PORT` | 239.255.255.250 / 3702 | ONVIF 组播发现地址与端口 |
+
+> **配置健壮性**：所有数值型配置统一经 `server/config.mjs` 解析 —— 非数字/`NaN`/超出范围一律回退默认值并写 `config_invalid` 警告日志，负数会被钳到下界（防止负保留天数删光历史数据），`0` 只在标注「0 关闭」的项上生效。布尔项统一接受 `1/true/yes/on` 与 `0/false/no/off`。`PORT` 需为 1-65535 整数，命令行 `--port` 优先于环境变量。
 
 ## 10. 目录结构
 
@@ -223,6 +231,15 @@ A：默认 1 秒分片、端到端 2-4 秒。慢网把 `HLS_SEGMENT_SECONDS` 调
 
 **Q：告警趋势里出现演示数据？**
 A：演示告警会计入统计。管理端演示卡片 →「清除演示数据」一键清理。
+
+**Q：页面提示「服务器磁盘空间不足」（HTTP 507）？**
+A：磁盘写满时数据库与媒体文件都会拒绝写入。清理 `data/recordings/`、`data/continuous/` 或扩大磁盘；服务每 15 分钟会在日志写 `disk_low`（剩余 <1GB）提前预警，`/healthz` 的 `diskOk` 在剩余 <50MB 时转 false。
+
+**Q：删除点位时提示「还有 N 条未处置告警」？**
+A：这是有意的保护：先确认或标记误报（使告警归档）再删除，否则告警会变成无法在大屏复核的孤儿记录。删除成功后会同时清理该点位的 `streams/`、`continuous/`、回放/导出临时目录与录像索引。
+
+**Q：服务反复重启、`data/watchdog.log` 里连续出现 `start attempt failed`？**
+A：watchdog 连续 5 次启动失败后会进入 10 分钟长退避并写 `FATAL` 行 + `data/startup-failed.marker`。此时查看 `data/server.err.log` 定位根因（常见是数据库损坏或端口占用）；修复后删除 marker 并重启守护即可恢复自动拉起。
 
 **Q：重启服务器后演示没了？**
 A：设计如此——演示不持久化（重启自动清理残留点位），重新启动演示即可。

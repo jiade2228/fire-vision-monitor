@@ -1,3 +1,6 @@
+import { AuthError, forbidden, unauthorized } from '../auth/errors.mjs';
+import { CAPABILITIES, hasCapability, isManagerRole } from '../auth/roles.mjs';
+
 /**
  * 鉴权中间件与站点/相机管理能力判断。
  *
@@ -5,13 +8,19 @@
  * 返回一组闭包。这样既能把鉴权逻辑独立成文件、缩小 index.mjs 体积，
  * 又保持路由注册处的调用点（requireAuth / requireManager 等）完全不变。
  *
+ * 重构说明：
+ *   - 新增 requireCapability(capability)：基于 server/auth/roles.mjs 的能力矩阵，
+ *     是权限判断的**推荐入口**。
+ *   - requireRole(...) 与 requireManager 保留为兼容层，语义与改造前**完全一致**，
+ *     现有路由调用点无需改动。新代码应优先使用 requireCapability。
+ *
  * @typedef {import('express').Request} Request
  * @typedef {import('express').Response} Response
  * @typedef {import('express').NextFunction} NextFunction
  * @typedef {import('express').RequestHandler} RequestHandler
  * @typedef {{
  *   id: string,
- *   role: 'admin' | 'manager' | 'operator' | 'viewer',
+ *   role: 'admin' | 'operator' | 'viewer',
  *   siteAdmin?: boolean,
  *   tokenVersion?: number,
  *   disabled?: boolean,
@@ -31,6 +40,7 @@
  * @returns {{
  *   requireAuth: RequestHandler,
  *   requireRole: (...roles: string[]) => RequestHandler,
+ *   requireCapability: (capability: string) => RequestHandler,
  *   requireManager: RequestHandler,
  *   adminSiteIdsFor: (user: User | null) => string[] | null,
  *   canManageSite: (user: User | null, siteId: string) => boolean,
@@ -43,17 +53,56 @@ export function createGuards(store, currentUser) {
   /** 校验登录态，未登录返回 401。 */
   function requireAuth(req, res, next) {
     const user = currentUser(req);
-    if (!user) return res.status(401).json({ error: '请先登录' });
+    if (!user) {
+      // 走统一错误体：前端可据 code 区分「会话失效」与其它 401。
+      // 文案保持既有值不变。
+      const error = new AuthError(401, '请先登录', '缺少有效会话', 'unauthenticated');
+      return res.status(error.status).json(error.toBody());
+    }
     req.user = user;
     next();
   }
 
-  /** 校验当前用户拥有指定角色之一，否则 403。 */
+  /**
+   * 校验当前用户拥有指定角色之一，否则 403。
+   *
+   * 兼容层：保留原有语义。新代码请优先使用 requireCapability。
+   *
+   * @param {...string} roles 允许的角色名。
+   * @returns {RequestHandler}
+   */
   function requireRole(...roles) {
     return (req, res, next) => {
-      if (!req.user) return res.status(401).json({ error: '请先登录' });
+      if (!req.user) {
+        const error = unauthorized('缺少有效会话');
+        return res.status(error.status).json(error.toBody());
+      }
       if (!roles.includes(req.user.role)) {
-        return res.status(403).json({ error: '当前账号没有此操作权限' });
+        const error = forbidden('角色不匹配');
+        return res.status(error.status).json(error.toBody());
+      }
+      next();
+    };
+  }
+
+  /**
+   * 校验当前用户拥有指定能力，否则 403。
+   *
+   * 这是权限判断的推荐入口：能力矩阵集中在 server/auth/roles.mjs，
+   * 新增角色或调整权限只需改那一处，不必逐条改路由。
+   *
+   * @param {string} capability 能力常量（见 CAPABILITIES）。
+   * @returns {RequestHandler}
+   */
+  function requireCapability(capability) {
+    return (req, res, next) => {
+      if (!req.user) {
+        const error = unauthorized('缺少有效会话');
+        return res.status(error.status).json(error.toBody());
+      }
+      if (!hasCapability(req.user, capability)) {
+        const error = forbidden(`缺少能力 ${capability}`);
+        return res.status(error.status).json(error.toBody());
       }
       next();
     };
@@ -80,17 +129,29 @@ export function createGuards(store, currentUser) {
     return canManageSite(user, camera.siteId || store.defaultSiteId);
   }
 
-  /** 当前用户是否为（全局或站点）管理员。 */
+  /**
+   * 当前用户是否为（全局或站点）管理员。
+   *
+   * 兼容层：语义与改造前一致 —— 全局管理员恒为真；
+   * 非 admin 需要具备 siteAdmin 身份。
+   *
+   * @param {User | null} user 用户对象。
+   * @returns {boolean}
+   */
   function isManager(user) {
-    const ids = adminSiteIdsFor(user);
-    return ids === null || ids.length > 0;
+    return isManagerRole(user);
   }
 
   /** 校验管理权限，否则 401/403。 */
   function requireManager(req, res, next) {
-    if (!req.user) return res.status(401).json({ error: '请先登录' });
+    if (!req.user) {
+      const error = unauthorized('缺少有效会话');
+      return res.status(error.status).json(error.toBody());
+    }
     if (!isManager(req.user)) {
-      return res.status(403).json({ error: '当前账号没有管理权限' });
+      // 文案保持既有值（站点管理员被拒时的提示），只补 code 字段。
+      const error = new AuthError(403, '当前账号没有管理权限', '非管理角色', 'forbidden');
+      return res.status(error.status).json(error.toBody());
     }
     next();
   }
@@ -105,6 +166,7 @@ export function createGuards(store, currentUser) {
   return {
     requireAuth,
     requireRole,
+    requireCapability,
     requireManager,
     adminSiteIdsFor,
     canManageSite,
@@ -113,3 +175,8 @@ export function createGuards(store, currentUser) {
     fallbackSiteIdFor,
   };
 }
+
+/**
+ * 供其它模块复用的能力常量，避免各处重复 import 路径。
+ */
+export { CAPABILITIES };

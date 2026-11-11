@@ -1,6 +1,8 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { sanitizeErrorText } from './sanitize.mjs';
+import { ffmpegBudget } from './ffmpeg-budget.mjs';
 
 export class StreamError extends Error {
   constructor(message, { code = 'STREAM_ERROR', status = 502, retryAfter = 0 } = {}) {
@@ -12,13 +14,6 @@ export class StreamError extends Error {
   }
 }
 
-function sanitizeErrorText(value) {
-  return String(value ?? '')
-    .replace(/rtsps?:\/\/[^\s@]+@/gi, 'rtsp://***@')
-    .replace(/\s+/g, ' ')
-    .slice(0, 500);
-}
-
 export class StreamManager {
   constructor({
     dataDir,
@@ -26,12 +21,18 @@ export class StreamManager {
     maxStreams = Number(process.env.MAX_CONCURRENT_STREAMS || 8),
     maxIdleMs = 90_000,
     logger = console,
+    // RES-1：全局 FFmpeg 进程预算（可注入，便于测试）。
+    budget = ffmpegBudget,
   }) {
     this.dataDir = dataDir;
     this.ffmpegPath = ffmpegPath;
-    this.maxStreams = Math.min(Math.max(maxStreams, 1), 64);
+    // Math.max(NaN, 1) 仍是 NaN —— 会让 activeCount() >= maxStreams 恒假，
+    // 并发上限彻底失效。显式把非法值回退到 8 再钳制。
+    const requested = Number(maxStreams);
+    this.maxStreams = Math.min(Math.max(Number.isFinite(requested) ? requested : 8, 1), 64);
     this.maxIdleMs = maxIdleMs;
     this.logger = logger;
+    this.budget = budget;
     this.streams = new Map();
     this.ffmpegAvailable = false;
     this.timer = null;
@@ -71,6 +72,8 @@ export class StreamManager {
     state.retryAt =
       Date.now() + Math.min(2_000 * 2 ** Math.max(state.attempts - 1, 0), 30_000);
     state.process = null;
+    // RES-1：转码失败后必须归还名额，否则重试会被自己的名额卡住。
+    this.releaseBudget(state);
   }
 
   async ensure(camera) {
@@ -105,6 +108,8 @@ export class StreamManager {
         retryAt: 0,
         error: '',
         starting: null,
+        // RES-1：该路转码持有的 FFmpeg 预算名额。
+        budgetToken: null,
       };
       state.starting = this.launch(camera, state).finally(() => {
         state.starting = null;
@@ -179,10 +184,28 @@ export class StreamManager {
       segmentPattern,
       playlist,
     ];
-    const child = spawn(this.ffmpegPath, args, {
-      windowsHide: true,
-      stdio: ['ignore', 'ignore', 'pipe'],
-    });
+    // RES-1：转码进程同样占用 FFmpeg 预算名额，与检测/录像进程共享同一上限。
+    // 拿不到名额时按「并发转码路数已达上限」返回 503，前端可提示稍后重试。
+    let budgetToken = null;
+    try {
+      budgetToken = await this.budget.acquire({ label: `hls:${camera.id}` });
+    } catch (error) {
+      throw new StreamError(
+        `FFmpeg 进程预算已满，请稍后重试：${sanitizeErrorText(error.message, 120)}`,
+        { code: 'FFMPEG_BUDGET', status: 503, retryAfter: 5 },
+      );
+    }
+    let child;
+    try {
+      child = spawn(this.ffmpegPath, args, {
+        windowsHide: true,
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+    } catch (error) {
+      this.budget.release(budgetToken);
+      throw error;
+    }
+    state.budgetToken = budgetToken;
     state.process = child;
     let stderr = '';
     child.stderr?.on('data', (chunk) => {
@@ -196,10 +219,14 @@ export class StreamManager {
           message: sanitizeErrorText(error.message),
         });
       }
+      // RES-1：启动失败也要归还名额。
+      this.releaseBudget(state);
     });
     child.once('exit', (code) => {
       if (this.streams.get(camera.id) !== state) return;
       state.process = null;
+      // RES-1：进程退出即归还名额。
+      this.releaseBudget(state);
       if (code !== 0) {
         this.fail(
           state,
@@ -266,7 +293,20 @@ export class StreamManager {
         if (child.exitCode === null) child.kill('SIGKILL');
       }, 3000).unref();
     }
+    // RES-1：停止即归还名额，不等进程真正退出（否则会白占预算 3 秒）。
+    this.releaseBudget(state);
     this.streams.delete(cameraId);
+  }
+
+  /**
+   * 归还该路转码占用的 FFmpeg 预算名额（幂等）。
+   * @param {{budgetToken?: object|null}} state
+   * @returns {void}
+   */
+  releaseBudget(state) {
+    if (!state?.budgetToken) return;
+    this.budget.release(state.budgetToken);
+    state.budgetToken = null;
   }
 
   cleanupIdle() {

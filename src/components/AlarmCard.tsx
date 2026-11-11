@@ -1,6 +1,11 @@
 import { memo, useEffect, useState } from 'react';
 import type { Alarm, AlarmHandlers } from '../types';
-import { EMERGENCY_STEPS, LEVEL_META, STATUS_META, confidenceTone } from '../lib/detection';
+import {
+  EMERGENCY_STEPS,
+  confidenceTone,
+  getLevelMeta,
+  getStatusMeta,
+} from '../lib/detection';
 import { formatDateTime } from '../lib/format';
 
 interface Props {
@@ -13,21 +18,30 @@ interface Props {
 function AlarmCard({ alarm, expanded, handlers, readOnly = false }: Props) {
   const total = alarm.steps.length;
   const done = alarm.steps.filter(Boolean).length;
-  const statusMeta = STATUS_META[alarm.status];
-  const levelMeta = LEVEL_META[alarm.level];
+  const statusMeta = getStatusMeta(alarm.status);
+  const levelMeta = getLevelMeta(alarm.level);
   const isDeviceHealth = alarm.level === 'offline' || alarm.level === 'camera_abnormal';
   const note = alarm.note ?? '';
   const [noteDraft, setNoteDraft] = useState(note);
   const [noteDirty, setNoteDirty] = useState(false);
+  const [noteSaving, setNoteSaving] = useState(false);
   const progress = total > 0 ? (done / total) * 100 : 0;
 
   useEffect(() => {
     if (!noteDirty) setNoteDraft(note);
   }, [note, noteDirty]);
 
-  const commitNote = () => {
-    if (noteDraft !== note) handlers.onNoteChange(alarm.id, noteDraft);
-    setNoteDirty(false);
+  // 保存失败时**保留草稿**：原实现提交后立刻 setNoteDirty(false)，
+  // effect 随即用服务端旧值覆盖输入框，用户刚输入的内容无声消失。
+  const commitNote = async () => {
+    if (noteDraft === note || noteSaving) return;
+    setNoteSaving(true);
+    try {
+      const ok = await handlers.onNoteChange(alarm.id, noteDraft);
+      if (ok) setNoteDirty(false);
+    } finally {
+      setNoteSaving(false);
+    }
   };
 
   return (
@@ -143,11 +157,13 @@ function AlarmCard({ alarm, expanded, handlers, readOnly = false }: Props) {
                 setNoteDirty(true);
                 setNoteDraft(event.target.value);
               }}
-              onBlur={commitNote}
+              onBlur={() => {
+                void commitNote();
+              }}
               onKeyDown={(event) => {
                 if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
                   event.preventDefault();
-                  commitNote();
+                  void commitNote();
                 }
               }}
             />

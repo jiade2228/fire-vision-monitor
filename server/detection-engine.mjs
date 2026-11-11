@@ -7,6 +7,8 @@ import { runFfmpegOnce } from './ffmpeg-once.mjs';
 import { FlameDetector, buildRoiMask } from './detector.mjs';
 import { analyzeFrameQuality } from './frame-quality.mjs';
 import { isArmedNow } from './schedule.mjs';
+import { sanitizeErrorText } from './sanitize.mjs';
+import { ffmpegBudget } from './ffmpeg-budget.mjs';
 
 /**
  * 服务端检测引擎（最小可行版）。
@@ -54,7 +56,10 @@ class CameraWorker {
     this.startedAt = Date.now();
     this.lastFrameAt = 0;
     this.lastError = null;
-    this.start();
+    // RES-1：FFmpeg 进程预算名额。start() 需先排队拿到名额才能拉起子进程。
+    this.budgetToken = null;
+    this.starting = false;
+    void this.start();
   }
 
   get frameBytes() {
@@ -89,6 +94,41 @@ class CameraWorker {
   }
 
   start() {
+    if (this.stopping || this.starting || this.child) return;
+    // RES-1：先申请 FFmpeg 进程预算。预算不足时排队等待，
+    // 超时则退避重试 —— 避免几十路点位同时把 FFmpeg 拉满把机器打挂。
+    //
+    // 快路径必须保持同步：构造函数里同步拉起 FFmpeg，
+    // 若改成异步会在启动瞬间产生「没有子进程也没有帧」的空窗，
+    // 既影响首帧延迟，也会打乱调用方对 worker.child 的同步预期。
+    const token = this.engine.budget.tryAcquire({
+      label: `detect:${this.camera.code}`,
+    });
+    if (token) {
+      this.budgetToken = token;
+      this.spawnChild();
+      return;
+    }
+    this.starting = true;
+    void this.engine.budget
+      .acquire({ label: `detect:${this.camera.code}` })
+      .then((queued) => {
+        this.starting = false;
+        if (this.stopping) {
+          this.engine.budget.release(queued);
+          return;
+        }
+        this.budgetToken = queued;
+        this.spawnChild();
+      })
+      .catch((error) => {
+        this.starting = false;
+        this.scheduleRestart(error.message);
+      });
+  }
+
+  /** 真正拉起 FFmpeg 子进程（预算名额已就位）。 */
+  spawnChild() {
     if (this.stopping) return;
     let child;
     try {
@@ -97,6 +137,8 @@ class CameraWorker {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (error) {
+      this.engine.budget.release(this.budgetToken);
+      this.budgetToken = null;
       this.scheduleRestart(`FFmpeg 启动失败：${error.message}`);
       return;
     }
@@ -104,7 +146,9 @@ class CameraWorker {
     child.stdout?.on('data', (chunk) => this.onData(chunk));
     child.stderr?.on('data', (chunk) => {
       const text = chunk.toString().trim();
-      if (text) this.lastError = text.slice(-400);
+      // FFmpeg 会把输入 URL 原样打进 stderr（含 rtsp://user:pass@host），
+      // 这里必须先抹除 userinfo 再落库，否则 lastError 经状态接口回传前端会泄露摄像头密码。
+      if (text) this.lastError = sanitizeErrorText(text, 400);
     });
     child.on('error', (error) => this.onExit(`FFmpeg 错误：${error.message}`));
     child.on('exit', (code) => this.onExit(`FFmpeg 退出（code=${code}）`));
@@ -134,14 +178,19 @@ class CameraWorker {
   onExit(reason) {
     this.child = null;
     this.buffer = Buffer.alloc(0);
-    if (reason) this.lastError = reason;
+    // RES-1：进程退出即归还预算名额，否则名额会被永久占用直到重启。
+    if (this.budgetToken) {
+      this.engine.budget.release(this.budgetToken);
+      this.budgetToken = null;
+    }
+    if (reason) this.lastError = sanitizeErrorText(reason, 400);
     if (this.stopping) return;
     this.scheduleRestart(reason);
   }
 
   scheduleRestart(reason) {
     if (this.stopping || this.restartTimer) return;
-    if (reason) this.lastError = reason;
+    if (reason) this.lastError = sanitizeErrorText(reason, 400);
     const delay = this.backoffMs;
     this.backoffMs = Math.min(this.backoffMs * 2, 30_000);
     this.restartTimer = setTimeout(() => {
@@ -164,6 +213,11 @@ class CameraWorker {
     }
     this.child = null;
     this.buffer = Buffer.alloc(0);
+    // 若此时还在排队等预算，等候结束后 start() 会因 stopping 直接归还名额。
+    if (this.budgetToken) {
+      this.engine.budget.release(this.budgetToken);
+      this.budgetToken = null;
+    }
   }
 }
 
@@ -212,6 +266,8 @@ export class DetectionEngine {
     recordingsDir = null,
     onAlarm = null,
     onClip = null,
+    // RES-2：抓拍异步补齐完成后的回调（用于广播告警更新）。
+    onSnapshot = null,
     onQualityEvent = null,
     qualityCheck = process.env.CAMERA_QUALITY_CHECK !== '0',
     ffmpegPath = process.env.FFMPEG_PATH || 'ffmpeg',
@@ -232,12 +288,15 @@ export class DetectionEngine {
     spawnImpl = spawn,
     // 可选共享帧源（SharedSourceHub）：启用后同一点位不再额外拉一路 FFmpeg。
     frameSource = null,
+    // RES-1：全局 FFmpeg 进程预算（可注入，便于测试与多实例隔离）。
+    budget = ffmpegBudget,
   } = {}) {
     this.store = store;
     this.snapshotDir = snapshotDir;
     this.recordingsDir = recordingsDir;
     this.onAlarm = onAlarm;
     this.onClip = onClip;
+    this.onSnapshot = onSnapshot;
     this.onQualityEvent = onQualityEvent;
     this.qualityCheck = qualityCheck;
     this.qualityStates = new Map();
@@ -259,6 +318,7 @@ export class DetectionEngine {
     this.ffmpegOk = true;
     this.workers = new Map();
     this.frameSource = frameSource;
+    this.budget = budget;
     this.sharedCameras = new Map();
     this.detectors = new Map();
     this.masks = new Map();
@@ -271,6 +331,8 @@ export class DetectionEngine {
       duplicates: 0,
       errors: 0,
       clips: 0,
+      // RES-2：抓拍改为异步补齐，成功入库的抓拍数单独计数。
+      snapshots: 0,
       qualityAlarms: 0,
       qualityRecovered: 0,
       disarmedFrames: 0,
@@ -518,9 +580,14 @@ export class DetectionEngine {
     const workerAtStart = this.workers.get(camera.id);
     try {
       const id = crypto.randomUUID();
-      const snapshotFile = await this.captureSnapshot(camera, id);
-      // 点位在抓拍期间被停止/移除时，不再写入指向已删除点位的幽灵告警。
+      // 点位在检测期间被停止/移除时，不再写入指向已删除点位的幽灵告警。
+      // RES-2：抓拍已改为异步补齐，这个检查必须前移到落库之前。
       if (workerAtStart && !this.workers.has(camera.id)) return null;
+      // RES-2：告警先落库，抓拍与短视频在后台补齐。
+      //
+      // 原实现把抓拍放在 createAlarm 之前：RTSP 建连通常要 1~3 秒，
+      // 这段时间里告警还没进库 —— 进程一旦崩溃或被杀，这段火情就永久丢失。
+      // 火情告警的第一要务是「先记下来」，素材可以晚几秒补。
       const alarm = this.store.createAlarm({
         id,
         cameraId: camera.id,
@@ -530,7 +597,7 @@ export class DetectionEngine {
         level: result.level,
         confidence: result.confidence,
         hotspot: result.hotspot,
-        snapshotFile,
+        snapshotFile: null,
         actor: { id: null, username: 'server-detector' },
       });
       this.stats.alarms += 1;
@@ -539,6 +606,21 @@ export class DetectionEngine {
       } catch (error) {
         this.logger?.warn?.(`[detection] 告警回调失败：${error.message}`);
       }
+      // 抓拍异步补齐：完成后回填并广播，前端无需等待。
+      void this.captureSnapshot(camera, id)
+        .then((snapshotFile) => {
+          if (!snapshotFile) return;
+          try {
+            const updated = this.store.setAlarmSnapshot(alarm.id, snapshotFile);
+            this.stats.snapshots += 1;
+            this.onSnapshot?.(updated, camera);
+          } catch (error) {
+            this.logger?.warn?.(`[detection] 抓拍入库失败：${error.message}`);
+          }
+        })
+        .catch((error) => {
+          this.logger?.warn?.(`[detection] 抓拍失败：${error.message}`);
+        });
       // 先返回告警，再异步补录短视频；录完广播更新，前端无需等待。
       void this.captureClip(camera, alarm.id)
         .then((clipFile) => {
@@ -637,6 +719,9 @@ export class DetectionEngine {
     if (!this.snapshotDir) return null;
     const file = `${id}.jpg`;
     const target = path.join(this.snapshotDir, file);
+    // 临时名保留 .jpg 扩展名（FFmpeg 依据扩展名推断封装格式），
+    // 成功后再原子改名：失败/超时时磁盘上不会留下不完整的半成品文件。
+    const temp = path.join(this.snapshotDir, `.tmp-${file}`);
     try {
       await fsp.mkdir(this.snapshotDir, { recursive: true, mode: 0o700 });
     } catch {
@@ -644,24 +729,45 @@ export class DetectionEngine {
     }
     const args = ['-v', 'error', '-nostdin', '-y'];
     if (camera.protocol === 'rtsp') args.push('-rtsp_transport', 'tcp');
-    args.push('-i', this.sourceFor(camera), '-frames:v', '1', '-q:v', '4', '-an', target);
+    args.push('-i', this.sourceFor(camera), '-frames:v', '1', '-q:v', '4', '-an', temp);
 
-    return runFfmpegOnce({
-      spawnImpl: this.spawnImpl,
-      ffmpegPath: this.ffmpegPath,
-      args,
-      timeoutMs: this.snapshotTimeoutMs,
-      stdio: ['ignore', 'ignore', 'ignore'],
-      failureValue: null,
-      onExit: (code) => {
-        if (code !== 0) return null;
-        try {
-          return fs.existsSync(target) ? file : null;
-        } catch {
-          return null;
-        }
-      },
-    });
+    // RES-1：抓拍也占 FFmpeg 进程名额，避免告警高峰时与常驻抽帧进程抢 CPU。
+    // 拿不到名额等同抓拍失败（返回 null），不影响告警落库。
+    try {
+      return await this.budget.withSlot({ label: `snapshot:${camera.code}` }, () =>
+        runFfmpegOnce({
+          spawnImpl: this.spawnImpl,
+          ffmpegPath: this.ffmpegPath,
+          args,
+          timeoutMs: this.snapshotTimeoutMs,
+          stdio: ['ignore', 'ignore', 'ignore'],
+          failureValue: null,
+          onExit: (code) => {
+            try {
+              if (code !== 0 || !fs.existsSync(temp)) {
+                try {
+                  fs.unlinkSync(temp);
+                } catch {
+                  // ignore
+                }
+                return null;
+              }
+              fs.renameSync(temp, target);
+              return file;
+            } catch {
+              try {
+                fs.unlinkSync(temp);
+              } catch {
+                // ignore
+              }
+              return null;
+            }
+          },
+        }),
+      );
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -675,6 +781,8 @@ export class DetectionEngine {
     if (!this.recordingsDir) return null;
     const file = `${id}.mp4`;
     const target = path.join(this.recordingsDir, file);
+    // 同抓拍：先写临时文件，成功后原子改名，失败时清理半成品。
+    const temp = path.join(this.recordingsDir, `.tmp-${file}`);
     try {
       await fsp.mkdir(this.recordingsDir, { recursive: true, mode: 0o700 });
     } catch {
@@ -698,24 +806,44 @@ export class DetectionEngine {
       'yuv420p',
       '-movflags',
       '+faststart',
-      target,
+      temp,
     );
-    return runFfmpegOnce({
-      spawnImpl: this.spawnImpl,
-      ffmpegPath: this.ffmpegPath,
-      args,
-      timeoutMs: this.clipTimeoutMs,
-      stdio: ['ignore', 'ignore', 'ignore'],
-      failureValue: null,
-      onExit: (code) => {
-        if (code !== 0) return null;
-        try {
-          return fs.existsSync(target) ? file : null;
-        } catch {
-          return null;
-        }
-      },
-    });
+    // RES-1：补录同样占用 FFmpeg 进程名额（转码比抽帧更吃 CPU）。
+    try {
+      return await this.budget.withSlot({ label: `clip:${camera.code}` }, () =>
+        runFfmpegOnce({
+          spawnImpl: this.spawnImpl,
+          ffmpegPath: this.ffmpegPath,
+          args,
+          timeoutMs: this.clipTimeoutMs,
+          stdio: ['ignore', 'ignore', 'ignore'],
+          failureValue: null,
+          onExit: (code) => {
+            try {
+              if (code !== 0 || !fs.existsSync(temp)) {
+                try {
+                  fs.unlinkSync(temp);
+                } catch {
+                  // ignore
+                }
+                return null;
+              }
+              fs.renameSync(temp, target);
+              return file;
+            } catch {
+              try {
+                fs.unlinkSync(temp);
+              } catch {
+                // ignore
+              }
+              return null;
+            }
+          },
+        }),
+      );
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -731,7 +859,15 @@ export class DetectionEngine {
    *     sensitivity: string, roiCount: number, running: boolean, frames: number,
    *     startedAt: number, lastFrameAt: number|null, lastError: string|null}>}}
    */
-  status() {
+  status(options = {}) {
+    // 站点管理员只能看到自己站点下的点位：状态里含 lastError（摄像头错误详情），
+    // 不过滤会把其它站点的点位信息一并泄露出去。
+    const allowedSiteIds = Array.isArray(options.allowedSiteIds)
+      ? options.allowedSiteIds
+      : null;
+    const visible = (camera) =>
+      allowedSiteIds === null ||
+      allowedSiteIds.includes(camera.siteId ?? this.store?.defaultSiteId ?? null);
     return {
       enabled: this.enabled,
       ffmpegAvailable: this.ffmpegOk,
@@ -747,7 +883,9 @@ export class DetectionEngine {
       clipSeconds: this.clipSeconds,
       stats: { ...this.stats },
       cameras: [
-        ...[...this.workers.values()].map((worker) => ({
+        ...[...this.workers.values()]
+          .filter((worker) => visible(worker.camera))
+          .map((worker) => ({
         cameraId: worker.camera.id,
         code: worker.camera.code,
         name: worker.camera.name,
@@ -762,7 +900,9 @@ export class DetectionEngine {
         lastFrameAt: worker.lastFrameAt || null,
         lastError: worker.lastError,
       })),
-        ...[...this.sharedCameras.values()].map((entry) => ({
+        ...[...this.sharedCameras.values()]
+          .filter((entry) => visible(entry.camera))
+          .map((entry) => ({
           cameraId: entry.camera.id,
           code: entry.camera.code,
           name: entry.camera.name,

@@ -14,6 +14,7 @@
 | 构建与部署 | `Dockerfile`、`docker-compose.yml`、`.github/workflows/ci.yml` | 多阶段构建 + CI（test/build/e2e） |
 | 发布工具 | `scripts/publish.mjs` | 参数化仓库地址，补齐 `repository` 元数据并推送 main |
 | 设计文档 | `docs/continuous-recording-design.md`、`REVIEW.md` | 持续录像设计 + 历次审查结论 |
+| 升级报告 | `docs/OPTIMIZATION-REPORT.md` | 系统性升级（安全 / 并发 / 健壮性 / 类型 / 性能）目标点、全部改动文件清单、41 项缺陷与隐患清单、向后兼容性说明 |
 | 本交付说明 | `DELIVERY.md` | 全条目对照、约束、验证、部署与验收 |
 
 **主要提交序列**：`6ee14ba`（第一批优化）→ `ecf6fef`（第二批后端等价抽取）→ `599d0e1`（第三批通知/媒体抽取）→ `43f18a6`（UI 缺陷修复 + 审查完善）→ `be5f228`（浅色主题）→ `cb12965`（低风险清理）→ 本文件所在提交（全量收口）。
@@ -50,7 +51,7 @@
 | 22 | `levelLabelFor` 复用、后端 `DIR_MODE` 常量 | ✅ | 本轮 |
 | 23 | `createSite` 对 TEXT 主键误用 `last_insert_rowid()` 的失效 fallback | ✅ | 本轮；统一用同一 `siteId` 插入并回读 |
 | 24 | `status()` JSDoc 补齐、schema 版本断言改常量 | ✅ | `ecf6fef` / `6ee14ba` |
-| 25 | `AdminPanel.tsx`(3421 行) / `App.tsx`(982 行) 分步拆分 | ⚠️ **第一步已落地**：抽出 `StatsChart` / `StatsOverview` / `AuditLogTable` 三个零状态纯展示组件，AdminPanel 降至 3263 行；其余 5 个 Tab 与 App.tsx 待后续批次（见 §6） | 本轮 |
+| 25 | `AdminPanel.tsx`(3421 行) / `App.tsx`(982 行) 分步拆分 | ✅ **已完成**：`AdminPanel.tsx` 3101 → 1583 行，6 个 Tab（Cameras/Users/Sites/Stats/Notify/Audit）抽为独立组件；`App.tsx` 监控视图与聚焦弹窗抽为 `src/app/MonitorView.tsx` / `FocusOverlay.tsx`，hooks/handlers 全保留；`tsc --noEmit` 与全量测试/E2E 全绿（见 `CHECKLIST.md` §2） | 本轮 |
 | 26 | P3 时区偏移/阈值魔法数字散落 | ⚠️ 部分：UTC / 本地墙上时间 / +8 展示三套语义**刻意不统一**（统一会改行为）；已抽常量的部分见 #17/#22 | — |
 | 27 | P3 schema 历史迁移版本守卫重复、V4/V7 alarms 重建重复 | ⛔ **经评估排除**：已跑完的历史迁移，改动零收益且风险高 | — |
 
@@ -164,7 +165,7 @@ npm run reset-password -- --username admin      # 生产管理员强密码（不
 ## 6. 已知限制
 
 1. **浅色主题为第一版**：E2E 验证变量生效与持久化，但**未做逐页截图视觉回归**；`--line/--line-strong` 的 light 值仍为硬编码，少量语义色（火焰橙、危险红等）沿用原值。建议交付后在浏览器按「实时监控 / 告警中心 / 处置记录 / 系统管理（6 个 Tab）/ 聚焦弹窗」逐页目视一次。
-2. **前端拆分仅第一步**：`AdminPanel.tsx` 3421 → 3263 行，抽出 3 个纯展示组件；cameras/users/sites/notify 等 Tab 与 `App.tsx` 仍在原文件。如需继续，按 Tab 逐个抽离，每批跑全量测试。
+2. **前端拆分已完成**：`AdminPanel.tsx` 3101 → 1583 行，6 个业务 Tab 全部抽为 `src/components/admin/*Tab.tsx` 独立组件；`App.tsx` 监控视图与聚焦弹窗抽为 `src/app/MonitorView.tsx` / `FocusOverlay.tsx`，父组件保留全部 hooks/handlers 仅抽 JSX。拆分后 `tsc --noEmit` + 115/115 单测 + 23/23 E2E 全绿。详见 `CHECKLIST.md`。
 3. **CSS `rgba(var(--x), a)` 写法**：依赖现代浏览器对 CSS 变量在旧式 `rgba()` 中展开的支持（Chromium/Firefox/Safari 均支持）；代入后计算值与原深色逐字相等。
 4. **E2E 仍保留 1 处中文状态值比对**（`'处置中'`）：这是状态跃迁断言，固定 testid 会让 pending 态提前通过；另 2 处是自建数据的渲染断言，刻意保留。
 5. **录像功能已实施，真机参数待现场验收**：采集 worker、按需 HLS 转码、MP4 导出、保护段自动联动与配额淘汰均已落地并用真实 FFmpeg 冒烟通过；§5.5 的 6 项清单仅剩磁盘速率/断电恢复/并发体验等现场验收。
@@ -174,10 +175,10 @@ npm run reset-password -- --username admin      # 生产管理员强密码（不
 
 ## 7. 可检查的完成标准
 
-- [x] `npm test` 109/109、`npm run build`、`npm run e2e` 13/13 全绿
+- [x] `npm test` 115/115、`npm run build`（76 modules）、`npm run e2e` 23/23 全绿；浅色主题 9 视图 0 处对比度不达标（见 `CHECKLIST.md` §1）
 - [x] `git diff --check` 干净、`git status` 干净
 - [x] CSS 无未定义变量 / 无自引用 / 无空规则；动态拼接类全部存活
-- [x] 深色主题计算样式与改动前逐字相等；浅色主题切换与刷新持久化通过 E2E
+- [x] 深色主题计算样式与改动前逐字相等；浅色主题切换与刷新持久化通过 E2E；浅色主题逐元素对比度扫描 0 不达标（`scripts/contrast-scan.mjs`）
 - [x] 后端 15 个改动文件 `node --check` 通过；FFmpeg/通知行为 mock 验证等价
 - [x] 全部审查条目在 §2 有明确状态（完成 / 部分 / 排除 / 需外部环境），无遗漏
 - [x] 每个需外部环境的条目都有可直接执行的命令或验收清单
@@ -302,7 +303,7 @@ npm run reset-password -- --username admin      # 生产管理员强密码（不
 - **现场验收**（§5.5 六项）：24 路磁盘速率与 CPU、`kill -9` 恢复、超配额淘汰、NTP/夏令时、Windows 路径与 fsync、拖拽并发体验。
 - **外部动作**：GitHub 仓库地址填 `scripts/publish.mjs --apply`、watchdog 生产验证、目标实例强密码与演示数据清理、公网拓扑拍板。
 - **产品决策**（用户于 11-09 续批授权，已全部实现）：告警 PATCH 跨站 403→404、登出递增 `tokenVersion`、统一 API 404 出口、收敛 `/proxy` 为 GET/HEAD。详见 `REVIEW.md 第九节`。
-- **可选大改**：`App.tsx` 拆分仍待评估；`AdminPanel.tsx` 已再抽 5 个 `admin/` 纯展示组件（3263→3100 行），浅色主题逐页视觉精修仍建议人工执行一次。
+- **可选大改（已完成）**：`App.tsx` 监控视图与聚焦弹窗已抽为 `src/app/MonitorView.tsx` / `FocusOverlay.tsx`；`AdminPanel.tsx` 3101 → 1583 行，6 个 Tab 全部抽为独立组件（详见 `CHECKLIST.md` §2）；浅色主题已通过逐元素对比度扫描 0 不达标，仍建议人工目视一次观感。
 
 ### 9.6 后续全量推进批次（11-09 续批）
 
@@ -314,10 +315,10 @@ npm run reset-password -- --username admin      # 生产管理员强密码（不
 - `/api/system` 暴露 `storage.continuous` 与 `recording` 用量（#2）。
 - 回放会话记录 `state`/`error`，新增 `GET /api/recordings/play/<sid>/status`（#3）；ffprobe 段时长校准默认不注入则行为不变（#4）；每小时清理超时 export 与孤儿 play 目录（#8）。
 - 前端导出改 `fetch + blob` 可感知错误（#5），采集状态并入 `load()` 随刷新更新（#7），点击位置换算 `startAt` 实现段内 seek 起播（#9）。
-- 共享 FFmpeg 源 `shared-source.mjs`，`RECORDING_SHARE_SOURCE=1` 开启，默认关闭（#10）。
+- 共享 FFmpeg 源 `shared-source.mjs`，`RECORDING_SHARED_SOURCE=1` 开启，默认关闭（#10）。
 - 四项产品决策：跨站 PATCH 403→404、登出递增 `tokenVersion`、28 处 API 404 收敛到 `http/not-found.mjs`、代理收敛为 GET/HEAD。
-- E2E 新增录像端点回归与浅色对比度断言（#6）；`AdminPanel` 再抽 5 个 `admin/` 组件。
+- E2E 新增录像端点回归与浅色对比度断言（#6）；`AdminPanel` 已全量拆分为 6 个 Tab 组件并抽出 `App.tsx` 监控视图（`CHECKLIST.md` §2）。
 
 **验证证据**：`npm test` 115/115、`npm run build`（68 modules）、`npm run e2e` 23/23、`git diff --check` 干净。
 
-**交付物与前提**：本批次无新待确认项。`RECORDING_SHARE_SOURCE` 默认关闭、未做真机双路验收；浅色主题对比度有自动化断言但仍建议人工目视一次；现场验收清单（§5.5）与 GitHub/watchdog/强密码等外部动作不变。
+**交付物与前提**：本批次无新待确认项。`RECORDING_SHARED_SOURCE` 默认关闭、未做真机双路验收；浅色主题对比度有自动化断言但仍建议人工目视一次；现场验收清单（§5.5）与 GitHub/watchdog/强密码等外部动作不变。

@@ -62,12 +62,18 @@ countCamerasBySite(siteId) {
         .count,
     );
   },
-/**
- * 删除站点；默认站点或仍有点位的站点会被拒绝。
- * @param {string} id 站点 ID。
- * @returns {boolean} 是否删除成功。
- */
-deleteSite(id) {
+  /**
+   * 删除站点；默认站点或仍有点位的站点会被拒绝。
+   *
+   * notify_channels.site_id 没有外键约束（schema 未声明 FOREIGN KEY），
+   * 直接删站点会让渠道悬挂在一个已不存在的站点上。这里把渠道**解绑**
+   * （site_id 置空）而不是删除——静默删除用户配置的推送地址属于数据丢失，
+   * 解绑后渠道仍可被全局管理员看到与维护。
+   *
+   * @param {string} id 站点 ID。
+   * @returns {boolean} 是否删除成功。
+   */
+  deleteSite(id) {
     if (id === this.defaultSiteId) {
       const error = new Error('默认站点不可删除');
       error.code = 'SITE_DEFAULT';
@@ -78,10 +84,14 @@ deleteSite(id) {
       error.code = 'SITE_HAS_CAMERAS';
       throw error;
     }
-    return this.transaction(() => {
+    const removed = this.transaction(() => {
       this.db.prepare('DELETE FROM site_members WHERE site_id = ?').run(id);
+      this.db.prepare('UPDATE notify_channels SET site_id = NULL WHERE site_id = ?').run(id);
       return this.db.prepare('DELETE FROM sites WHERE id = ?').run(id).changes > 0;
     });
+    // 站点删除会改变相关用户的可见范围，必须让 SSE 权限缓存失效。
+    if (removed) this.bumpAuthRevision();
+    return removed;
   },
 /**
  * 用户被授权访问的站点 ID 列表。
@@ -119,6 +129,7 @@ setUserSites(userId, siteIds) {
       );
       for (const siteId of unique) insert.run(userId, siteId);
     });
+    this.bumpAuthRevision();
     return this.siteMemberSiteIds(userId);
   },
 };

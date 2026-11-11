@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Alarm } from '../types';
-import { LEVEL_META, confidenceTone } from '../lib/detection';
+import { confidenceTone, getLevelMeta } from '../lib/detection';
 import { formatDateTime } from '../lib/format';
 
 interface Props {
@@ -72,7 +72,7 @@ export default function AlarmClipTimeline({ alarms }: Props) {
         />
         <div className="clip-stage-meta">
           <span className={`level-tag level-tag--${current.level}`}>
-            {LEVEL_META[current.level].label}
+            {getLevelMeta(current.level).label}
           </span>
           <strong>{current.cameraName}</strong>
           <span className="clip-stage-zone">{current.zone}</span>
@@ -136,7 +136,7 @@ export default function AlarmClipTimeline({ alarms }: Props) {
               <strong>{alarm.cameraName}</strong>
               <span className="clip-rail-time">{formatDateTime(alarm.createdAt)}</span>
             </span>
-            <span className="clip-rail-level">{LEVEL_META[alarm.level].label}</span>
+            <span className="clip-rail-level">{getLevelMeta(alarm.level).label}</span>
           </button>
         ))}
       </div>

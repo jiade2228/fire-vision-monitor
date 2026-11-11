@@ -1,5 +1,45 @@
 import crypto from 'node:crypto';
 import { XMLParser } from 'fast-xml-parser';
+import { assertOutboundUrl, guardedFetch } from './net-guard.mjs';
+
+/**
+ * ONVIF 设备主机格式校验。
+ *
+ * 只接受纯主机名、IPv4 字面量与带方括号的 IPv6 字面量；杜绝
+ * `user@host`（userinfo）、路径、查询串等注入手法——它们会让
+ * `http://${host}` 拼出的地址指向与用户预期不同的主机。
+ *
+ * @param {string} host 主机字符串。
+ * @returns {boolean} 是否为合法主机。
+ */
+function isValidOnvifHost(host) {
+  const value = String(host ?? '').trim();
+  if (!value || value.length > 253) return false;
+  if (value.includes('/') || value.includes('@') || value.includes('?')) return false;
+  if (value.includes('[') || value.includes(']')) {
+    return /^\[[0-9A-Fa-f:.]+\]$/.test(value);
+  }
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(value)) {
+    return value.split('.').every((part) => Number(part) <= 255);
+  }
+  return /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/.test(
+    value,
+  );
+}
+
+/**
+ * 构造设备基础地址（http://host:port）。
+ *
+ * @param {string} host 主机（IPv6 需带方括号）。
+ * @param {number} port 端口。
+ * @returns {string} 形如 http://10.0.0.1:80 的前缀（末尾无斜杠）。
+ */
+function buildDeviceBaseUrl(host, port) {
+  const url = new URL('http://placeholder.invalid');
+  url.hostname = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+  url.port = String(port);
+  return url.origin;
+}
 
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -62,7 +102,7 @@ function buildEnvelope(bodyXml, credentials) {
 
 async function soapRequest(url, action, bodyXml, credentials, timeoutMs = 8000) {
   const envelope = buildEnvelope(bodyXml, credentials);
-  const response = await fetch(url, {
+  const response = await guardedFetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/soap+xml; charset=utf-8',
@@ -119,9 +159,27 @@ export async function discoverDevice(target) {
   const username = target.username ?? '';
   const password = target.password ?? '';
   const credentials = { username, password };
-  const base = `http://${host}:${port}`;
+  // 主机必须是纯主机名 / IPv4 / [IPv6]：杜绝 userinfo（user@host）与路径注入，
+  // 否则 http://${host} 拼出的地址可能指向与用户预期不同的主机。
+  if (!isValidOnvifHost(host)) {
+    throw new Error('设备主机格式无效');
+  }
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('设备端口无效');
+  }
+  // 出网主机校验：必须在 URL 构造**之后**用规范化后的地址判定。
+  // 旧实现对原始 host 字符串校验，而下方 buildDeviceBaseUrl 会经 WHATWG URL
+  // 把 `2852039166` / `0xa9fea9fe` 等编码规范化成 169.254.169.254 —— 校验对象
+  // 与实际连接对象不一致，构成云元数据绕过（check-use separation）。
+  const base = buildDeviceBaseUrl(host, port);
   const deviceUrl = `${base}/onvif/device_service`;
   const mediaUrl = `${base}/onvif/media_service`;
+  const checked = assertOutboundUrl(deviceUrl, {
+    allowPrivate: true,
+    allowLoopback: true,
+    allowLinkLocal: true,
+  });
+  if (checked.error) throw new Error(`设备主机被拒绝：${checked.error}`);
 
   let manufacturer = '';
   let model = '';

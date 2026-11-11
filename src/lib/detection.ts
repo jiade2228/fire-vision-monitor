@@ -32,6 +32,32 @@ export function levelLabel(level: AlarmLevel): string {
   return LEVEL_LABELS[level] ?? '告警';
 }
 
+/**
+ * 安全取告警级别元信息。
+ *
+ * LEVEL_META 的键来自编译期的联合类型，但运行时值来自服务端数据库——
+ * 后端新增一种等级（或库里残留迁移前的旧值）时，直接下标会取到 undefined，
+ * 随后访问 `.label` 抛 TypeError 让整页白屏。这里统一兜底。
+ *
+ * @param {string} level 告警级别。
+ * @returns {{label: string, caption: string}} 元信息（未知级别回退为原值）。
+ */
+export function getLevelMeta(level: string): { label: string; caption: string } {
+  return (
+    LEVEL_META[level as AlarmLevel] ?? { label: level || '告警', caption: '未知类型' }
+  );
+}
+
+/**
+ * 安全取处置状态元信息（未知状态回退为中性样式与原值）。
+ *
+ * @param {string} status 处置状态。
+ * @returns {{label: string, tone: string}} 元信息。
+ */
+export function getStatusMeta(status: string): { label: string; tone: string } {
+  return STATUS_META[status as AlarmStatus] ?? { label: status || '未知', tone: 'muted' };
+}
+
 export function confidenceTone(confidence: number): string {
   if (confidence >= 85) return 'high';
   if (confidence >= 70) return 'mid';

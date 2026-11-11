@@ -147,6 +147,21 @@ async function main() {
     if (setup.status !== 201) throw new Error(`setup 失败：${setup.status}`);
     const adminCookie = setup.cookie;
 
+    // 失败路径基线：错误密码返回统一文案（不区分账号是否存在）。
+    const badLogin = await api('/api/auth/login', {
+      method: 'POST',
+      body: { username: 'admin', password: `${password}-wrong` },
+    });
+    check(
+      '错误密码登录返回 401 且不泄露账号存在性',
+      badLogin.status === 401 &&
+        badLogin.body?.error === '用户名或密码错误',
+      `status=${badLogin.status} body=${JSON.stringify(badLogin.body)}`,
+    );
+    // 未登录访问受保护接口应 401。
+    const anonymous = await api('/api/alarms');
+    check('未登录访问告警接口返回 401', anonymous.status === 401, `status=${anonymous.status}`);
+
     const page = await browser.newPage();
     await page.setViewport({
       width: 390,

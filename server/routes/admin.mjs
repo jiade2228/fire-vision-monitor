@@ -1,4 +1,7 @@
 import path from 'node:path';
+import { AUDIT_KEYWORD_WINDOW_DAYS } from '../store/methods/audit.mjs';
+import { ffmpegBudget } from '../ffmpeg-budget.mjs';
+import { CAPABILITIES, resolveCapabilityGuard } from '../auth/roles.mjs';
 
 /**
  * 管理类只读/运维接口：审计日志、运行指标、数据库备份。
@@ -19,18 +22,23 @@ import path from 'node:path';
  */
 export function registerAdminRoutes(app, deps) {
   const {
+    requireManager,
+    requireRole,
     store,
     streamManager,
     metrics,
     startedAt,
     requireAuth,
-    requireRole,
+    requireCapability,
     normalizeText,
     mapAudit,
     clientIp,
   } = deps;
+  // 能力守卫降级：旧调用方（既有测试/集成方）可能只提供 requireRole，
+  // 此时按能力反查角色兜底，保证零改动兼容；两者都缺失则一律拒绝。
+  const capabilityGuard = resolveCapabilityGuard(requireCapability, requireRole, requireManager);
 
-  app.get('/api/audit', requireAuth, requireRole('admin'), (req, res) => {
+  app.get('/api/audit', requireAuth, capabilityGuard(CAPABILITIES.GLOBAL_ADMIN), (req, res) => {
     const filter = {
       limit: Number(req.query.limit) || 50,
       offset: Number(req.query.offset) || 0,
@@ -42,21 +50,29 @@ export function registerAdminRoutes(app, deps) {
     res.json({
       logs: store.listAuditFiltered(filter).map(mapAudit),
       total: store.countAuditFiltered(filter),
+      // PERF-2：关键词搜索走不到索引，已自动收敛到默认时间窗。
+      // 明确告诉前端「结果可能不完整」，避免用户误判为记录缺失。
+      ...(store.auditSearchWindowed(filter)
+        ? { searchWindowed: true, searchWindowDays: AUDIT_KEYWORD_WINDOW_DAYS }
+        : {}),
     });
   });
 
-  app.get('/api/metrics', requireAuth, requireRole('admin'), (_req, res) => {
+  app.get('/api/metrics', requireAuth, capabilityGuard(CAPABILITIES.GLOBAL_ADMIN), (_req, res) => {
     res.json({
       ...metrics,
       ...store.stats(),
       streams: streamManager.health(),
       activeStreams: streamManager.activeCount(),
       maxConcurrentStreams: streamManager.maxStreams,
+      // RES-1：FFmpeg 进程预算的实时水位。waiting 长期大于 0 说明点位太多、
+      // 预算不够，需要调高 FFMPEG_MAX_PROCESSES 或减少并发点位。
+      ffmpeg: ffmpegBudget.stats(),
       uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
     });
   });
 
-  app.post('/api/admin/backup', requireAuth, requireRole('admin'), async (req, res) => {
+  app.post('/api/admin/backup', requireAuth, capabilityGuard(CAPABILITIES.GLOBAL_ADMIN), async (req, res) => {
     const file = await store.backup();
     store.recordAudit({
       user: req.user,

@@ -15,6 +15,8 @@ import fsp from 'node:fs/promises';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { extractFrames } from './detection-engine.mjs';
 import { captureDirFor, utcDayStamp } from './recording-capture.mjs';
+import { sanitizeErrorText } from './sanitize.mjs';
+import { ffmpegBudget } from './ffmpeg-budget.mjs';
 
 /**
  * 构造「一路输入、两路输出」的 FFmpeg 参数（纯函数）。
@@ -87,6 +89,8 @@ export class SharedSourceHub {
     clock = () => Date.now(),
     logger = console,
     dirMode = 0o700,
+    // RES-1：全局 FFmpeg 进程预算（可注入，便于测试）。
+    budget = ffmpegBudget,
   } = {}) {
     this.rootDir = rootDir;
     this.ffmpegPath = ffmpegPath;
@@ -98,6 +102,7 @@ export class SharedSourceHub {
     this.clock = clock;
     this.logger = logger;
     this.dirMode = dirMode;
+    this.budget = budget;
     this.sessions = new Map();
     this.frameBytes = width * height * 4;
   }
@@ -132,6 +137,14 @@ export class SharedSourceHub {
       height: this.height,
       fps: this.fps,
     });
+    // RES-1：共享源同样占用 FFmpeg 进程名额，避免与检测/录像进程叠加超限。
+    let token = null;
+    try {
+      token = await this.budget.acquire({ label: `shared:${camera.code ?? camera.id}` });
+    } catch (error) {
+      this.logger?.warn?.('shared_source_budget_timeout', { message: error.message });
+      return null;
+    }
     let child;
     try {
       child = this.spawnImpl(this.ffmpegPath, args, {
@@ -140,6 +153,7 @@ export class SharedSourceHub {
         env: { ...process.env, TZ: 'UTC' },
       });
     } catch (error) {
+      this.budget.release(token);
       this.logger?.warn?.('shared_source_spawn_failed', { message: error.message });
       return null;
     }
@@ -152,6 +166,8 @@ export class SharedSourceHub {
       frames: 0,
       startedAt: at,
       lastError: null,
+      // RES-1：持有预算名额，进程退出/停止时归还。
+      budgetToken: token,
     };
     this.sessions.set(camera.id, session);
     child.stdout?.on?.('data', (chunk) => {
@@ -173,14 +189,22 @@ export class SharedSourceHub {
     });
     child.stderr?.on?.('data', (chunk) => {
       const text = chunk.toString().trim();
-      if (text) session.lastError = text.slice(-400);
+      // FFmpeg stderr 含输入 URL（rtsp://user:pass@host），落库前先抹除 userinfo。
+      if (text) session.lastError = sanitizeErrorText(text, 400);
     });
     child.on?.('error', (error) => {
-      session.lastError = error.message;
+      session.lastError = sanitizeErrorText(error.message, 400);
     });
     child.on?.('exit', () => {
       // 交由下一轮 sync 重建，避免与停止流程竞争。
-      if (this.sessions.get(camera.id) === session) session.child = null;
+      if (this.sessions.get(camera.id) === session) {
+        session.child = null;
+        // RES-1：进程已退出，归还预算名额（stop() 里也会还，release 幂等）。
+        if (session.budgetToken) {
+          this.budget.release(session.budgetToken);
+          session.budgetToken = null;
+        }
+      }
     });
     return session;
   }
@@ -238,6 +262,11 @@ export class SharedSourceHub {
       // ignore
     }
     session.child = null;
+    // RES-1：归还预算名额。
+    if (session.budgetToken) {
+      this.budget.release(session.budgetToken);
+      session.budgetToken = null;
+    }
   }
 
   stopAll() {
@@ -249,6 +278,7 @@ export class SharedSourceHub {
       active: this.sessions.size,
       cameras: [...this.sessions.values()].map((session) => ({
         cameraId: session.camera.id,
+        siteId: session.camera.siteId ?? null,
         day: session.day,
         running: Boolean(session.child),
         frames: session.frames,

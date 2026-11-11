@@ -272,7 +272,8 @@ export class PlaybackSessionManager {
     if (!session) return null;
     const at = this.now();
     if (at >= session.expiresAt) {
-      void this.stop(session.id);
+      // P0-2：裸 void 的 rejection 会变成未捕获异常并终止进程，显式兜住。
+      void this.stop(session.id).catch(() => undefined);
       return null;
     }
     session.lastTouch = at;
@@ -296,7 +297,8 @@ export class PlaybackSessionManager {
   cleanupIdle() {
     const at = this.now();
     for (const session of [...this.sessions.values()]) {
-      if (at >= session.expiresAt) void this.stop(session.id);
+      // P0-2：裸 void 的 rejection 会变成未捕获异常并终止进程，显式兜住。
+      if (at >= session.expiresAt) void this.stop(session.id).catch(() => undefined);
     }
   }
 

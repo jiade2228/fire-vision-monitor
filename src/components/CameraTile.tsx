@@ -6,6 +6,7 @@ import type {
   CameraStatus,
   DetectionSensitivity,
 } from '../types';
+import { LEVEL_META } from '../lib/detection';
 import { formatTime } from '../lib/format';
 import { useNow } from '../hooks/useNow';
 import { useVideoPlayback } from '../hooks/useVideoPlayback';
@@ -188,7 +189,7 @@ export default function CameraTile({
               aria-hidden="true"
             >
               <span className={`detect-label detect-label--${alarm.level}`}>
-                {alarm.level === 'fire' ? '火焰' : '烟雾'} {alarm.confidence}%
+                {LEVEL_META[alarm.level]?.label ?? '告警'} {alarm.confidence}%
               </span>
             </span>
           </>

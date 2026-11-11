@@ -12,6 +12,7 @@ interface Props {
   pendingCount: number;
   onlineCount: number;
   totalCount: number;
+  sseDown?: boolean;
   platformName: string;
   user: SessionUser;
   onManage: () => void;
@@ -40,6 +41,7 @@ export default function TopBar({
   pendingCount,
   onlineCount,
   totalCount,
+  sseDown = false,
   platformName,
   user,
   onManage,
@@ -95,6 +97,12 @@ export default function TopBar({
         <span className="pill">
           在线通道 {onlineCount}/{totalCount}
         </span>
+        {sseDown && (
+          <span className="pill pill--warn" title="与服务器的实时事件通道已断开，正在按指数退避重连；期间告警列表每 15 秒补刷一次">
+            <i className="live-dot is-idle" aria-hidden="true" />
+            实时推送中断 · 重连中
+          </span>
+        )}
         <button
           type="button"
           className={`pill pill-button ${pendingCount > 0 ? 'pill--danger' : 'pill--ok'}`}

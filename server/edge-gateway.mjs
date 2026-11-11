@@ -195,7 +195,13 @@ async function main() {
         return;
       }
       if (message.type === 'hls') {
-        void handleRequest(manager, config, message, send);
+        // P0-2：裸 void 的 rejection 会变成未捕获异常并终止进程，显式兜住。
+        void handleRequest(manager, config, message, send).catch((error) => {
+          log('warn', 'edge_hls_request_failed', {
+            gatewayId: config.gatewayId,
+            message: error.message,
+          });
+        });
       }
     });
     socket.on('close', () => {

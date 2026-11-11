@@ -3,6 +3,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 import { DemoSourceError } from '../demo-source.mjs';
+import { CAPABILITIES, resolveCapabilityGuard } from '../auth/roles.mjs';
 
 /**
  * 演示模式、系统/检测/边缘网关状态接口。
@@ -19,6 +20,8 @@ import { DemoSourceError } from '../demo-source.mjs';
  */
 export function registerDemoRoutes(app, deps) {
   const {
+    requireManager,
+    requireRole,
     store,
     demoSource,
     demoPurgeFilter,
@@ -42,8 +45,12 @@ export function registerDemoRoutes(app, deps) {
     clientIp,
     log,
     requireAuth,
-    requireRole,
+    requireCapability,
+    adminSiteIdsFor = () => null,
   } = deps;
+  // 能力守卫降级：旧调用方（既有测试/集成方）可能只提供 requireRole，
+  // 此时按能力反查角色兜底，保证零改动兼容；两者都缺失则一律拒绝。
+  const capabilityGuard = resolveCapabilityGuard(requireCapability, requireRole, requireManager);
 
   function findDemoCamera() {
     return store.listCameras().find((camera) => camera.code === DEMO_CAMERA_CODE) ?? null;
@@ -51,7 +58,7 @@ export function registerDemoRoutes(app, deps) {
 
   // 演示模式：用 FFmpeg 合成一段火焰直播流并自动注册「演示点位」，
   // 无需任何真实摄像头即可验证播放、识别、告警、抓拍与推送闭环。
-  app.get('/api/demo/status', requireAuth, requireRole('admin'), (_req, res) => {
+  app.get('/api/demo/status', requireAuth, capabilityGuard(CAPABILITIES.GLOBAL_ADMIN), (_req, res) => {
     const camera = findDemoCamera();
     res.json({
       ...demoSource.status(),
@@ -62,7 +69,7 @@ export function registerDemoRoutes(app, deps) {
     });
   });
 
-  app.post('/api/demo/start', requireAuth, requireRole('admin'), async (req, res) => {
+  app.post('/api/demo/start', requireAuth, capabilityGuard(CAPABILITIES.GLOBAL_ADMIN), async (req, res) => {
     try {
       const state = await demoSource.start();
       const sourceUrl = state.playlistUrl;
@@ -128,7 +135,7 @@ export function registerDemoRoutes(app, deps) {
     }
   });
 
-  app.post('/api/demo/stop', requireAuth, requireRole('admin'), (req, res) => {
+  app.post('/api/demo/stop', requireAuth, capabilityGuard(CAPABILITIES.GLOBAL_ADMIN), (req, res) => {
     demoSource.stop();
     const existing = findDemoCamera();
     let removed = false;
@@ -154,7 +161,7 @@ export function registerDemoRoutes(app, deps) {
 
   // 一键清除演示数据：删演示告警及其事件、推送日志与媒体文件。
   // 审计日志保留（操作留痕）；真实告警与点位不受影响。演示运行中也可安全执行。
-  app.post('/api/demo/purge', requireAuth, requireRole('admin'), async (req, res) => {
+  app.post('/api/demo/purge', requireAuth, capabilityGuard(CAPABILITIES.GLOBAL_ADMIN), async (req, res) => {
     const filter = demoPurgeFilter();
     const before = store.countDemoAlarms(filter);
     if (!before.alarms) {
@@ -198,9 +205,13 @@ export function registerDemoRoutes(app, deps) {
     });
   });
 
-  app.get('/api/system', requireAuth, requireRole('admin'), async (req, res) => {
+  app.get('/api/system', requireAuth, capabilityGuard(CAPABILITIES.GLOBAL_ADMIN), async (req, res) => {
     const usage = await computeMediaUsage();
     const dbStat = await fsp.stat(databaseFile).catch(() => null);
+    // 纵深防御：检测状态里含摄像头错误详情，按调用者可管理的站点过滤。
+    // 当前只有全局管理员能到达（adminSiteIdsFor 对全局管理员返回 null = 不过滤），
+    // 但一旦将来放开给站点管理员，过滤已就位。
+    const allowedSiteIds = adminSiteIdsFor(req.user);
     res.json({
       ffmpegAvailable: streamManager.ffmpegAvailable,
       ffprobeAvailable: ffprobeOk,
@@ -209,7 +220,7 @@ export function registerDemoRoutes(app, deps) {
       activeStreams: streamManager.activeCount(),
       database: 'sqlite',
       schemaVersion: store.schemaVersion,
-      detection: detectionEngine.status(),
+      detection: detectionEngine.status({ allowedSiteIds }),
       // 持续录像独立配额与采集状态；continuous 取索引用量，不与短视频水位混算。
       recording: recordingStatus ? recordingStatus() : null,
       storage: {
@@ -217,21 +228,35 @@ export function registerDemoRoutes(app, deps) {
         snapshots: usage.snapshots,
         recordings: usage.recordings,
         continuous: usage.continuous ?? { files: 0, bytes: 0, protectedFiles: 0 },
+        // 备份目录此前完全不在视野内：14 份全库快照随库体积线性放大，
+        // 磁盘写满时 SQLite 写入失败 = 告警记不下来。现在显式统计并给出总量。
+        backups: usage.backups ?? { files: 0, bytes: 0 },
+        streams: usage.streams ?? { files: 0, bytes: 0 },
+        dataBytes:
+          (usage.snapshots?.bytes ?? 0) +
+          (usage.recordings?.bytes ?? 0) +
+          (usage.continuous?.bytes ?? 0) +
+          (usage.backups?.bytes ?? 0),
         mediaBytes: usage.snapshots.bytes + usage.recordings.bytes,
         mediaMaxBytes,
       },
     });
   });
 
-  app.get('/api/detection/status', requireAuth, requireRole('admin'), (_req, res) => {
-    res.json(detectionEngine.status());
+  app.get('/api/detection/status', requireAuth, capabilityGuard(CAPABILITIES.GLOBAL_ADMIN), (req, res) => {
+    res.json(detectionEngine.status({ allowedSiteIds: adminSiteIdsFor(req.user) }));
   });
 
-  app.get('/api/edge/status', requireAuth, requireRole('admin'), (_req, res) => {
+  app.get('/api/edge/status', requireAuth, capabilityGuard(CAPABILITIES.GLOBAL_ADMIN), (_req, res) => {
     res.json({
       enabled: edgeHub.enabled,
       gateways: edgeHub.status(),
+      // 配对令牌用于在边缘网关上配置接入，管理员需要看到完整值；
+      // 额外给一个脱敏提示，便于运维在日志/工单中核对而不必打印明文。
       pairingToken: edgeGatewayToken,
+      pairingTokenHint: edgeGatewayToken
+        ? `****${String(edgeGatewayToken).slice(-4)}`
+        : '',
     });
   });
 }

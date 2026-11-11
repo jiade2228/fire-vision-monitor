@@ -8,17 +8,30 @@ import {
   type RecordingPlayResponse,
   type RecordingStatus,
 } from '../lib/api';
-import { formatDateTime } from '../lib/format';
+import { formatDateTime, formatBytes } from '../lib/format';
+import { parseIsoDate } from '../lib/validate';
 
 interface Props {
   cameras: Camera[];
 }
 
-/** 本地日历日的 [00:00, 次日 00:00) 转 epoch ms，服务端文件名按 UTC 解释。 */
-function localDayRange(date: string) {
-  const [year, month, day] = date.split('-').map(Number);
+/**
+ * 本地日历日的 [00:00, 次日 00:00) 转 epoch ms，服务端文件名按 UTC 解释。
+ *
+ * 日期非法时（空串、格式错、2024-13-45 等不存在的日期）返回 null——
+ * 原实现直接 `new Date(NaN, ...)` 得到 NaN 时间戳，会以 NaN 参与
+ * 后续的时间线查询，产出无意义的结果或服务端 400。
+ *
+ * @param {string} date YYYY-MM-DD。
+ * @returns {{from:number, to:number}|null} 时间区间；非法日期返回 null。
+ */
+function localDayRange(date: string): { from: number; to: number } | null {
+  const parsed = parseIsoDate(date);
+  if (!parsed) return null;
+  const { year, month, day } = parsed;
   const from = new Date(year, month - 1, day, 0, 0, 0, 0).getTime();
   const to = new Date(year, month - 1, day + 1, 0, 0, 0, 0).getTime();
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return null;
   return { from, to };
 }
 
@@ -28,11 +41,6 @@ function todayValue() {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
-function formatBytes(bytes: number) {
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
 /**
  * 持续录像时间线（设计文档 §7）。
  * 展示有录像的连续块、告警保护段与无录像缺口，点击块可定位时刻；
@@ -40,6 +48,14 @@ function formatBytes(bytes: number) {
  */
 export default function RecordingTimeline({ cameras }: Props) {
   const [cameraId, setCameraId] = useState(cameras[0]?.id ?? '');
+  // cameras 是异步加载的：挂载时可能为空，之后才拿到点位。
+  // 仅在「当前选择已失效」时纠正，不覆盖用户手动选择。
+  useEffect(() => {
+    if (cameras.length === 0) return;
+    if (!cameras.some((camera) => camera.id === cameraId)) {
+      setCameraId(cameras[0].id);
+    }
+  }, [cameras, cameraId]);
   const [date, setDate] = useState(todayValue());
   const [data, setData] = useState<RecordingTimelineResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -113,13 +129,24 @@ export default function RecordingTimeline({ cameras }: Props) {
         /* 状态接口不可用时静默降级 */
       });
     try {
-      const { from, to } = localDayRange(date);
-      setData(await api.recordingsTimeline({ cameraId, from, to }));
+      const range = localDayRange(date);
+      if (!range) {
+        // 日期非法：给出可读提示，而不是用 NaN 去查询。
+        setError('日期格式无效，请选择有效的日期');
+        setData(null);
+        return;
+      }
+      const { from, to } = range;
+      const result = await api.recordingsTimeline({ cameraId, from, to });
+      // 与 handlePlay 同口径：点位/日期已切换时丢弃旧响应，避免数据错位。
+      if (generationRef.current !== generation) return;
+      setData(result);
     } catch (cause) {
+      if (generationRef.current !== generation) return;
       setError(cause instanceof Error ? cause.message : '时间线加载失败');
       setData(null);
     } finally {
-      setLoading(false);
+      if (generationRef.current === generation) setLoading(false);
     }
   }, [cameraId, date, cleanupPlayback]);
 
@@ -444,6 +471,22 @@ export default function RecordingTimeline({ cameras }: Props) {
             </p>
           )}
         </>
+      )}
+      {!timeline && !error && (
+        <div className="empty-state">
+          <strong>
+            {cameras.length === 0
+              ? '暂无点位，请先在「系统管理 → 点位」添加摄像头'
+              : loading
+                ? '正在加载录像时间线…'
+                : '请选择点位与日期查看录像覆盖'}
+          </strong>
+          <p>
+            {cameras.length === 0
+              ? '添加点位并开启持续录像采集后，这里会显示每段的覆盖情况。'
+              : '持续录像采集启用后，段文件会每 5 分钟自动对账并出现在此处。'}
+          </p>
+        </div>
       )}
     </section>
   );

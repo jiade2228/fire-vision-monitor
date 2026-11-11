@@ -3,6 +3,31 @@ import { now, sourceFingerprint } from '../../schema.mjs';
 import { serializeSchedule } from '../../schedule.mjs';
 import { serializeRoi, cameraRowToObject } from '../helpers.mjs';
 
+/**
+ * 构造「同源点位已存在」错误（对外错误码 DUPLICATE_SOURCE，保持既有语义）。
+ * @returns {Error & {code: string}}
+ */
+function duplicateSourceError() {
+  const error = new Error('相同视频流地址的点位已存在');
+  error.code = 'DUPLICATE_SOURCE';
+  return error;
+}
+
+/**
+ * 把 SQLite 的 source_key 唯一约束冲突归一化为 DUPLICATE_SOURCE；
+ * 其它异常原样抛出（不吞错）。
+ * @param {unknown} error 原始异常。
+ * @returns {unknown} 归一化后的异常。
+ */
+function normalizeDuplicateSource(error) {
+  if (error && typeof error === 'object' && error.code === 'DUPLICATE_SOURCE') return error;
+  const message = String(error?.message ?? '');
+  if (message.includes('UNIQUE constraint failed') && message.includes('cameras.source_key')) {
+    return duplicateSourceError();
+  }
+  return error;
+}
+
 export const cameraMethods = {
 /**
  * 点位列表（按创建时间升序），支持按站点/可见站点集合过滤。
@@ -57,10 +82,14 @@ cameraBySourceKey(sourceKey) {
  */
 nextCameraCode() {
     const codes = this.db.prepare('SELECT code FROM cameras').all();
-    const numeric = codes
-      .map((row) => Number(String(row.code).replace(/\D/g, '')))
-      .filter((value) => Number.isFinite(value));
-    return `CAM-${String((numeric.length ? Math.max(...numeric) : 0) + 1).padStart(2, '0')}`;
+    // 用 reduce 而不是 Math.max(...arr)：点位数量大时展开参数会超出
+    // V8 的参数个数上限，抛出 RangeError: Maximum call stack size exceeded。
+    const max = codes.reduce((acc, row) => {
+      const value = Number(String(row.code).replace(/\D/g, ''));
+      if (!Number.isFinite(value)) return acc;
+      return value > acc ? value : acc;
+    }, 0);
+    return `CAM-${String(max + 1).padStart(2, '0')}`;
   },
 /**
  * 直接插入点位记录（不做同源唯一性检查，导入场景内部使用）。
@@ -103,32 +132,44 @@ insertCamera(camera) {
   },
 /**
  * 新建点位；同源指纹已存在时抛错。
+ *
+ * 预检与写入放在同一个 IMMEDIATE 事务内：原先预检在事务外，
+ * 并发新建同源点位会双双通过预检，再由唯一索引兜底抛出原始
+ * SQL 错误（前端无法识别）。现在统一转成 DUPLICATE_SOURCE。
+ *
  * @param {import('../../types.mjs').Camera} camera
  * @returns {import('../../types.mjs').Camera}
- * @throws {Error} 同源点位已存在。
+ * @throws {Error} 同源点位已存在（error.code === 'DUPLICATE_SOURCE'）。
  */
 createCamera(camera) {
-    const key = sourceFingerprint(camera.protocol, camera.sourceUrl);
+  const key = sourceFingerprint(camera.protocol, camera.sourceUrl);
+  return this.transaction(() => {
     if (key && this.cameraBySourceKey(key)) {
-      const error = new Error('相同视频流地址的点位已存在');
-      error.code = 'DUPLICATE_SOURCE';
-      throw error;
+      throw duplicateSourceError();
     }
-    return this.transaction(() =>
-      this.insertCamera({
+    try {
+      return this.insertCamera({
         ...camera,
         id: camera.id ?? crypto.randomUUID(),
         code: camera.code ?? this.nextCameraCode(),
-      }),
-    );
-  },
+      });
+    } catch (error) {
+      throw normalizeDuplicateSource(error);
+    }
+  });
+},
 /**
  * 更新点位（源地址变更会重算指纹并做同源冲突检查）。
+ *
+ * 冲突检查与 UPDATE 置于同一事务内，消除「检查通过后被并发写入抢占」
+ * 的 TOCTOU 窗口；唯一索引冲突同样归一化为 DUPLICATE_SOURCE。
+ *
  * @param {string} id 点位 ID。
  * @param {Partial<import('../../types.mjs').Camera>} changes 变更字段。
  * @returns {import('../../types.mjs').Camera|null}
  */
 updateCamera(id, changes) {
+  return this.transaction(() => {
     const current = this.getCamera(id);
     if (!current) return null;
     const next = {
@@ -140,9 +181,7 @@ updateCamera(id, changes) {
     if (key) {
       const duplicate = this.cameraBySourceKey(key);
       if (duplicate && duplicate.id !== id) {
-        const error = new Error('相同视频流地址的点位已存在');
-        error.code = 'DUPLICATE_SOURCE';
-        throw error;
+        throw duplicateSourceError();
       }
     }
     const storedUrl =
@@ -150,31 +189,36 @@ updateCamera(id, changes) {
         ? this.secretBox.encrypt(next.sourceUrl)
         : next.sourceUrl;
     const siteId = next.siteId || this.defaultSiteId;
-    this.db
-      .prepare(`
-        UPDATE cameras SET
-          name = ?, zone = ?, protocol = ?, source_url = ?, source_key = ?,
-          site_id = ?, detect_enabled = ?, detect_sensitivity = ?, detect_roi = ?,
-          schedule = ?, enabled = ?, updated_at = ?
-        WHERE id = ?
-      `)
-      .run(
-        next.name,
-        next.zone,
-        next.protocol,
-        storedUrl,
-        key,
-        siteId,
-        next.detectEnabled === false ? 0 : 1,
-        next.detectSensitivity ?? null,
-        serializeRoi(next.detectRoi ?? null),
-        serializeSchedule(next.schedule),
-        next.enabled ? 1 : 0,
-        next.updatedAt,
-        id,
-      );
+    try {
+      this.db
+        .prepare(`
+          UPDATE cameras SET
+            name = ?, zone = ?, protocol = ?, source_url = ?, source_key = ?,
+            site_id = ?, detect_enabled = ?, detect_sensitivity = ?, detect_roi = ?,
+            schedule = ?, enabled = ?, updated_at = ?
+          WHERE id = ?
+        `)
+        .run(
+          next.name,
+          next.zone,
+          next.protocol,
+          storedUrl,
+          key,
+          siteId,
+          next.detectEnabled === false ? 0 : 1,
+          next.detectSensitivity ?? null,
+          serializeRoi(next.detectRoi ?? null),
+          serializeSchedule(next.schedule),
+          next.enabled ? 1 : 0,
+          next.updatedAt,
+          id,
+        );
+    } catch (error) {
+      throw normalizeDuplicateSource(error);
+    }
     return this.getCamera(id);
-  },
+  });
+},
 /**
  * @param {string} id 点位 ID。
  * @returns {boolean} 是否删除成功。
@@ -199,13 +243,26 @@ importCameras(items) {
           skipped += 1;
           continue;
         }
-        const camera = this.insertCamera({
-          ...item,
-          id: crypto.randomUUID(),
-          code: `CAM-${String(nextCode++).padStart(2, '0')}`,
-          createdAt: now(),
-          updatedAt: now(),
-        });
+        const camera = (() => {
+          try {
+            return this.insertCamera({
+              ...item,
+              id: crypto.randomUUID(),
+              code: `CAM-${String(nextCode++).padStart(2, '0')}`,
+              createdAt: now(),
+              updatedAt: now(),
+            });
+          } catch (error) {
+            // 并发写入导致的同源唯一约束冲突：跳过该条，不让整批导入失败。
+            const normalized = normalizeDuplicateSource(error);
+            if (normalized?.code === 'DUPLICATE_SOURCE') return null;
+            throw normalized;
+          }
+        })();
+        if (!camera) {
+          skipped += 1;
+          continue;
+        }
         created.push(camera);
       }
       return { created, skipped };

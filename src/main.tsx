@@ -1,6 +1,7 @@
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import AuthProvider from './context/AuthContext';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { applyTheme, loadTheme } from './lib/theme';
 import './styles/app.css';
 
@@ -11,8 +12,10 @@ const container = document.getElementById('root');
 
 if (container) {
   createRoot(container).render(
-    <AuthProvider>
-      <App />
-    </AuthProvider>,
+    <ErrorBoundary>
+      <AuthProvider>
+        <App />
+      </AuthProvider>
+    </ErrorBoundary>,
   );
 }

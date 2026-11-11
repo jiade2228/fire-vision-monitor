@@ -37,14 +37,16 @@ export interface Alarm {
   level: AlarmLevel;
   confidence: number;
   hotspot: { x: number; y: number };
-  snapshot?: string;
+  /** 抓拍图接口路径；服务端无文件时返回 null。 */
+  snapshot?: string | null;
   clip?: string | null;
   createdAt: number;
   status: AlarmStatus;
   confirmedAt?: number;
   closedAt?: number;
   steps: boolean[];
-  note?: string;
+  /** 处置备注；服务端无备注时返回 null。 */
+  note?: string | null;
 }
 
 export interface AlarmHandlers {
@@ -53,7 +55,8 @@ export interface AlarmHandlers {
   onFalse: (id: string) => void;
   onToggleStep: (id: string, index: number) => void;
   onArchive: (id: string) => void;
-  onNoteChange: (id: string, note: string) => void;
+  /** 保存备注；resolve(true) 表示保存成功（失败时调用方应保留草稿）。 */
+  onNoteChange: (id: string, note: string) => Promise<boolean>;
 }
 
 export interface ToastState {

@@ -11,6 +11,11 @@
  */
 
 /**
+ * 上海时区（固定 UTC+8，无夏令时）——与告警日聚合、每日摘要、通知文案同源。
+ */
+const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+/**
  * 解析并规范化布防时间表；非法输入一律回退为「全天候布防」。
  *
  * @param {string|null|undefined} raw cameras.schedule 原始 JSON。
@@ -115,14 +120,21 @@ export function toClientSchedule(schedule) {
 /**
  * 判断点位在指定时刻是否处于布防状态。
  *
+ * 时区口径：统一按 **Asia/Shanghai（固定 +8，无夏令时）** 判定。
+ * 原实现用 `Date` 的本地时区 getter，而告警日聚合、每日值守摘要、
+ * 通知时间格式化三处都按 UTC+8 处理——同一进程内存在两套时区语义，
+ * 容器（TZ=UTC）部署时布防窗口会整体偏移 8 小时。
+ *
  * @param {{always: true} | {always: false, windows: Array<object>}} schedule parseSchedule 的返回值。
  * @param {Date} [at] 判断时刻（默认当前时间）。
  * @returns {boolean} true=布防（参与检测），false=撤防（跳过检测，播放不受影响）。
  */
 export function isArmedNow(schedule, at = new Date()) {
   if (!schedule || schedule.always) return true;
-  const day = at.getDay();
-  const minute = at.getHours() * 60 + at.getMinutes();
+  // 偏移到 UTC+8 后用 UTC getter 取「上海墙上时间」。
+  const shifted = new Date(at.getTime() + SHANGHAI_OFFSET_MS);
+  const day = shifted.getUTCDay();
+  const minute = shifted.getUTCHours() * 60 + shifted.getUTCMinutes();
   for (const window of schedule.windows) {
     // 当日窗口：跨零点窗口（end > 1440）的当日部分到午夜为止。
     if (

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadCredentialKey, SecretBox } from './secrets.mjs';
 import { openStore } from './store.mjs';
+import { passwordHash } from './auth/password.mjs';
 
 /**
  * 本地管理员密码重置工具（忘记密码时使用）。
@@ -34,8 +35,19 @@ function parseArgs(argv) {
   return args;
 }
 
-function passwordHash(password, salt) {
-  return crypto.scryptSync(password, salt, 64).toString('hex');
+/**
+ * 密码哈希：复用 auth/password.mjs 的**唯一实现**。
+ *
+ * 改造前本文件自己调 `crypto.scryptSync(password, salt, 64)`，与服务端的
+ * `promisify(crypto.scrypt)` 是两份独立实现 —— 任何一侧改参数，另一侧就会
+ * 静默地让「刚重置的密码无法登录」。现在共用一份，参数升级自动同步。
+ *
+ * @param {string} password 明文密码。
+ * @param {string} salt salt（hex）。
+ * @returns {Promise<string>} 版本化哈希串。
+ */
+async function hashPassword(password, salt) {
+  return passwordHash(password, salt);
 }
 
 function randomPassword() {
@@ -79,7 +91,10 @@ async function main() {
       process.exit(1);
     }
     const salt = crypto.randomBytes(16).toString('hex');
-    store.updateUser(user.id, { passwordHash: passwordHash(password, salt), salt });
+    store.updateUser(user.id, {
+      passwordHash: await hashPassword(password, salt),
+      salt,
+    });
     console.log(
       [
         `密码已重置：${user.username}（${user.role}${user.siteAdmin ? ' · 站点管理员' : ''}）`,

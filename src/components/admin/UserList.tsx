@@ -10,7 +10,7 @@ interface Props {
   currentUser: SessionUser;
   updateUser: (user: SessionUser, patch: UserPatch) => Promise<void>;
   openAssignUser: (user: SessionUser) => Promise<void>;
-  resetPassword: (user: SessionUser) => Promise<void>;
+  resetPassword: (user: SessionUser) => void;
   deleteUser: (user: SessionUser) => Promise<void>;
 }
 
@@ -75,7 +75,7 @@ export default function UserList({
                   管理可见站点
                 </button>
               )}
-              <button type="button" className="btn btn-sm btn-ghost" onClick={() => void resetPassword(user)}>
+              <button type="button" className="btn btn-sm btn-ghost" onClick={() => resetPassword(user)}>
                 重置密码
               </button>
               <button

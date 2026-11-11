@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { Alarm, AlarmFilter, AlarmHandlers, AlarmLevel } from '../types';
 import { downloadAlarmsCsv } from '../lib/export';
+import { LEVEL_META } from '../lib/detection';
 import AlarmCard from './AlarmCard';
 import AlarmClipTimeline from './AlarmClipTimeline';
 
@@ -150,9 +151,11 @@ export default function AlarmCenter({
             onChange={(event) => setLevelFilter(event.target.value as LevelFilter)}
           >
             <option value="all">全部类型</option>
-            <option value="fire">火焰</option>
-            <option value="smoke">烟雾</option>
-            <option value="offline">设备离线</option>
+            {(Object.keys(LEVEL_META) as AlarmLevel[]).map((level) => (
+              <option key={level} value={level}>
+                {LEVEL_META[level].label}
+              </option>
+            ))}
           </select>
         </label>
 

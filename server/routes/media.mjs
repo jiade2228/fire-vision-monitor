@@ -2,6 +2,7 @@ import { apiNotFound } from '../http/not-found.mjs';
 import fsp from 'node:fs/promises';
 
 import { StreamError } from '../streams.mjs';
+import { OutboundBlockedError, blockedOutboundHost, guardedFetch } from '../net-guard.mjs';
 
 /**
  * 媒体流服务接口：跨域 HLS/HTTP 视频代理（/proxy/*）、演示播放列表与分片
@@ -11,6 +12,50 @@ import { StreamError } from '../streams.mjs';
  * 与守卫、模块级辅助，统一通过 deps 传入；node 内建与第一方 StreamError 直接
  * import，避免与 index.mjs 循环依赖。行为与原内联路由完全一致。
  */
+
+/** 代理单次上游响应的字节上限（HLS 分片通常远小于此值）。 */
+const MAX_PROXY_BYTES = 16 * 1024 * 1024;
+
+class ProxyPayloadTooLarge extends Error {
+  constructor() {
+    super('上游视频源响应过大');
+    this.name = 'ProxyPayloadTooLarge';
+  }
+}
+
+/**
+ * 流式读取上限：无 content-length 或声明值不可信时，逐 chunk 累计，超限即取消。
+ * @param {Response} response fetch 响应。
+ * @param {number} limit 字节上限。
+ * @returns {Promise<ArrayBuffer>}
+ */
+async function readBoundedArrayBuffer(response, limit) {
+  if (!response.body) return response.arrayBuffer();
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) {
+        await reader.cancel().catch(() => undefined);
+        throw new ProxyPayloadTooLarge();
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out.buffer;
+}
 
 /**
  * @param {import('express').Express} app
@@ -80,22 +125,46 @@ export function registerMediaRoutes(app, deps) {
       if (parsed.origin !== baseOrigin) {
         return res.status(403).json({ error: '禁止代理非同源视频源' });
       }
+      // 出网主机校验：拦截云元数据与未指定地址。
+      // 摄像头本身常在内网（甚至自组网 169.254.x.x），因此默认放行私网/环回/链路本地；
+      // 需要更严时可设 CAMERA_BLOCK_PRIVATE=1 收紧。
+      const strict = process.env.CAMERA_BLOCK_PRIVATE === '1';
+      const guardOptions = {
+        allowPrivate: !strict,
+        allowLoopback: !strict,
+        allowLinkLocal: true,
+      };
+      const blockedHost = blockedOutboundHost(parsed.hostname, guardOptions);
+      if (blockedHost) {
+        return res.status(403).json({ error: blockedHost });
+      }
       const upstreamHeaders = {};
       if (req.headers.range) upstreamHeaders.Range = req.headers.range;
       try {
-        const upstream = await fetch(parsed, {
-          method: req.method === 'HEAD' ? 'GET' : req.method,
-          headers: upstreamHeaders,
-          redirect: 'follow',
-          signal: AbortSignal.timeout(20000),
-        });
+        // 逐跳校验重定向目标：上游 302 不能把请求带到未校验的内网地址。
+        const upstream = await guardedFetch(
+          parsed,
+          {
+            method: req.method === 'HEAD' ? 'GET' : req.method,
+            headers: upstreamHeaders,
+            signal: AbortSignal.timeout(20000),
+          },
+          guardOptions,
+        );
         const contentType = upstream.headers.get('content-type') || '';
         const isPlaylist =
           contentType.includes('mpegurl') ||
           contentType.includes('x-mpegurl') ||
           targetUrl.endsWith('.m3u8') ||
           targetUrl.endsWith('.m3u');
-        const arrayBuf = await upstream.arrayBuffer();
+        // 上游响应大小上限：CameraTile 指向同源服务器时，20s 内可返回超大响应
+        // 把整个进程内存打满。先按 content-length 拒绝，再流式兜底无声明的响应。
+        const declared = Number(upstream.headers.get('content-length') ?? 0);
+        if (Number.isFinite(declared) && declared > MAX_PROXY_BYTES) {
+          await upstream.body?.cancel().catch(() => undefined);
+          return res.status(413).json({ error: '上游视频源响应过大' });
+        }
+        const arrayBuf = await readBoundedArrayBuffer(upstream, MAX_PROXY_BYTES);
         if (isPlaylist) {
           const text = Buffer.from(arrayBuf).toString('utf8');
           const rewritten = text
@@ -132,7 +201,14 @@ export function registerMediaRoutes(app, deps) {
           res.setHeader('Accept-Ranges', 'bytes');
         }
         res.send(Buffer.from(arrayBuf));
-      } catch {
+      } catch (error) {
+        if (error instanceof ProxyPayloadTooLarge) {
+          return res.status(413).json({ error: error.message });
+        }
+        if (error instanceof OutboundBlockedError) {
+          log('warn', 'proxy_blocked_target', { cameraId, message: error.message });
+          return res.status(403).json({ error: error.message });
+        }
         log('warn', 'proxy_upstream_failed', {
           cameraId,
           message: '代理上游视频源失败',

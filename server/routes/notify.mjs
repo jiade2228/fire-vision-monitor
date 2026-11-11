@@ -1,4 +1,5 @@
 import { apiNotFound } from '../http/not-found.mjs';
+import { CAPABILITIES, resolveCapabilityGuard } from '../auth/roles.mjs';
 import crypto from 'node:crypto';
 
 /**
@@ -16,10 +17,12 @@ import crypto from 'node:crypto';
  */
 export function registerNotifyRoutes(app, deps) {
   const {
+    requireManager,
+    requireRole,
     store,
     notifier,
     requireAuth,
-    requireManager,
+    requireCapability,
     adminSiteIdsFor,
     canManageSite,
     normalizeText,
@@ -27,8 +30,11 @@ export function registerNotifyRoutes(app, deps) {
     notifyChannelForClient,
     parseNotifyChannelInput,
   } = deps;
+  // 能力守卫降级：旧调用方（既有测试/集成方）可能只提供 requireRole，
+  // 此时按能力反查角色兜底，保证零改动兼容；两者都缺失则一律拒绝。
+  const capabilityGuard = resolveCapabilityGuard(requireCapability, requireRole, requireManager);
 
-  app.get('/api/notify/channels', requireAuth, requireManager, (_req, res) => {
+  app.get('/api/notify/channels', requireAuth, capabilityGuard(CAPABILITIES.NOTIFY_READ), (_req, res) => {
     const adminIds = adminSiteIdsFor(_req.user);
     const sites =
       adminIds === null
@@ -53,7 +59,7 @@ export function registerNotifyRoutes(app, deps) {
     });
   });
 
-  app.post('/api/notify/channels', requireAuth, requireManager, (req, res) => {
+  app.post('/api/notify/channels', requireAuth, capabilityGuard(CAPABILITIES.NOTIFY_MANAGE), (req, res) => {
     const parsed = parseNotifyChannelInput(req.body);
     if (parsed.error) return res.status(400).json({ error: parsed.error });
     const siteId = parsed.value.siteId ?? null;
@@ -91,7 +97,7 @@ export function registerNotifyRoutes(app, deps) {
   app.patch(
     '/api/notify/channels/:id',
     requireAuth,
-    requireManager,
+    capabilityGuard(CAPABILITIES.NOTIFY_MANAGE),
     (req, res) => {
       const current = store.getNotifyChannel(req.params.id);
       if (!current) return apiNotFound(res, '通知渠道不存在');
@@ -134,7 +140,7 @@ export function registerNotifyRoutes(app, deps) {
   app.delete(
     '/api/notify/channels/:id',
     requireAuth,
-    requireManager,
+    capabilityGuard(CAPABILITIES.NOTIFY_MANAGE),
     (req, res) => {
       const current = store.getNotifyChannel(req.params.id);
       if (!current) return apiNotFound(res, '通知渠道不存在');
@@ -157,7 +163,7 @@ export function registerNotifyRoutes(app, deps) {
   app.post(
     '/api/notify/channels/:id/test',
     requireAuth,
-    requireManager,
+    capabilityGuard(CAPABILITIES.NOTIFY_MANAGE),
     async (req, res) => {
       const channel = store.getNotifyChannel(req.params.id);
       if (!channel) return apiNotFound(res, '通知渠道不存在');
@@ -173,7 +179,7 @@ export function registerNotifyRoutes(app, deps) {
     },
   );
 
-  app.get('/api/notify/logs', requireAuth, requireManager, (req, res) => {
+  app.get('/api/notify/logs', requireAuth, capabilityGuard(CAPABILITIES.NOTIFY_READ), (req, res) => {
     const adminIds = adminSiteIdsFor(req.user);
     let channelIds = null;
     if (adminIds !== null) {
@@ -188,11 +194,11 @@ export function registerNotifyRoutes(app, deps) {
   });
 
   // 通知文案模板：可复用的告警消息模板，渠道引用后覆盖默认文案。
-  app.get('/api/notify/templates', requireAuth, requireManager, (_req, res) => {
+  app.get('/api/notify/templates', requireAuth, capabilityGuard(CAPABILITIES.NOTIFY_READ), (_req, res) => {
     res.json({ templates: store.listNotificationTemplates() });
   });
 
-  app.post('/api/notify/templates', requireAuth, requireManager, (req, res) => {
+  app.post('/api/notify/templates', requireAuth, capabilityGuard(CAPABILITIES.NOTIFY_MANAGE), (req, res) => {
     const name = normalizeText(String(req.body.name ?? ''), 32);
     const body = typeof req.body.body === 'string' ? req.body.body : '';
     if (!name) return res.status(400).json({ error: '请填写模板名称' });
@@ -215,7 +221,7 @@ export function registerNotifyRoutes(app, deps) {
   app.patch(
     '/api/notify/templates/:id',
     requireAuth,
-    requireManager,
+    capabilityGuard(CAPABILITIES.NOTIFY_MANAGE),
     (req, res) => {
       const current = store.getNotificationTemplate(req.params.id);
       if (!current) return apiNotFound(res, '模板不存在');
@@ -244,10 +250,13 @@ export function registerNotifyRoutes(app, deps) {
   app.delete(
     '/api/notify/templates/:id',
     requireAuth,
-    requireManager,
+    capabilityGuard(CAPABILITIES.NOTIFY_MANAGE),
     (req, res) => {
       const current = store.getNotificationTemplate(req.params.id);
       if (!current) return apiNotFound(res, '模板不存在');
+      if (current.builtin) {
+        return res.status(403).json({ error: '内置模板不可删除' });
+      }
       const ok = store.deleteNotificationTemplate(req.params.id);
       if (!ok) return apiNotFound(res, '模板不存在');
       store.recordAudit({

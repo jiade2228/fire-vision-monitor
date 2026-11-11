@@ -1,20 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import TopBar from './components/TopBar';
 import StatsStrip from './components/StatsStrip';
-import VideoWall from './components/VideoWall';
-import AlarmCard from './components/AlarmCard';
 import AlarmCenter from './components/AlarmCenter';
 import RecordsView from './components/RecordsView';
 import RecordingTimeline from './components/RecordingTimeline';
-import FocusViewer from './components/FocusViewer';
 import AdminPanel from './components/AdminPanel';
-import OnboardingGuide from './components/OnboardingGuide';
 import Toast from './components/Toast';
+import MonitorView from './app/MonitorView';
+import FocusOverlay from './app/FocusOverlay';
 import { useAuth } from './context/AuthContext';
 import { useCameraPoints } from './hooks/useCameraPoints';
 import { useAlarms } from './hooks/useAlarms';
-import { EMERGENCY_STEPS, levelLabel } from './lib/detection';
-import { loadPreferences, savePreferences } from './lib/preferences';
+import { EMERGENCY_STEPS, LEVEL_META } from './lib/detection';import { loadPreferences, savePreferences } from './lib/preferences';
 import { playAlertSound, primeAlertAudio } from './lib/alertSound';
 import { SENSITIVITY_META } from './lib/detector';
 import type { FrameAnalysis } from './lib/detector';
@@ -23,6 +20,7 @@ import type { ManagedCamera } from './lib/api';
 import type {
   Alarm,
   AlarmHandlers,
+  AlarmLevel,
   Camera,
   CameraSource,
   CameraStatus,
@@ -31,6 +29,19 @@ import type {
   ToastState,
   ViewKey,
 } from './types';
+
+/**
+ * 哪些告警等级会改变大屏的「火焰/烟雾」状态并叠加识别框。
+ *
+ * 采用白名单而非黑名单：`offline` 与 `camera_abnormal` 是设备健康类告警，
+ * 不是画面识别结果。旧实现用 `level === 'fire' ? 'fire' : 'smoke'` 的二元
+ * 表达式，导致新增的 `camera_abnormal` 被误显示为「烟雾」—— 在消防值守
+ * 场景下属于方向性误导。白名单让未来新增等级默认安全（不叠加）。
+ */
+const ALARM_TO_CAMERA_STATUS: Partial<Record<AlarmLevel, CameraStatus>> = {
+  fire: 'fire',
+  smoke: 'smoke',
+};
 
 type RemoteSource = Extract<CameraSource, { kind: 'remote' }>;
 
@@ -56,6 +67,7 @@ export default function App() {
     alarms,
     loading: alarmsLoading,
     error: alarmsError,
+    sseDown,
     createAlarm,
     patchAlarm,
   } = useAlarms();
@@ -337,9 +349,9 @@ export default function App() {
     });
     alarms.forEach((alarm) => {
       if (alarm.status !== 'pending' && alarm.status !== 'confirmed') return;
-      // 离线不是画面识别结果，不改变大屏上的火焰/烟雾状态。
-      if (alarm.level === 'offline') return;
-      const next: CameraStatus = alarm.level === 'fire' ? 'fire' : 'smoke';
+      // 只有火焰/烟雾会改变大屏状态；设备健康类告警只进告警中心。
+      const next = ALARM_TO_CAMERA_STATUS[alarm.level];
+      if (!next) return;
       if (map[alarm.cameraId] === 'fire') return;
       map[alarm.cameraId] = next;
     });
@@ -350,8 +362,8 @@ export default function App() {
     const map: Record<string, Alarm> = {};
     alarms.forEach((alarm) => {
       if (alarm.status !== 'pending' && alarm.status !== 'confirmed') return;
-      // 离线告警只进告警中心，不在画面上叠加识别框。
-      if (alarm.level === 'offline') return;
+      // 与 statusMap 同口径：设备健康类告警不在画面上叠加识别框。
+      if (!ALARM_TO_CAMERA_STATUS[alarm.level]) return;
       const existing = map[alarm.cameraId];
       if (!existing || alarm.level === 'fire') {
         map[alarm.cameraId] = alarm;
@@ -360,8 +372,16 @@ export default function App() {
     return map;
   }, [alarms]);
 
-  const pendingCount = alarms.filter((alarm) => alarm.status === 'pending').length;
-  const latestPendingId = alarms.find((alarm) => alarm.status === 'pending')?.id ?? null;
+  // 记忆化：alarms 每 3 秒轮询/SSE 都会换新数组引用，
+  // 不缓存的话这两项会在每次渲染时重复遍历整个告警列表。
+  const pendingCount = useMemo(
+    () => alarms.filter((alarm) => alarm.status === 'pending').length,
+    [alarms],
+  );
+  const latestPendingId = useMemo(
+    () => alarms.find((alarm) => alarm.status === 'pending')?.id ?? null,
+    [alarms],
+  );
 
   useEffect(() => {
     if (!latestPendingId) return;
@@ -390,7 +410,7 @@ export default function App() {
           playAlertSound(detection.level);
         }
         showToast(
-          `${camera.name} 识别到${detection.level === 'fire' ? '火焰' : '烟雾'}（置信度 ${
+          `${camera.name} 识别到${LEVEL_META[detection.level]?.label ?? '异常'}（置信度 ${
             detection.confidence
           }%），请核实画面`,
           'danger',
@@ -463,85 +483,109 @@ export default function App() {
     [sources, showToast],
   );
 
-  const handleConfirm = useCallback(
-    async (id: string) => {
-      const alarm = alarms.find((item) => item.id === id);
-      if (!alarm) return;
+  // 处置动作按告警 ID 防重入：双击「确认火情」会发两次 PATCH，
+  // 产生重复审计日志与两条 toast；归档按钮第二次请求还会 404 报错。
+  // 用 Set 而非布尔量，避免不同告警之间互相阻塞。
+  const pendingAlarms = useRef<Set<string>>(new Set());
+  const withAlarmLock = useCallback(
+    async (id: string, run: () => Promise<void>) => {
+      if (pendingAlarms.current.has(id)) return;
+      pendingAlarms.current.add(id);
       try {
-        await patchAlarm(id, {
-          status: 'confirmed',
-          steps: alarm.steps.length
-            ? alarm.steps
-            : EMERGENCY_STEPS.map(() => false),
-        });
-        showToast('已确认火情，应急预案已启动', 'danger');
-      } catch (error) {
-        showToast(
-          error instanceof Error ? error.message : '确认火情失败',
-          'danger',
-        );
+        await run();
+      } finally {
+        pendingAlarms.current.delete(id);
       }
     },
-    [alarms, patchAlarm, showToast],
+    [],
+  );
+
+  const handleConfirm = useCallback(
+    (id: string) =>
+      withAlarmLock(id, async () => {
+        const alarm = alarms.find((item) => item.id === id);
+        if (!alarm) return;
+        try {
+          await patchAlarm(id, {
+            status: 'confirmed',
+            steps: alarm.steps.length
+              ? alarm.steps
+              : EMERGENCY_STEPS.map(() => false),
+          });
+          showToast('已确认火情，应急预案已启动', 'danger');
+        } catch (error) {
+          showToast(
+            error instanceof Error ? error.message : '确认火情失败',
+            'danger',
+          );
+        }
+      }),
+    [alarms, patchAlarm, showToast, withAlarmLock],
   );
 
   const handleFalse = useCallback(
-    async (id: string) => {
-      try {
-        await patchAlarm(id, { status: 'false' });
-        showToast('已标记为误报，通道恢复正常监测', 'ok');
-      } catch (error) {
-        showToast(
-          error instanceof Error ? error.message : '标记误报失败',
-          'danger',
-        );
-      }
-    },
-    [patchAlarm, showToast],
+    (id: string) =>
+      withAlarmLock(id, async () => {
+        try {
+          await patchAlarm(id, { status: 'false' });
+          showToast('已标记为误报，通道恢复正常监测', 'ok');
+        } catch (error) {
+          showToast(
+            error instanceof Error ? error.message : '标记误报失败',
+            'danger',
+          );
+        }
+      }),
+    [patchAlarm, showToast, withAlarmLock],
   );
 
   const handleToggleStep = useCallback(
-    async (id: string, index: number) => {
-      const alarm = alarms.find((item) => item.id === id);
-      if (!alarm) return;
-      try {
-        await patchAlarm(id, {
-          steps: alarm.steps.map((done, i) => (i === index ? !done : done)),
-        });
-      } catch (error) {
-        showToast(
-          error instanceof Error ? error.message : '更新处置步骤失败',
-          'danger',
-        );
-      }
-    },
-    [alarms, patchAlarm, showToast],
+    (id: string, index: number) =>
+      withAlarmLock(id, async () => {
+        const alarm = alarms.find((item) => item.id === id);
+        if (!alarm) return;
+        try {
+          await patchAlarm(id, {
+            steps: alarm.steps.map((done, i) => (i === index ? !done : done)),
+          });
+        } catch (error) {
+          showToast(
+            error instanceof Error ? error.message : '更新处置步骤失败',
+            'danger',
+          );
+        }
+      }),
+    [alarms, patchAlarm, showToast, withAlarmLock],
   );
 
   const handleArchive = useCallback(
-    async (id: string) => {
-      try {
-        await patchAlarm(id, { status: 'archived' });
-        showToast('处置完成，告警已归档至处置记录', 'ok');
-      } catch (error) {
-        showToast(
-          error instanceof Error ? error.message : '归档告警失败',
-          'danger',
-        );
-      }
-    },
-    [patchAlarm, showToast],
+    (id: string) =>
+      withAlarmLock(id, async () => {
+        try {
+          await patchAlarm(id, { status: 'archived' });
+          showToast('处置完成，告警已归档至处置记录', 'ok');
+        } catch (error) {
+          showToast(
+            error instanceof Error ? error.message : '归档告警失败',
+            'danger',
+          );
+        }
+      }),
+    [patchAlarm, showToast, withAlarmLock],
   );
 
   const handleNoteChange = useCallback(
-    async (id: string, note: string) => {
+    async (id: string, note: string): Promise<boolean> => {
       try {
         await patchAlarm(id, { note: note.slice(0, 300) });
+        return true;
       } catch (error) {
         showToast(
           error instanceof Error ? error.message : '保存值守备注失败',
           'danger',
         );
+        // 返回 false：调用方据此保留输入框里的草稿，避免用户输入无声丢失。
+        return false;
       }
     },
     [patchAlarm, showToast],
@@ -678,6 +722,34 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [tour.enabled, tour.paused, tour.interval, tour.index, tourQueue]);
 
+  const handleLocalDetectionChange = useCallback(
+    (value: 'auto' | 'on' | 'off') => {
+      setPreferences((prev) => ({ ...prev, localDetection: value }));
+    },
+    [setPreferences],
+  );
+
+  const handleToggleTour = useCallback(() => {
+    if (tour.enabled) {
+      stopTour();
+      setFocusedCameraId(null);
+      showToast('已退出自动轮巡', 'info');
+    } else {
+      startTour();
+    }
+  }, [tour.enabled, stopTour, setFocusedCameraId, showToast, startTour]);
+
+  const handleOpenAlarmFromChannel = useCallback((id: string) => {
+    setExpandedId(id);
+    setView('alarms');
+  }, []);
+
+  const handleFocusStop = useCallback(() => {
+    stopTour();
+    setFocusedCameraId(null);
+    showToast('已退出自动轮巡', 'info');
+  }, [stopTour, setFocusedCameraId, showToast]);
+
   return (
     <div className={`app-shell view-${view}`}>
       <div className="app-inner">
@@ -687,6 +759,7 @@ export default function App() {
           pendingCount={pendingCount}
           onlineCount={onlineCount}
           totalCount={cameras.length}
+          sseDown={sseDown}
           platformName={preferences.platformName}
           user={user}
           onManage={() => {
@@ -702,218 +775,50 @@ export default function App() {
 
         <main className="app-main">
           {view === 'monitor' && (
-            <div className="monitor-layout">
-              <section className="panel video-panel">
-                <div className="panel-head">
-                  <div>
-                    <h2>实时视频墙</h2>
-                    <p className="panel-sub">
-                      {cameras.length} 路通道 · 已接入 {onlineCount} 路 · 当前选中{' '}
-                      {selectedCamera.name}
-                    </p>
-                  </div>
-                  <div className="panel-actions engine-controls">
-                    <label
-                      className="engine-select"
-                      title={SENSITIVITY_META[preferences.sensitivity].hint}
-                    >
-                      <span>灵敏度</span>
-                      <select
-                        value={preferences.sensitivity}
-                        aria-label="识别灵敏度"
-                        onChange={(event) =>
-                          handleSensitivityChange(event.target.value as DetectionSensitivity)
-                        }
-                      >
-                        {(Object.keys(SENSITIVITY_META) as DetectionSensitivity[]).map((key) => (
-                          <option key={key} value={key}>
-                            {SENSITIVITY_META[key].label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label
-                      className="engine-select"
-                      title={
-                        serverDetection
-                          ? '服务端识别已接管：自动模式下浏览器不再重复识别，节省 CPU；边缘网关点位仍由浏览器识别。'
-                          : '服务端识别未开启时，自动模式会使用浏览器本地识别。'
-                      }
-                    >
-                      <span>本地识别</span>
-                      <select
-                        value={preferences.localDetection}
-                        aria-label="浏览器本地识别策略"
-                        onChange={(event) =>
-                          setPreferences((prev) => ({
-                            ...prev,
-                            localDetection: event.target.value as 'auto' | 'on' | 'off',
-                          }))
-                        }
-                      >
-                        <option value="auto">自动</option>
-                        <option value="on">始终</option>
-                        <option value="off">关闭</option>
-                      </select>
-                    </label>
-                    <button
-                      type="button"
-                      className={`sound-toggle ${preferences.soundEnabled ? 'is-on' : ''}`}
-                      aria-pressed={preferences.soundEnabled}
-                      title={preferences.soundEnabled ? '关闭告警提示音' : '开启告警提示音'}
-                      onClick={handleToggleSound}
-                    >
-                      <span className="sound-bars" aria-hidden="true">
-                        <i />
-                        <i />
-                        <i />
-                      </span>
-                      提示音{preferences.soundEnabled ? '开' : '关'}
-                    </button>
-                    <button
-                      type="button"
-                      className={`wake-toggle ${screenAwake ? 'is-on' : ''}`}
-                      aria-pressed={screenAwake}
-                      title="防止屏幕休眠；切到其他页面仍可能暂停检测"
-                      onClick={() => void handleToggleWakeLock()}
-                    >
-                      屏幕常亮{screenAwake ? '开' : '关'}
-                    </button>
-                    <button
-                      type="button"
-                      className={`tour-toggle ${tour.enabled ? 'is-on' : ''}`}
-                      aria-pressed={tour.enabled}
-                      title={
-                        tour.enabled
-                          ? '退出自动轮巡'
-                          : `大屏轮巡已接入的 ${tourQueue.length} 路点位，默认每 15 秒切换`
-                      }
-                      onClick={() => {
-                        if (tour.enabled) {
-                          stopTour();
-                          setFocusedCameraId(null);
-                          showToast('已退出自动轮巡', 'info');
-                        } else {
-                          startTour();
-                        }
-                      }}
-                    >
-                      自动轮巡{tour.enabled ? '中' : ''}
-                    </button>
-                  </div>
-                </div>
-                {pointsLoading && <p className="panel-status">正在加载远程点位…</p>}
-                {pointsError && (
-                  <p className="panel-status panel-status--error">{pointsError}</p>
-                )}
-                {!pointsLoading && !pointsError && cameras.length === 0 && (
-                  <OnboardingGuide
-                    canDemo={user.role === 'admin'}
-                    canManage={user.role === 'admin' || Boolean(user.siteAdmin)}
-                    demoBusy={demoBusy}
-                    onStartDemo={startDemoWalkthrough}
-                    onAddCamera={() => openAdmin('cameras')}
-                    onConfigureNotify={() => openAdmin('notify')}
-                  />
-                )}
-                <VideoWall
-                  cameras={cameras}
-                  statusMap={statusMap}
-                  activeAlarms={activeAlarms}
-                  sources={sources}
-                  remoteSources={remoteStreams}
-                  selectedId={selectedCameraId}
-                  focusedId={focusedCameraId}
-                  sensitivity={preferences.sensitivity}
-                  detectionEnabledIds={localDetectionIds}
-                  onSelect={setSelectedCameraId}
-                  onFocus={setFocusedCameraId}
-                  onConnectFile={handleConnectFile}
-                  onReconnectNetwork={handleReconnectRemote}
-                  onDisconnect={handleDisconnect}
-                  onDetection={handleDetection}
-                />
-
-                {cameras.length > 0 && (
-                <div className="channel-summary">
-                  <div className="channel-identity">
-                    <span className="channel-code">{selectedCamera.code}</span>
-                    <strong>{selectedCamera.name}</strong>
-                    <span className="channel-zone">{selectedCamera.zone}</span>
-                  </div>
-                  <span className={`channel-source ${selectedSource ? 'is-online' : ''}`}>
-                    <i aria-hidden="true" />
-                    {selectedSource ? `视频源：${selectedSource.label}` : '当前通道未接入视频源'}
-                  </span>
-                  {selectedAlarm ? (
-                    <button
-                      type="button"
-                      className="btn btn-sm channel-alarm"
-                      onClick={() => {
-                        setExpandedId(selectedAlarm.id);
-                        setView('alarms');
-                      }}
-                    >
-                      查看{levelLabel(selectedAlarm.level)}告警
-                    </button>
-                  ) : (
-                    <span className="channel-engine">
-                      {selectedSource ? '连续帧检测运行中' : '接入信号后自动开始检测'}
-                    </span>
-                  )}
-                </div>
-                )}
-
-                <p className="panel-foot">
-                  提示：识别基于浏览器端火焰色彩与运动特征，适合辅助值守，不能替代经认证的消防探测设备。
-                  网络点位由管理员在“系统管理”中配置；RTSP 流由服务器转成 HLS 后播放和逐帧分析。
-                  灵敏度越高越早触发，也更容易产生误报；镜头持续移动时烟雾识别会暂缓，固定机位效果最佳。
-                  浏览器切到后台会暂停本地识别，正式值守请保持页面常亮或使用独立大屏。
-                </p>
-              </section>
-
-              <aside className="panel dock-panel">
-                <div className="panel-head">
-                  <div>
-                    <h2>告警队列</h2>
-                    <p className="panel-sub">进行中的告警，按触发时间倒序</p>
-                  </div>
-                  <span className={`dock-badge ${pendingCount > 0 ? 'is-danger' : ''}`}>
-                    待处置 {pendingCount}
-                  </span>
-                </div>
-
-                {alarmsError && (
-                  <p className="panel-status panel-status--error">{alarmsError}</p>
-                )}
-                {alarmsLoading && queue.length === 0 ? (
-                  <div className="empty-state empty-state--compact">
-                    <strong>正在同步告警队列…</strong>
-                  </div>
-                ) : queue.length === 0 ? (
-                  <div className="empty-state empty-state--compact">
-                    <strong>{onlineCount > 0 ? '全部通道状态正常' : '尚无识别事件'}</strong>
-                    <span>
-                      {onlineCount > 0
-                        ? '识别引擎正在分析已接入的视频流，发现异常将自动推送告警。'
-                        : '等待管理员配置网络视频流；也可在通道上接入本地视频做临时测试。'}
-                    </span>
-                  </div>
-                ) : (
-                  <div className="dock-list">
-                    {queue.map((alarm) => (
-                      <AlarmCard
-                        key={alarm.id}
-                        alarm={alarm}
-                        expanded={expandedId === alarm.id}
-                        handlers={handlers}
-                        readOnly={readOnly}
-                      />
-                    ))}
-                  </div>
-                )}
-              </aside>
-            </div>
+            <MonitorView
+              cameras={cameras}
+              statusMap={statusMap}
+              activeAlarms={activeAlarms}
+              sources={sources}
+              remoteStreams={remoteStreams}
+              selectedCameraId={selectedCameraId}
+              focusedCameraId={focusedCameraId}
+              localDetectionIds={localDetectionIds}
+              preferences={preferences}
+              serverDetection={serverDetection}
+              screenAwake={screenAwake}
+              tourEnabled={tour.enabled}
+              tourQueueLength={tourQueue.length}
+              demoBusy={demoBusy}
+              user={user}
+              pointsLoading={pointsLoading}
+              pointsError={pointsError}
+              alarmsError={alarmsError}
+              alarmsLoading={alarmsLoading}
+              queue={queue}
+              pendingCount={pendingCount}
+              expandedId={expandedId}
+              handlers={handlers}
+              readOnly={readOnly}
+              selectedCamera={selectedCamera}
+              selectedSource={selectedSource}
+              selectedAlarm={selectedAlarm}
+              onSensitivityChange={handleSensitivityChange}
+              onLocalDetectionChange={handleLocalDetectionChange}
+              onToggleSound={handleToggleSound}
+              onToggleWakeLock={handleToggleWakeLock}
+              onToggleTour={handleToggleTour}
+              onSelectCamera={setSelectedCameraId}
+              onFocus={setFocusedCameraId}
+              onConnectFile={handleConnectFile}
+              onReconnectNetwork={handleReconnectRemote}
+              onDisconnect={handleDisconnect}
+              onDetection={handleDetection}
+              onStartDemo={startDemoWalkthrough}
+              onOpenAdminCameras={() => openAdmin('cameras')}
+              onOpenAdminNotify={() => openAdmin('notify')}
+              onOpenAlarmFromChannel={handleOpenAlarmFromChannel}
+            />
           )}
 
           {view === 'alarms' && (
@@ -935,39 +840,25 @@ export default function App() {
       </div>
 
       {focusedCamera && focusedSource && (
-        <FocusViewer
+        <FocusOverlay
           camera={focusedCamera}
           source={focusedSource}
           status={statusMap[focusedCamera.id] ?? 'normal'}
           alarm={activeAlarms[focusedCamera.id]}
           sensitivity={preferences.sensitivity}
           detectionEnabled={localDetectionFor(focusedCamera)}
+          tour={tour}
+          tourQueue={tourQueue}
           onDetection={handleDetection}
           onClose={handleCloseFocus}
           onOpenAlarm={handleOpenFocusedAlarm}
           onDisconnect={handleDisconnect}
-          tour={
-            tour.enabled
-              ? {
-                  paused: tour.paused,
-                  interval: tour.interval,
-                  position:
-                    Math.max(0, tourQueue.indexOf(focusedCamera.id)) + 1,
-                  total: tourQueue.length,
-                  onPrev: () => stepTour(-1),
-                  onNext: () => stepTour(1),
-                  onTogglePause: () =>
-                    setTour((prev) => ({ ...prev, paused: !prev.paused })),
-                  onIntervalChange: (seconds: number) =>
-                    setTour((prev) => ({ ...prev, interval: seconds })),
-                  onStop: () => {
-                    stopTour();
-                    setFocusedCameraId(null);
-                    showToast('已退出自动轮巡', 'info');
-                  },
-                }
-              : undefined
+          onStepTour={stepTour}
+          onTogglePause={() => setTour((prev) => ({ ...prev, paused: !prev.paused }))}
+          onIntervalChange={(seconds: number) =>
+            setTour((prev) => ({ ...prev, interval: seconds }))
           }
+          onStop={handleFocusStop}
         />
       )}
 

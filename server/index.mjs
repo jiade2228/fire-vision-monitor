@@ -31,6 +31,15 @@ import {
 import { Notifier } from './notify.mjs';
 import { createGuards } from './http/guards.mjs';
 import { createSession } from './http/session.mjs';
+// 认证域能力集中到 server/auth/*：密码哈希、身份投影、角色与权限矩阵、
+// 统一错误类型。原先这些逻辑定义在本文件里并经 deps 透传给各路由模块。
+import {
+  passwordHash,
+  validatePassword,
+  verifyPassword,
+  validUsername,
+} from './auth/password.mjs';
+import { normalizeText, toPublicUser as publicUser } from './auth/identity.mjs';
 import { registerNotifyRoutes } from './routes/notify.mjs';
 import { registerCameraRoutes } from './routes/cameras.mjs';
 import { registerAlarmRoutes } from './routes/alarms.mjs';
@@ -42,6 +51,7 @@ import { registerMediaRoutes } from './routes/media.mjs';
 import { registerAdminRoutes } from './routes/admin.mjs';
 import { registerRecordingRoutes } from './routes/recordings.mjs';
 import { reconcileRecordingSegments } from './recording-index.mjs';
+import { installProcessGuards } from './process-safety.mjs';
 import { RecordingCaptureManager } from './recording-capture.mjs';
 import {
   PlaybackSessionManager,
@@ -50,6 +60,12 @@ import {
 } from './recording-playback.mjs';
 import { probeSegmentDurations } from './recording-duration.mjs';
 import { SharedSourceHub } from './shared-source.mjs';
+import { assertOutboundUrl, blockedOutboundHost } from './net-guard.mjs';
+import { SHANGHAI_OFFSET_MS, toShanghaiParts } from './time.mjs';
+import { envBoolean, envNumber, normalizeClock, normalizePort } from './config.mjs';
+
+// 配置非法值统一走 warn 日志，不再静默生效（详见 server/config.mjs）。
+const configWarn = (message) => log('warn', 'config_invalid', { message });
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -71,22 +87,33 @@ const continuousDir = path.join(dataDir, 'continuous');
 // 回放会话与导出的临时产物：进程重启后不复用，启动时清空。
 const continuousPlayDir = path.join(dataDir, 'continuous-play');
 const continuousExportDir = path.join(dataDir, 'continuous-export');
-const recordingEnabled = process.env.RECORDING === '1';
-const recordingSegmentSeconds = Number(process.env.RECORDING_SEGMENT_SECONDS) || 60;
-const recordingRetentionDays = Number(process.env.RECORDING_RETENTION_DAYS) || 14;
-const recordingProtectDays = Number(process.env.RECORDING_PROTECT_DAYS) || 30;
-const recordingMaxBytes =
-  process.env.RECORDING_MAX_BYTES === undefined
-    ? 50 * 1024 * 1024 * 1024
-    : Number(process.env.RECORDING_MAX_BYTES);
-const recordingMaxCameras = Number(process.env.RECORDING_MAX_CAMERAS) || 24;
+const recordingEnabled = envBoolean('RECORDING', false, { onWarn: configWarn });
+// 与 README 的范围承诺对齐：单段 10-600 秒，保留/保护天数不得为负。
+const recordingSegmentSeconds = envNumber('RECORDING_SEGMENT_SECONDS', {
+  defaultValue: 60, min: 10, max: 600, onWarn: configWarn,
+});
+const recordingRetentionDays = envNumber('RECORDING_RETENTION_DAYS', {
+  defaultValue: 14, min: 1, max: 3650, onWarn: configWarn,
+});
+const recordingProtectDays = envNumber('RECORDING_PROTECT_DAYS', {
+  defaultValue: 30, min: 0, max: 3650, allowZero: true, onWarn: configWarn,
+});
+const recordingMaxBytes = envNumber('RECORDING_MAX_BYTES', {
+  defaultValue: 50 * 1024 * 1024 * 1024, min: 0, allowZero: true, onWarn: configWarn,
+});
+const recordingMaxCameras = envNumber('RECORDING_MAX_CAMERAS', {
+  defaultValue: 24, min: 1, max: 512, onWarn: configWarn,
+});
 const previewDir = path.join(dataDir, 'previews');
 // 运行期目录统一权限：仅属主可读写执行（抓拍/录像/数据库等私有目录）。
 const DIR_MODE = 0o700;
 const portArgIndex = process.argv.indexOf('--port');
-const port = Number(
-  process.env.PORT ?? (portArgIndex >= 0 ? process.argv[portArgIndex + 1] : 4173),
-);
+// CLI --port 优先于环境变量：脚本/测试显式指定的端口不应被宿主环境覆盖。
+const portArg = portArgIndex >= 0 ? process.argv[portArgIndex + 1] : undefined;
+const portSource = portArg ?? process.env.PORT ?? 4173;
+const normalizedPort = normalizePort(portSource, 4173);
+if (normalizedPort.error) configWarn(normalizedPort.error);
+const port = normalizedPort.port;
 const sessionCookie = 'fv_session';
 const sessionLifetimeSeconds = 7 * 24 * 60 * 60;
 const maxSnapshotBytes = 1_500_000;
@@ -116,24 +143,59 @@ const metrics = {
   errors: 0,
   loginFailures: 0,
   alarmsCreated: 0,
+  // P0-2：未捕获 rejection / 未捕获异常计数。
+  // 这两个计数不为 0 就意味着「系统正在偷偷坏掉」——是最优先级的告警信号。
+  unhandledRejections: 0,
+  uncaughtExceptions: 0,
 };
 const sseClients = new Set();
 // main() 创建 Store 后赋值；SSE 长连接期间权限可能变更，广播时按实时状态校验。
 let activeStore = null;
+// SSE 广播的「用户 + 可见站点」缓存：同一用户开多个标签页时，旧实现对每个
+// client 各查一次 getUser + siteMemberSiteIds（500 clients = 1000 次同步查询，
+// 实测约 25ms 事件循环阻塞）。
+// 缓存键绑定 store.authRevision —— 任何账号/站点授权写入都会递增它，
+// 因此撤权/停用后长连接在**下一次广播**立即停止收到新告警，安全语义不变。
+let sseAuthCache = { revision: -1, users: new Map() };
 
 function broadcastEvent(event, data, siteId = null) {
   const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  // 修订号变化时整表失效（比逐用户失效更简单，也覆盖新增/删除账号）。
+  if (activeStore && sseAuthCache.revision !== activeStore.authRevision) {
+    sseAuthCache = { revision: activeStore.authRevision, users: new Map() };
+  }
   for (const client of sseClients) {
+    // 会话级撤销：登出的标签页不应继续收到告警（登出时会主动 end 连接，
+    // 这里再校验一次以覆盖其它撤销路径，如账号被管理员强制下线）。
+    if (
+      activeStore &&
+      client.sid &&
+      activeStore.isSessionRevoked?.(client.userId, client.sid)
+    ) {
+      try { client.res.end(); } catch { /* 已断开 */ }
+      sseClients.delete(client);
+      continue;
+    }
     // 不使用建连时的站点快照：撤权/停用后的长连接不应继续收到其它站点告警。
     if (activeStore) {
       let allowed;
       try {
-        const user = activeStore.getUser(client.userId);
-        if (!user || user.disabled) {
+        let entry = sseAuthCache.users.get(client.userId);
+        if (!entry) {
+          const user = activeStore.getUser(client.userId);
+          if (!user || user.disabled) {
+            sseAuthCache.users.set(client.userId, { invalid: true });
+            sseClients.delete(client);
+            continue;
+          }
+          entry = { user, allowed: allowedSiteIdsFor(user, activeStore) };
+          sseAuthCache.users.set(client.userId, entry);
+        }
+        if (entry.invalid) {
           sseClients.delete(client);
           continue;
         }
-        allowed = allowedSiteIdsFor(user, activeStore);
+        allowed = entry.allowed;
       } catch {
         // 查询失败时保守跳过，不按过期快照投递。
         continue;
@@ -164,43 +226,6 @@ function log(level, event, fields = {}) {
   if (level === 'error') console.error(line);
   else if (level === 'warn') console.warn(line);
   else console.log(line);
-}
-
-function normalizeText(value, maxLength) {
-  return typeof value === 'string'
-    ? value.trim().replace(/\s+/g, ' ').slice(0, maxLength)
-    : '';
-}
-
-function publicUser(user) {
-  return {
-    id: user.id,
-    username: user.username,
-    displayName: user.displayName,
-    role: user.role,
-    siteAdmin: Boolean(user.siteAdmin),
-    disabled: Boolean(user.disabled),
-    createdAt: user.createdAt,
-  };
-}
-
-function passwordHash(password, salt) {
-  return crypto.scryptSync(password, salt, 64).toString('hex');
-}
-
-function verifyPassword(password, user) {
-  if (!user?.salt || !user?.passwordHash) return false;
-  const derived = Buffer.from(passwordHash(String(password ?? ''), user.salt), 'hex');
-  const expected = Buffer.from(user.passwordHash, 'hex');
-  return derived.length === expected.length && crypto.timingSafeEqual(derived, expected);
-}
-
-function validUsername(value) {
-  return /^[a-zA-Z0-9_.-]{3,32}$/.test(value);
-}
-
-function validatePassword(value) {
-  return typeof value === 'string' && value.length >= 8 && value.length <= 128;
 }
 
 function parseCookies(header = '') {
@@ -305,6 +330,10 @@ function validateCameraInput(body) {
       };
     }
     if (sourceUrl.length > 2048) return { error: '视频流地址过长' };
+    // 出网主机校验：拦截链路本地（含云元数据）与未指定地址。
+    // 这些地址对「视频流」没有正当用途，却是 SSRF 最有价值的探测目标。
+    const blockedHost = blockedCameraSourceHost(sourceUrl);
+    if (blockedHost) return { error: blockedHost };
   }
   const detectSensitivity = ['low', 'standard', 'high'].includes(body.detectSensitivity)
     ? body.detectSensitivity
@@ -388,35 +417,43 @@ function notifyChannelForClient(channel, siteName = null) {
  * 默认放行：环回（127/8、::1、localhost）与私网段（10/8、172.16/12、192.168/16、100.64/10）——
  *   内网部署的 Webhook 常在内网甚至本机（本地转发/自建接收端）。
  * 公网部署建议设 NOTIFY_BLOCK_PRIVATE=1：额外拦截环回、私网与 .local。
+ *
+ * 判定实现统一到 net-guard，避免各处各写一套正则而出现绕过差异。
  */
 function isBlockedNotifyHost(hostname) {
-  const host = String(hostname ?? '').toLowerCase().replace(/^\[|\]$/g, '');
-  if (!host) return '主机名不能为空';
   const strict = process.env.NOTIFY_BLOCK_PRIVATE === '1';
-  if (host === '0.0.0.0') return '不允许指向未指定地址';
-  if (host === 'localhost' || host === '::1') {
-    return strict ? '公网部署模式下不允许指向本机' : null;
+  return blockedOutboundHost(hostname, {
+    allowPrivate: !strict,
+    allowLoopback: !strict,
+    allowLinkLocal: false,
+  });
+}
+
+/**
+ * 相机视频源主机校验（SSRF 缓解）。
+ *
+ * 与通知渠道的差异：摄像头本身就部署在内网，甚至可能自组网使用
+ * 169.254.x.x 自分配地址，因此**默认放行私网、环回与链路本地**，
+ * 只恒定拦截云元数据地址（169.254.169.254 等）与未指定地址——
+ * 这两类地址对「视频流」没有任何正当用途，却是 SSRF 最有价值的探测目标。
+ * 公网部署可设 CAMERA_BLOCK_PRIVATE=1 额外收紧到与通知渠道一致。
+ *
+ * @param {string} sourceUrl 视频源地址（http/https/rtsp/rtsps）。
+ * @returns {string|null} 拒绝原因；null 表示放行。
+ */
+function blockedCameraSourceHost(sourceUrl) {
+  const strict = process.env.CAMERA_BLOCK_PRIVATE === '1';
+  let parsed;
+  try {
+    parsed = new URL(sourceUrl);
+  } catch {
+    return null; // 协议不合法的情况交由 validateCameraInput 报错。
   }
-  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4) {
-    const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
-    if (a === 169 && b === 254) return '不允许指向链路本地地址（含云元数据）';
-    if (a === 0) return '不允许指向未指定地址';
-    if (!strict) return null;
-    const privateOrLoopback =
-      a === 127 ||
-      a === 10 ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      (a === 100 && b >= 64 && b <= 127) ||
-      (a === 198 && (b === 18 || b === 19));
-    if (privateOrLoopback) return '公网部署模式下不允许指向私网或环回地址';
-    return null;
-  }
-  if (strict && host.endsWith('.local')) {
-    return '公网部署模式下不允许指向 .local';
-  }
-  return null;
+  return blockedOutboundHost(parsed.hostname, {
+    allowPrivate: !strict,
+    allowLoopback: !strict,
+    allowLinkLocal: true,
+  });
 }
 
 function parseNotifyChannelInput(body, { partial = false } = {}) {
@@ -514,6 +551,12 @@ function mapAudit(row) {
 }
 
 function clientIp(req) {
+  // TRUST_PROXY 开启时 req.ip 取自 X-Forwarded-For。攻击者可伪造超长链
+  // 让每一跳都是新 IP，绕过按 IP 的限流维度；超过 2 跳直接回退到 socket 地址。
+  const forwarded = req.headers?.['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.split(',').length > 2) {
+    return String(req.socket?.remoteAddress ?? '').slice(0, 128);
+  }
   return String(req.ip || req.socket?.remoteAddress || '').slice(0, 128);
 }
 
@@ -533,9 +576,13 @@ function parseSnapshot(dataUrl) {
 
 /** 抓取一帧 JPEG 作为 ROI 编辑底图，失败返回 false。 */
 function capturePreview(camera, target) {
+  // 先写临时文件再原子改名：失败时磁盘上不会留下「不完整的 jpg」，
+  // 否则后续请求会在 60 秒缓存期内把损坏的半成品当作预览图返回。
+  // 临时名保留原扩展名——FFmpeg 依据扩展名推断封装格式。
+  const temp = path.join(path.dirname(target), `.tmp-${path.basename(target)}`);
   const args = ['-v', 'error', '-nostdin', '-y'];
   if (camera.protocol === 'rtsp') args.push('-rtsp_transport', 'tcp');
-  args.push('-i', camera.sourceUrl, '-frames:v', '1', '-q:v', '4', '-an', target);
+  args.push('-i', camera.sourceUrl, '-frames:v', '1', '-q:v', '4', '-an', temp);
   return runFfmpegOnce({
     spawnImpl: spawn,
     ffmpegPath: process.env.FFMPEG_PATH || 'ffmpeg',
@@ -544,18 +591,71 @@ function capturePreview(camera, target) {
     stdio: ['ignore', 'ignore', 'ignore'],
     failureValue: false,
     onExit: (code) => {
-      let exists = false;
       try {
-        exists = fs.existsSync(target);
+        if (code !== 0 || !fs.existsSync(temp)) {
+          try {
+            fs.unlinkSync(temp);
+          } catch {
+            // ignore
+          }
+          return false;
+        }
+        fs.renameSync(temp, target);
+        return true;
       } catch {
-        exists = false;
+        try {
+          fs.unlinkSync(temp);
+        } catch {
+          // ignore
+        }
+        return false;
       }
-      return code === 0 && exists;
     },
   });
 }
 
 async function main() {
+  // 全进程共享的运行期配置：同一变量只解析一次，避免不同 manager 得到不同值
+  // （改造前 MAX_CONCURRENT_STREAMS 在 StreamManager 得到 NaN、在回放得到 8）。
+  const maxConcurrentStreams = envNumber('MAX_CONCURRENT_STREAMS', {
+    defaultValue: 8, min: 1, max: 64, onWarn: configWarn,
+  });
+  const detectionWidth = envNumber('DETECTION_WIDTH', {
+    defaultValue: 160, min: 32, max: 1920, onWarn: configWarn,
+  });
+  const detectionHeight = envNumber('DETECTION_HEIGHT', {
+    defaultValue: 90, min: 32, max: 1080, onWarn: configWarn,
+  });
+  const detectionFps = envNumber('DETECTION_FPS', {
+    defaultValue: 1, min: 1, max: 30, onWarn: configWarn,
+  });
+  // P0-2：进程级异常兜底。必须在任何异步任务启动之前安装，
+  // 否则一次未捕获的 rejection 就会让整个监控平台静默退出。
+  // shutdown 在下方定义，这里用引用占位，装配完成后回填。
+  let fatalHandler = null;
+  const processGuards = installProcessGuards({
+    log,
+    onCount: (state) => {
+      // 计数器同步到 /api/metrics：这两个计数不为 0 即表示有异常被吞掉过。
+      metrics.unhandledRejections = state.unhandledRejections;
+      metrics.uncaughtExceptions = state.uncaughtExceptions;
+    },
+    onFatal: (error) => {
+      log('error', 'fatal_shutdown', { message: error.message });
+      if (typeof fatalHandler !== 'function') {
+        // 装配早期发生 uncaughtException：优雅停机尚未就绪，进程状态已不可信。
+        // 此时绝不能既不停机也不退出（Node 默认退出被我们的 handler 覆盖）。
+        process.exit(1);
+      }
+      try {
+        void fatalHandler('uncaughtException');
+      } catch (shutdownError) {
+        log('error', 'fatal_shutdown_failed', { message: shutdownError.message });
+        process.exit(1);
+      }
+    },
+  });
+
   await fsp.mkdir(dataDir, { recursive: true, mode: DIR_MODE });
   await fsp.mkdir(snapshotDir, { recursive: true, mode: DIR_MODE });
   await fsp.mkdir(recordingsDir, { recursive: true, mode: DIR_MODE });
@@ -563,32 +663,54 @@ async function main() {
   await fsp.mkdir(previewDir, { recursive: true, mode: DIR_MODE });
 
   // 媒体磁盘水位：抓拍 + 短视频总量超过 MEDIA_MAX_BYTES 时自动清理（0 关闭）。
-  const mediaMaxBytes =
-    Number(process.env.MEDIA_MAX_BYTES) > 0
-      ? Number(process.env.MEDIA_MAX_BYTES)
-      : 2 * 1024 * 1024 * 1024;
+  // 修正：旧写法 `Number(env) > 0 ? ... : 2GB` 把 0 也回退成 2GB，
+  // 使 README 承诺的「0 关闭」与 enforceMediaWatermarkInner 的关闭分支成为死代码。
+  const mediaMaxBytes = envNumber('MEDIA_MAX_BYTES', {
+    defaultValue: 2 * 1024 * 1024 * 1024, min: 0, allowZero: true, onWarn: configWarn,
+  });
+  // 备份策略：份数上限 + 目录总量上限（双约束）。
+  // 仅按份数轮转时，备份目录会随库体积线性放大（14 份 × 库大小），
+  // 而它此前完全不计入任何磁盘统计 —— 运维在看板上看不到它，直到磁盘写满。
+  const backupDir = path.join(dataDir, 'backups');
+  const backupRetain = envNumber('BACKUP_RETAIN', {
+    defaultValue: 14, min: 1, max: 200, onWarn: configWarn,
+  });
+  const backupMaxBytes = envNumber('BACKUP_MAX_BYTES', {
+    defaultValue: 0, min: 0, allowZero: true, onWarn: configWarn,
+  });
+  const streamsDir = path.join(dataDir, 'streams');
   let mediaUsageCache = {
     at: 0,
     snapshots: { files: 0, bytes: 0 },
     recordings: { files: 0, bytes: 0 },
     continuous: { files: 0, bytes: 0, protectedFiles: 0 },
+    backups: { files: 0, bytes: 0 },
+    streams: { files: 0, bytes: 0 },
   };
   const scanMediaDir = async (dir) => {
     let files = 0;
     let bytes = 0;
     try {
-      const entries = await fsp.readdir(dir);
-      for (const name of entries) {
-        try {
-          const stat = await fsp.stat(path.join(dir, name));
-          if (stat.isFile()) {
-            files += 1;
-            bytes += stat.size;
-          }
-        } catch {
-          // 扫描间隙文件可能被删除
-        }
+      // PERF-3：withFileTypes 直接给出文件类型，省掉「先 readdir 再逐个 stat」
+      // 里对每个条目的一次 stat；随后并发 stat 取大小（串行 stat 在几千文件时
+      // 会明显拖慢整个事件循环）。
+      const entries = await fsp.readdir(dir, { withFileTypes: true });
+      const names = [];
+      for (const entry of entries) {
+        if (entry.isFile()) names.push(entry.name);
       }
+      files = names.length;
+      const sizes = await Promise.all(
+        names.map(async (name) => {
+          try {
+            return (await fsp.stat(path.join(dir, name))).size;
+          } catch {
+            // 扫描间隙文件可能被删除
+            return 0;
+          }
+        }),
+      );
+      for (const size of sizes) bytes += size;
     } catch {
       // 目录不存在视为空
     }
@@ -596,9 +718,10 @@ async function main() {
   };
   const computeMediaUsage = async (force = false) => {
     if (!force && Date.now() - mediaUsageCache.at < 5 * 60_000) return mediaUsageCache;
-    const [snapshots, recordings] = await Promise.all([
+    const [snapshots, recordings, backups] = await Promise.all([
       scanMediaDir(snapshotDir),
       scanMediaDir(recordingsDir),
+      scanMediaDir(backupDir),
     ]);
     // 录像段按点位/日期分目录，递归扫盘代价高且索引就是事实源，直接取索引用量。
     let continuous = { files: 0, bytes: 0, protectedFiles: 0 };
@@ -607,7 +730,16 @@ async function main() {
     } catch {
       // schema 尚未就绪时降级为 0，不影响 /api/system 其它字段。
     }
-    mediaUsageCache = { at: Date.now(), snapshots, recordings, continuous };
+    // HLS 分片目录按点位分子目录，递归扫代价高，这里只统计顶层目录条目，
+    // 用于让运维知道「分片占了多少空间」，不参与水位判定。
+    let streams = { files: 0, bytes: 0 };
+    try {
+      const entries = await fsp.readdir(streamsDir);
+      streams = { files: entries.length, bytes: 0 };
+    } catch {
+      // 目录不存在视为空
+    }
+    mediaUsageCache = { at: Date.now(), snapshots, recordings, continuous, backups, streams };
     return mediaUsageCache;
   };
   const releaseLock = await acquireInstanceLock();
@@ -632,6 +764,27 @@ async function main() {
   let recordingRetentionTimer;
   let captureManager;
   let playbackManager;
+  // 首次延迟触发的定时器：此前只 .unref() 不保存 handle，停机窗口内仍会触发，
+  // 且 startup 失败时无法清理。统一收集，在 shutdown / catch 两处清掉。
+  const startupTimers = [];
+  const scheduleStartup = (fn, delay) => {
+    const handle = setTimeout(fn, delay);
+    handle.unref?.();
+    startupTimers.push(handle);
+    return handle;
+  };
+  // async 定时任务的 in-flight 保护：磁盘卡慢时上一轮未结束、下一轮又进入，
+  // 会并发删除/写库。以任务名为键串行化，重复触发直接跳过本轮。
+  const runningTasks = new Set();
+  const withInFlight = (name, fn) => async () => {
+    if (runningTasks.has(name)) return;
+    runningTasks.add(name);
+    try {
+      await fn();
+    } finally {
+      runningTasks.delete(name);
+    }
+  };
 
   try {
     const dbExists = fs.existsSync(databaseFile);
@@ -678,7 +831,7 @@ async function main() {
 
     streamManager = new StreamManager({
       dataDir,
-      maxStreams: Number(process.env.MAX_CONCURRENT_STREAMS || 8),
+      maxStreams: maxConcurrentStreams,
       logger: {
         warn: (event, fields) => log('warn', event, fields),
         info: (event, fields) => log('info', event, fields),
@@ -710,13 +863,13 @@ async function main() {
     const sharedHub =
       recordingEnabled &&
       streamManager.ffmpegAvailable &&
-      process.env.RECORDING_SHARED_SOURCE === '1'
+      envBoolean('RECORDING_SHARED_SOURCE', false, { onWarn: configWarn })
         ? new SharedSourceHub({
             rootDir: continuousDir,
             segmentSeconds: recordingSegmentSeconds,
-            width: Number(process.env.DETECTION_WIDTH) || 160,
-            height: Number(process.env.DETECTION_HEIGHT) || 90,
-            fps: Number(process.env.DETECTION_FPS) || 1,
+            width: detectionWidth,
+            height: detectionHeight,
+            fps: detectionFps,
             logger: { warn: (event, fields) => log('warn', event, fields) },
           })
         : null;
@@ -775,7 +928,7 @@ async function main() {
       store,
       snapshotDir,
       recordingsDir,
-      enabled: process.env.SERVER_DETECTION !== '0',
+      enabled: envBoolean('SERVER_DETECTION', true, { onWarn: configWarn }),
       // 演示点位记录的是站内相对地址，服务端解码时补成回环绝对地址。
       resolveSourceUrl: (url) =>
         typeof url === 'string' && url.startsWith('/')
@@ -793,6 +946,18 @@ async function main() {
           targetType: 'alarm',
           targetId: alarm.id,
           detail: `${camera.code} 短视频已生成`,
+          ip: 'server-detector',
+        });
+        broadcastEvent('alarm.updated', { alarm }, alarm.siteId);
+      },
+      // RES-2：抓拍改为异步补齐，完成后广播一次告警更新，
+      // 让前端无需轮询就能看到抓拍图出现。
+      onSnapshot: (alarm, camera) => {
+        store.recordAudit({
+          action: 'alarm.snapshot',
+          targetType: 'alarm',
+          targetId: alarm.id,
+          detail: `${camera.code} 抓拍已生成`,
           ip: 'server-detector',
         });
         broadcastEvent('alarm.updated', { alarm }, alarm.siteId);
@@ -849,7 +1014,7 @@ async function main() {
     playbackManager = new PlaybackSessionManager({
       rootDir: continuousPlayDir,
       continuousDir,
-      maxSessions: Number(process.env.MAX_CONCURRENT_STREAMS || 8),
+      maxSessions: maxConcurrentStreams,
       logger: { warn: (event, fields) => log('warn', event, fields) },
     });
     captureManager.sync(store.listCameras());
@@ -858,7 +1023,9 @@ async function main() {
     detectionTimer = setInterval(syncDetection, 20_000);
     detectionTimer.unref?.();
     recordingRotateTimer = setInterval(() => {
-      void captureManager?.rotate();
+      // 补 .catch：rotate() 内部对共享源 rotate 的调用可能同步抛错，
+      // 裸 void 会形成 unhandledRejection 并触发进程守卫。
+      void captureManager?.rotate()?.catch(() => undefined);
       playbackManager?.cleanupIdle();
     }, 60_000);
     recordingRotateTimer.unref?.();
@@ -876,7 +1043,10 @@ async function main() {
     }
 
     // 离线巡检：worker 超过阈值没有新帧即生成离线告警；画面恢复后自动归档。
-    const offlineTimeoutMs = Number(process.env.OFFLINE_TIMEOUT_MS) || 60_000;
+    // 负数会让 `now - last > -1` 恒真，导致全点位离线告警风暴，必须设下界。
+    const offlineTimeoutMs = envNumber('OFFLINE_TIMEOUT_MS', {
+      defaultValue: 60_000, min: 1_000, max: 3_600_000, onWarn: configWarn,
+    });
     const offlineActor = { id: null, username: 'server-monitor' };
     const offlineCheck = () => {
       if (!detectionEngine?.active) return;
@@ -944,7 +1114,9 @@ async function main() {
       }
     };
     const offlineCheckEveryMs =
-      Number(process.env.OFFLINE_CHECK_INTERVAL_MS) || 15_000;
+      envNumber('OFFLINE_CHECK_INTERVAL_MS', {
+        defaultValue: 15_000, min: 100, max: 600_000, onWarn: configWarn,
+      });
     offlineTimer = setInterval(offlineCheck, offlineCheckEveryMs);
     offlineTimer.unref?.();
     setTimeout(offlineCheck, Math.min(8_000, offlineCheckEveryMs)).unref?.();
@@ -1018,9 +1190,16 @@ async function main() {
     };
 
     // 数据保留：清理超期的已关闭告警、抓拍/短视频、推送日志与审计日志。
-    const alarmRetentionDays = Number(process.env.ALARM_RETENTION_DAYS) || 180;
-    const notifyRetentionDays = Number(process.env.NOTIFY_RETENTION_DAYS) || 30;
-    const auditRetentionDays = Number(process.env.AUDIT_RETENTION_DAYS) || 180;
+    // 负数会把 cutoff 算到未来，删光全库告警/日志；必须设下界 1。
+    const alarmRetentionDays = envNumber('ALARM_RETENTION_DAYS', {
+      defaultValue: 180, min: 1, max: 3650, onWarn: configWarn,
+    });
+    const notifyRetentionDays = envNumber('NOTIFY_RETENTION_DAYS', {
+      defaultValue: 30, min: 1, max: 3650, onWarn: configWarn,
+    });
+    const auditRetentionDays = envNumber('AUDIT_RETENTION_DAYS', {
+      defaultValue: 180, min: 1, max: 3650, onWarn: configWarn,
+    });
     const retentionRun = async () => {
       try {
         const result = store.pruneAlarms({ retainDays: alarmRetentionDays });
@@ -1032,6 +1211,10 @@ async function main() {
         }
         const logs = store.pruneNotificationLogs(notifyRetentionDays);
         const auditLogs = store.pruneAuditLogsByAge(auditRetentionDays);
+        // PERF-2：刷新查询统计信息。数据量变化后 sqlite_stat1 会失真，
+        // 规划器可能退回全表扫描 + 临时排序（媒体水位清理实测慢 40 倍）。
+        // ANALYZE 只读全表统计，20 万行量级约 100 毫秒，放在每日保留任务里足够。
+        const analyzed = store.analyze();
         if (result.deleted || logs || auditLogs) {
           log('info', 'retention_applied', {
             alarms: result.deleted,
@@ -1045,42 +1228,74 @@ async function main() {
             auditRetentionDays,
           });
         }
+        if (!analyzed) {
+          log('warn', 'analyze_failed', { message: '查询统计信息刷新失败' });
+        }
       } catch (error) {
         log('warn', 'retention_failed', { error: error.message });
       }
     };
-    retentionTimer = setInterval(() => void retentionRun(), 24 * 60 * 60 * 1000);
+    const guardedRetention = withInFlight('retention', retentionRun);
+    retentionTimer = setInterval(() => void guardedRetention(), 24 * 60 * 60 * 1000);
     retentionTimer.unref?.();
-    setTimeout(() => void retentionRun(), 90_000).unref?.();
+    scheduleStartup(() => void guardedRetention(), 90_000);
 
     // 磁盘水位：抓拍 + 短视频超过上限时，从最老的已关闭告警开始清媒体（保留记录）。
-    const enforceMediaWatermark = async () => {
+    const enforceMediaWatermarkInner = async () => {
       if (!(mediaMaxBytes > 0)) return;
       const usage = await computeMediaUsage(true);
+      // 磁盘总占用（含备份与持续录像）超阈值时告警：备份目录此前完全不在
+      // 视野内，写满磁盘会让 SQLite 写入失败 —— 那意味着火情告警记不下来。
+      const dataBytes =
+        usage.snapshots.bytes +
+        usage.recordings.bytes +
+        (usage.continuous?.bytes ?? 0) +
+        (usage.backups?.bytes ?? 0);
+      if (dataBytes > mediaMaxBytes) {
+        log('warn', 'disk_pressure', {
+          dataBytes,
+          mediaMaxBytes,
+          backups: usage.backups?.bytes ?? 0,
+          continuous: usage.continuous?.bytes ?? 0,
+        });
+      }
       let over = usage.snapshots.bytes + usage.recordings.bytes - mediaMaxBytes;
       if (over <= 0) return;
       let prunedFiles = 0;
       let prunedAlarms = 0;
+      // PERF-3：原实现在循环里每轮都 await computeMediaUsage(true)，
+      // 而 computeMediaUsage 会对三个媒体目录做一次 readdir + 逐个 stat 的全量扫描。
+      // 20 轮循环 = 60 次全盘遍历，正是「单次 1.2 秒 × 20 轮 = 24 秒冻结」的成因。
+      // 改为：删除量按 stat 到的真实字节本地累加，循环结束后统一重算一次用量。
+      const MEDIA_BATCH = 1000;
       for (let round = 0; round < 20 && over > 0; round += 1) {
-        const cleared = store.clearOldestAlarmMedia(100);
+        const cleared = store.clearOldestAlarmMedia(MEDIA_BATCH);
         if (cleared.files.length === 0) break;
-        for (const file of cleared.files) {
-          const target = path.join(
-            String(file).toLowerCase().endsWith('.mp4') ? recordingsDir : snapshotDir,
-            path.basename(file),
-          );
-          try {
-            const stat = await fsp.stat(target).catch(() => null);
-            await fsp.rm(target, { force: true });
-            if (stat) over -= stat.size;
-            prunedFiles += 1;
-          } catch {
-            // ignore
-          }
+        // 并发删除：原来 2000 次 stat+rm 完全串行，等待时间叠加明显。
+        const removed = await Promise.all(
+          cleared.files.map(async (file) => {
+            const target = path.join(
+              String(file).toLowerCase().endsWith('.mp4') ? recordingsDir : snapshotDir,
+              path.basename(file),
+            );
+            try {
+              const stat = await fsp.stat(target).catch(() => null);
+              await fsp.rm(target, { force: true });
+              return { ok: true, size: stat?.size ?? 0 };
+            } catch {
+              return { ok: false, size: 0 };
+            }
+          }),
+        );
+        for (const item of removed) {
+          if (!item.ok) continue;
+          over -= item.size;
+          prunedFiles += 1;
         }
         prunedAlarms += cleared.alarms;
-        await computeMediaUsage(true);
       }
+      // 收尾重算一次：既刷新缓存，也让看板上的用量回到真实值。
+      await computeMediaUsage(true);
       if (prunedFiles > 0) {
         log('warn', 'media_watermark_pruned', {
           prunedFiles,
@@ -1089,14 +1304,48 @@ async function main() {
         });
       }
     };
-    mediaTimer = setInterval(() => void enforceMediaWatermark(), 10 * 60_000);
+    const enforceMediaWatermark = async () => {
+      try {
+        await enforceMediaWatermarkInner();
+      } catch (error) {
+        // P0-2：清理失败不能拖垮整个进程（未捕获 rejection 会终止 Node 进程），
+        // 下一轮定时任务会重试；这里只记录明确日志。
+        log('warn', 'media_watermark_failed', { message: error.message });
+      }
+    };
+    const guardedWatermark = withInFlight('media-watermark', enforceMediaWatermark);
+    mediaTimer = setInterval(
+      () => void guardedWatermark(),
+      10 * 60_000,
+    );
     mediaTimer.unref?.();
-    setTimeout(() => void enforceMediaWatermark(), 30_000).unref?.();
+    scheduleStartup(() => void guardedWatermark(), 30_000);
+
+    // 磁盘余量预警：写满后再报错已经影响用户，这里在剩余 <1GB 时提前写 warn，
+    // 让运维在日志里就能发现（/healthz 的 diskOk 阈值是 50MB，只用于守卫）。
+    const diskWarnTimer = setInterval(() => {
+      void (async () => {
+        try {
+          const stats = await fsp.statfs(dataDir);
+          const free = Number(stats.bfree) * Number(stats.bsize);
+          if (free < 1024 * 1024 * 1024) {
+            log('warn', 'disk_low', { freeBytes: free });
+          }
+        } catch {
+          // statfs 不可用（部分文件系统）时静默跳过。
+        }
+      })();
+    }, 15 * 60_000);
+    diskWarnTimer.unref?.();
 
     // 告警升级：超过 N 分钟仍未确认的告警再推一次，避免值班员漏看后沉底。
-    const escalationMinutes = Number(process.env.ESCALATION_MINUTES ?? 5);
+    const escalationMinutes = envNumber('ESCALATION_MINUTES', {
+      defaultValue: 5, min: 0.001, max: 1440, allowZero: true, onWarn: configWarn,
+    });
     const escalationIntervalMs =
-      Number(process.env.ESCALATION_CHECK_INTERVAL_MS) || 60_000;
+      envNumber('ESCALATION_CHECK_INTERVAL_MS', {
+        defaultValue: 60_000, min: 100, max: 3_600_000, onWarn: configWarn,
+      });
     const escalationInFlight = new Set();
     const escalationCheck = () => {
       if (!Number.isFinite(escalationMinutes) || escalationMinutes <= 0) return;
@@ -1116,48 +1365,62 @@ async function main() {
           continue;
         }
         escalationInFlight.add(alarm.id);
-        const camera = store.getCamera(alarm.cameraId);
-        void notifier
-          ?.notifyAlarm(alarm, 'escalated', { camera, minutes: escalationMinutes })
-          .then((result) => {
-            if (!result || (result.sent === 0 && result.failed === 0)) return;
-            store.addAlarmEvent(
-              alarm.id,
-              { id: null, username: 'server-monitor' },
-              'escalated',
-              `超过 ${escalationMinutes} 分钟未确认，已升级通知`,
-            );
-            log('warn', 'alarm_escalated', {
-              alarmId: alarm.id,
-              cameraId: alarm.cameraId,
-              sent: result.sent,
-              failed: result.failed,
-            });
-          })
-          .catch(() => undefined)
-          .finally(() => escalationInFlight.delete(alarm.id));
+        // 单条告警的异常不能中断整轮扫描：否则剩余待升级告警永远不会被处理，
+        // 且已加入 in-flight 的 ID 不会被清理，导致这些告警今后永远不再升级。
+        try {
+          const camera = store.getCamera(alarm.cameraId);
+          void notifier
+            ?.notifyAlarm(alarm, 'escalated', { camera, minutes: escalationMinutes })
+            .then((result) => {
+              if (!result) return;
+              // 事件记录的是「投递成功」而非「尝试过」：失败时写 escalated 会让
+              // 下轮 hasAlarmEvent 判重而跳过重试，导致值班员实际未收到却显示已升级。
+              // 无渠道（sent=0 且 failed=0）同样不写，留给后续渠道配置后重试。
+              if (result.sent > 0) {
+                store.addAlarmEvent(
+                  alarm.id,
+                  { id: null, username: 'server-monitor' },
+                  'escalated',
+                  `超过 ${escalationMinutes} 分钟未确认，已升级通知`,
+                );
+              }
+              log('warn', 'alarm_escalated', {
+                alarmId: alarm.id,
+                cameraId: alarm.cameraId,
+                sent: result.sent,
+                failed: result.failed,
+              });
+            })
+            .catch(() => undefined)
+            .finally(() => escalationInFlight.delete(alarm.id));
+        } catch (error) {
+          escalationInFlight.delete(alarm.id);
+          log('warn', 'escalation_item_failed', {
+            alarmId: alarm.id,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
     };
     escalationTimer = setInterval(escalationCheck, escalationIntervalMs);
     escalationTimer.unref?.();
-    setTimeout(escalationCheck, Math.min(15_000, escalationIntervalMs)).unref?.();
+    scheduleStartup(escalationCheck, Math.min(15_000, escalationIntervalMs));
 
     // 每日值守摘要：固定时间把昨日告警统计推送到通知渠道（DAILY_SUMMARY_AT 为空时关闭）。
-    const summaryAt = normalizeText(process.env.DAILY_SUMMARY_AT ?? '08:00', 5);
-    const summaryForce = process.env.DAILY_SUMMARY_FORCE === '1';
+    // 旧写法只截断 5 字符：'25:99' 会让摘要永不触发，'08:00:30' 被静默截成 '08:00'。
+    // 显式空串保留「关闭」语义，不能回退成默认时刻。
+    const summaryRaw = process.env.DAILY_SUMMARY_AT;
+    const summaryDisabled = summaryRaw !== undefined && String(summaryRaw).trim() === '';
+    const summaryClock = normalizeClock(
+      summaryRaw ?? '08:00', '08:00', { onWarn: configWarn },
+    );
+    const summaryAt = summaryDisabled ? '' : summaryClock.value;
+    const summaryForce = envBoolean('DAILY_SUMMARY_FORCE', false, { onWarn: configWarn });
     const pad2 = (value) => String(value).padStart(2, '0');
-    const shanghaiParts = (ts) => {
-      const shifted = new Date(ts + 8 * 3600 * 1000);
-      return {
-        y: shifted.getUTCFullYear(),
-        m: shifted.getUTCMonth() + 1,
-        d: shifted.getUTCDate(),
-        hh: shifted.getUTCHours(),
-        mm: shifted.getUTCMinutes(),
-      };
-    };
+    // 上海时区口径统一走 time.mjs（与告警日聚合、布防判定、通知文案同源）。
+    const shanghaiParts = (ts) => toShanghaiParts(ts);
     const shanghaiDayStart = (parts) =>
-      Date.UTC(parts.y, parts.m - 1, parts.d) - 8 * 3600 * 1000;
+      Date.UTC(parts.y, parts.m - 1, parts.d) - SHANGHAI_OFFSET_MS;
     const summaryLevelNames = {
       fire: '火焰',
       smoke: '烟雾',
@@ -1172,7 +1435,13 @@ async function main() {
       if (!summaryForce) {
         const [hh, mm] = summaryAt.split(':').map((value) => Number(value));
         if (!Number.isFinite(hh) || !Number.isFinite(mm)) return;
-        if (nowParts.hh !== hh || nowParts.mm !== mm) return;
+        // 宽窗口触发：目标时刻之后 120 分钟内只要「今天还没发过」就补发。
+        // 原实现要求「小时与分钟完全相等」，进程若在目标分钟内重启或被
+        // 同步 DB 操作阻塞超过 60 秒，当天摘要就永远不会再发出。
+        const targetMinutes = hh * 60 + mm;
+        const currentMinutes = nowParts.hh * 60 + nowParts.mm;
+        const delta = currentMinutes - targetMinutes;
+        if (delta < 0 || delta > 120) return;
       }
       const windowEnd = Date.now();
       const windowStart = windowEnd - 24 * 3600 * 1000;
@@ -1225,8 +1494,14 @@ async function main() {
           channels,
         )
         .then((result) => {
-          store.setMeta('daily_summary_last', runKey);
-          log('info', 'daily_summary_sent', { date: dateKey, ...result });
+          // 无可用渠道时 notifyBroadcast 返回 { sent: 0 }：不能记为「已送达」，
+          // 否则 meta 被写入后当天不再补发，看板却显示 0 投递。
+          if (result?.sent > 0) {
+            store.setMeta('daily_summary_last', runKey);
+            log('info', 'daily_summary_sent', { date: dateKey, ...result });
+          } else {
+            log('warn', 'daily_summary_no_delivery', { date: dateKey, ...result });
+          }
         })
         .catch((error) => {
           log('warn', 'daily_summary_failed', { error: error.message });
@@ -1340,6 +1615,8 @@ async function main() {
       clearSessionCookie,
       checkLoginBlocked,
       recordLoginFailure,
+      clearLoginFailures,
+      readSessionToken,
     } = createSession({
       store,
       sessionSecret,
@@ -1352,6 +1629,7 @@ async function main() {
     const {
       requireAuth,
       requireRole,
+      requireCapability,
       requireManager,
       adminSiteIdsFor,
       canManageSite,
@@ -1389,6 +1667,7 @@ async function main() {
       clearSessionCookie,
       checkLoginBlocked,
       recordLoginFailure,
+      clearLoginFailures,
       store,
       publicUser,
       normalizeText,
@@ -1400,9 +1679,14 @@ async function main() {
       defaultCameras,
       setupGuard,
       requireAuth,
+      requireCapability,
       allowedSiteIdsFor,
       sseClients,
       detectionEngine,
+      // 供登出时按 sid 精确撤销当前会话（而非账号级全端下线）。
+      sessionCookie,
+      parseCookies,
+      readSessionToken,
     });
     registerDemoRoutes(app, {
       store,
@@ -1437,8 +1721,9 @@ async function main() {
       normalizeText,
       clientIp,
       log,
+      adminSiteIdsFor,
       requireAuth,
-      requireRole,
+      requireCapability,
     });
     registerMediaRoutes(app, {
       store,
@@ -1466,7 +1751,7 @@ async function main() {
       validateCameraInput,
       capturePreview,
       requireAuth,
-      requireManager,
+      requireCapability,
       canManageCamera,
       canManageSite,
       allowedSiteIdsFor,
@@ -1488,7 +1773,7 @@ async function main() {
       recordingsDir,
       allowedSiteIdsFor,
       requireAuth,
-      requireRole,
+      requireCapability,
       normalizeText,
       clientIp,
     });
@@ -1499,7 +1784,7 @@ async function main() {
       metrics,
       startedAt,
       requireAuth,
-      requireRole,
+      requireCapability,
       normalizeText,
       mapAudit,
       clientIp,
@@ -1510,8 +1795,7 @@ async function main() {
       store,
       allowedSiteIdsFor,
       requireAuth,
-      requireRole,
-      requireManager,
+      requireCapability,
       canManageSite,
       normalizeText,
       clientIp,
@@ -1524,6 +1808,7 @@ async function main() {
       validatePassword,
       requireAuth,
       requireRole,
+      requireCapability,
       normalizeText,
       clientIp,
     });
@@ -1531,7 +1816,7 @@ async function main() {
       store,
       notifier,
       requireAuth,
-      requireManager,
+      requireCapability,
       adminSiteIdsFor,
       canManageSite,
       normalizeText,
@@ -1545,7 +1830,7 @@ async function main() {
       recordingEnabled,
       canAccessCameraSite,
       requireAuth,
-      requireRole,
+      requireCapability,
       normalizeText,
       playbackManager,
       captureManager,
@@ -1604,6 +1889,19 @@ async function main() {
       if (error?.type === 'entity.too.large') {
         return res.status(413).json({ error: '请求体过大' });
       }
+      // 磁盘写满：SQLite 抛 SQLITE_FULL，文件写入抛 ENOSPC/EDQUOT。
+      // 旧实现把它归到 500「服务器内部错误」，运维只能看到"页面报错"，
+      // 无法判断是磁盘问题。这里单独识别并返回 507 + 可操作提示。
+      const diskFullText = `${error?.code ?? ''} ${error?.message ?? ''}`;
+      if (/SQLITE_FULL|database or disk is full|ENOSPC|EDQUOT|no space left/i.test(diskFullText)) {
+        log('error', 'disk_full', {
+          path: req.path,
+          method: req.method,
+          message: String(error?.message ?? error).slice(0, 300),
+        });
+        if (res.headersSent) return next(error);
+        return res.status(507).json({ error: '服务器磁盘空间不足，请清理磁盘后重试' });
+      }
       log('error', 'unhandled_error', {
         path: req.path,
         method: req.method,
@@ -1621,14 +1919,22 @@ async function main() {
       try {
         const pruned = store.pruneAuditLogs();
         if (pruned > 0) log('info', 'audit_logs_pruned', { count: pruned });
-        const file = await store.backup();
+        const file = await store.backup(undefined, backupRetain, backupMaxBytes);
         log('info', 'database_backup', { file: path.basename(file) });
       } catch (error) {
         log('error', 'database_backup_failed', { message: error.message });
+        // 记录失败状态：备份是唯一的灾难恢复手段，它失败必须能被监控看到。
+        try {
+          store.setMeta('last_backup_status', `failed: ${error.message}`.slice(0, 200));
+          store.setMeta('last_backup_at', String(Date.now()));
+        } catch {
+          // 元数据写入失败不掩盖原始错误
+        }
       }
     };
-    setTimeout(() => void backupTimerRun(), 15_000).unref();
-    backupTimer = setInterval(() => void backupTimerRun(), 24 * 60 * 60 * 1000);
+    const guardedBackup = withInFlight('backup', backupTimerRun);
+    scheduleStartup(() => void guardedBackup(), 15_000);
+    backupTimer = setInterval(() => void guardedBackup(), 24 * 60 * 60 * 1000);
     backupTimer.unref();
 
     // 持续录像索引每 5 分钟对账一次：文件系统是事实源，崩溃后自动补录缺失段。
@@ -1644,7 +1950,7 @@ async function main() {
         log('error', 'recording_index_reconcile_failed', { message: error.message });
       }
     };
-    setTimeout(() => void recordingReconcileRun(), 20_000).unref();
+    scheduleStartup(() => void recordingReconcileRun(), 20_000);
     recordingTimer = setInterval(() => void recordingReconcileRun(), 5 * 60 * 1000);
     recordingTimer.unref();
 
@@ -1662,8 +1968,13 @@ async function main() {
         });
         const usage = store.recordingUsage();
         // 仍超配额时再淘汰一批最旧段，限制单轮 IO，剩余留给下一轮。
+        // 这里允许淘汰受保护的段：保护期（默认 30 天）长于保留期（默认 14 天），
+        // 若始终跳过保护段，recordingMaxBytes 这道磁盘保险对「有过告警的摄像头」
+        // 完全失效——而那正是段最多、占用最大的点位。
         if (recordingMaxBytes > 0 && usage.bytes > recordingMaxBytes) {
-          files.push(...store.pruneRecordingSegments({ before: at, limit: 100 }));
+          files.push(
+            ...store.pruneRecordingSegments({ before: at, limit: 100, includeProtected: true }),
+          );
         }
         let removed = 0;
         for (const file of new Set(files)) {
@@ -1716,9 +2027,10 @@ async function main() {
         log('warn', 'recording_retention_failed', { error: error.message });
       }
     };
-    recordingRetentionTimer = setInterval(() => void recordingRetentionRun(), 60 * 60 * 1000);
+    const guardedRecordingRetention = withInFlight('recording-retention', recordingRetentionRun);
+    recordingRetentionTimer = setInterval(() => void guardedRecordingRetention(), 60 * 60 * 1000);
     recordingRetentionTimer.unref?.();
-    setTimeout(() => void recordingRetentionRun(), 120_000).unref?.();
+    scheduleStartup(() => void guardedRecordingRetention(), 120_000);
 
     const server = app.listen(port, '0.0.0.0', () => {
       log('info', 'server_started', {
@@ -1752,12 +2064,17 @@ async function main() {
       if (escalationTimer) clearInterval(escalationTimer);
       if (summaryTimer) clearInterval(summaryTimer);
       if (mediaTimer) clearInterval(mediaTimer);
+      for (const handle of startupTimers) clearTimeout(handle);
+      startupTimers.length = 0;
       demoSource?.stop();
       detectionEngine?.stopAll();
       captureManager?.stopAll();
-      void playbackManager?.stopAll();
+      void playbackManager?.stopAll().catch(() => undefined);
       for (const client of sseClients) {
         try {
+          // 告别事件：让前端知道「服务正在重启」而不是「网络断了」，
+          // 否则客户端会在重启瞬间集体立即重连，形成重连风暴。
+          client.res.write('event: server.shutdown\ndata: {"reason":"restart"}\n\n');
           client.res.end();
         } catch {
           // ignore
@@ -1766,7 +2083,10 @@ async function main() {
       sseClients.clear();
       streamManager.stopAll();
       edgeHub.close();
-      server.closeAllConnections?.();
+      // 顺序要紧：先 server.close()（停止接受新连接并标记已有连接待关闭），
+      // 再 closeAllConnections()（强制销毁残留的 SSE / WebSocket 长连接）。
+      // 反过来调用时，SSE 长连接会让 close 回调迟迟不触发，
+      // 结果是 store.close() 永不执行、数据库连接与 WAL 得不到收尾。
       server.close(async () => {
         try {
           store.close();
@@ -1775,20 +2095,41 @@ async function main() {
           process.exit(0);
         }
       });
+      server.closeAllConnections?.();
       setTimeout(() => {
         // 活跃 SSE/WebSocket 可能让 server.close 迟迟不回调；强制退出前仍要释放锁与连接。
+        log('warn', 'server_shutdown_forced', { timeoutMs: 8_000 });
         try {
           store?.close();
         } catch {
           // 已关闭则忽略
         }
-        void releaseLock().finally(() => process.exit(1));
+        // 这是**主动停机**路径：数据已收尾、锁已释放，退出码应为 0，
+        // 否则编排系统会把它当成异常退出并触发无意义的重启。
+        void releaseLock().finally(() => process.exit(0));
       }, 8_000).unref();
     };
+    // 回填致命异常回调：uncaughtException 时走同一条优雅停机路径。
+    fatalHandler = shutdown;
     process.on('SIGINT', () => void shutdown('SIGINT'));
     process.on('SIGTERM', () => void shutdown('SIGTERM'));
   } catch (error) {
-    log('error', 'startup_failed', { message: error.message });
+    // 启动失败时给出可操作的恢复指引：watchdog 会把 stderr 落到
+    // data/server.err.log，连续失败后停止重试，运维需要明确知道下一步做什么。
+    const corrupt = /not a database|malformed|corrupt|SQLITE_CORRUPT|SQLITE_NOTADB/i.test(
+      String(error?.message ?? ''),
+    );
+    log('error', 'startup_failed', {
+      message: error.message,
+      ...(corrupt
+        ? {
+            hint:
+              '数据库文件损坏：已保留 *.corrupt-* 备份。请确认无其它实例占用后，' +
+              '用 data/backups/ 内最近一份备份替换 data/app.db（需同时移走 app.db-wal 与 app.db-shm），' +
+              '或联系管理员评估数据恢复；修复后删除 data/startup-failed.marker 并重启守护。',
+          }
+        : {}),
+    });
     try {
       if (backupTimer) clearInterval(backupTimer);
       if (recordingTimer) clearInterval(recordingTimer);
@@ -1800,9 +2141,11 @@ async function main() {
       if (escalationTimer) clearInterval(escalationTimer);
       if (summaryTimer) clearInterval(summaryTimer);
       if (mediaTimer) clearInterval(mediaTimer);
+      for (const handle of startupTimers) clearTimeout(handle);
+      startupTimers.length = 0;
       detectionEngine?.stopAll();
       captureManager?.stopAll();
-      void playbackManager?.stopAll();
+      void playbackManager?.stopAll().catch(() => undefined);
       streamManager?.stopAll();
     } catch {
       // ignore

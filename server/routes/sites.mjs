@@ -1,5 +1,6 @@
 import { apiNotFound } from '../http/not-found.mjs';
 import crypto from 'node:crypto';
+import { CAPABILITIES, resolveCapabilityGuard } from '../auth/roles.mjs';
 
 /**
  * 站点（Site）接口：列表、创建、更名、删除。
@@ -15,15 +16,19 @@ import crypto from 'node:crypto';
  */
 export function registerSiteRoutes(app, deps) {
   const {
+    requireManager,
+    requireRole,
     store,
     allowedSiteIdsFor,
     requireAuth,
-    requireRole,
-    requireManager,
+    requireCapability,
     canManageSite,
     normalizeText,
     clientIp,
   } = deps;
+  // 能力守卫降级：旧调用方（既有测试/集成方）可能只提供 requireRole，
+  // 此时按能力反查角色兜底，保证零改动兼容；两者都缺失则一律拒绝。
+  const capabilityGuard = resolveCapabilityGuard(requireCapability, requireRole, requireManager);
 
   app.get('/api/sites', requireAuth, (req, res) => {
     const allSites = store.listSites();
@@ -37,18 +42,27 @@ export function registerSiteRoutes(app, deps) {
     res.json({ sites, defaultSiteId: store.defaultSiteId, mySiteIds: mine });
   });
 
-  app.post('/api/sites', requireAuth, requireRole('admin'), (req, res) => {
+  app.post('/api/sites', requireAuth, capabilityGuard(CAPABILITIES.GLOBAL_ADMIN), (req, res) => {
     const name = normalizeText(String(req.body.name ?? ''), 48);
     if (!name) return res.status(400).json({ error: '站点名称不能为空' });
     const code = normalizeText(String(req.body.code ?? name), 24) || name;
     const existing = store.listSites().find((site) => site.code === code);
     if (existing) return res.status(409).json({ error: '站点编码已存在' });
-    const site = store.createSite({
-      id: crypto.randomUUID(),
-      name,
-      code,
-      createdAt: Date.now(),
-    });
+    let site;
+    try {
+      site = store.createSite({
+        id: crypto.randomUUID(),
+        name,
+        code,
+        createdAt: Date.now(),
+      });
+    } catch (error) {
+      // 并发同编码建站：唯一索引兜底，避免把业务冲突报成 500。
+      if (String(error?.message).includes('UNIQUE constraint failed')) {
+        return res.status(409).json({ error: '站点编码已存在' });
+      }
+      throw error;
+    }
     store.recordAudit({
       user: req.user,
       action: 'site.create',
@@ -60,7 +74,7 @@ export function registerSiteRoutes(app, deps) {
     res.status(201).json({ site });
   });
 
-  app.patch('/api/sites/:id', requireAuth, requireManager, (req, res) => {
+  app.patch('/api/sites/:id', requireAuth, capabilityGuard(CAPABILITIES.SITE_MANAGE), (req, res) => {
     const site = store.getSite(req.params.id);
     if (!site) return apiNotFound(res, '站点不存在');
     if (!canManageSite(req.user, site.id)) {
@@ -80,7 +94,7 @@ export function registerSiteRoutes(app, deps) {
     res.json({ site: updated });
   });
 
-  app.delete('/api/sites/:id', requireAuth, requireRole('admin'), (req, res) => {
+  app.delete('/api/sites/:id', requireAuth, capabilityGuard(CAPABILITIES.GLOBAL_ADMIN), (req, res) => {
     try {
       const ok = store.deleteSite(req.params.id);
       if (!ok) return apiNotFound(res, '站点不存在');

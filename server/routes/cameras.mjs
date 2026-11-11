@@ -1,4 +1,5 @@
 import { apiNotFound } from '../http/not-found.mjs';
+import { CAPABILITIES, resolveCapabilityGuard } from '../auth/roles.mjs';
 import crypto from 'node:crypto';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -7,6 +8,7 @@ import { VENDORS_BY_ID, buildVendorUrl } from '../vendors.mjs';
 import { ffprobeAvailable, probeStream } from '../probe.mjs';
 import { discoverDevices } from '../onvif.mjs';
 import { discoverOnvifDevices } from '../onvif-discovery.mjs';
+import { blockedOutboundHost } from '../net-guard.mjs';
 
 /**
  * 点位（摄像头）与设备发现相关接口：点位增删改查、批量操作、测流/预览、
@@ -23,6 +25,8 @@ import { discoverOnvifDevices } from '../onvif-discovery.mjs';
  */
 export function registerCameraRoutes(app, deps) {
   const {
+    requireManager,
+    requireRole,
     store,
     streamManager,
     edgeHub,
@@ -35,7 +39,7 @@ export function registerCameraRoutes(app, deps) {
     validateCameraInput,
     capturePreview,
     requireAuth,
-    requireManager,
+    requireCapability,
     canManageCamera,
     canManageSite,
     allowedSiteIdsFor,
@@ -44,6 +48,9 @@ export function registerCameraRoutes(app, deps) {
     clientIp,
     cameraForClient,
   } = deps;
+  // 能力守卫降级：旧调用方（既有测试/集成方）可能只提供 requireRole，
+  // 此时按能力反查角色兜底，保证零改动兼容；两者都缺失则一律拒绝。
+  const capabilityGuard = resolveCapabilityGuard(requireCapability, requireRole, requireManager);
 
   // 点位站点 ID 与批量 ids 的公共解析：保持原有短路求值与兜底语义。
   const siteIdInput = (req) => normalizeText(String(req.body.siteId ?? ''), 64);
@@ -114,7 +121,7 @@ export function registerCameraRoutes(app, deps) {
   app.post(
     '/api/cameras/:id/test',
     requireAuth,
-    requireManager,
+    capabilityGuard(CAPABILITIES.CAMERA_MANAGE),
     async (req, res) => {
       const camera = store.getCamera(req.params.id);
       if (!camera) return apiNotFound(res, '点位不存在');
@@ -175,7 +182,7 @@ export function registerCameraRoutes(app, deps) {
   app.get(
     '/api/cameras/:id/preview',
     requireAuth,
-    requireManager,
+    capabilityGuard(CAPABILITIES.CAMERA_MANAGE),
     async (req, res) => {
       const camera = store.getCamera(req.params.id);
       if (!camera || !camera.sourceUrl || camera.protocol === 'none') {
@@ -213,12 +220,17 @@ export function registerCameraRoutes(app, deps) {
           res.status(404).end();
         });
       } catch (error) {
-        res.status(500).json({ error: error.message });
+        // 不回显内部错误原文（可能含绝对路径、ffmpeg 命令行等内部细节）。
+        log('warn', 'camera_preview_failed', {
+          cameraId: camera.id,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        res.status(500).json({ error: '抓取预览失败，请检查视频源与服务器环境' });
       }
     },
   );
 
-  app.post('/api/cameras', requireAuth, requireManager, (req, res) => {
+  app.post('/api/cameras', requireAuth, capabilityGuard(CAPABILITIES.CAMERA_MANAGE), (req, res) => {
     const parsed = validateCameraInput(req.body);
     if (parsed.error) return res.status(400).json({ error: parsed.error });
     const siteId =
@@ -262,7 +274,7 @@ export function registerCameraRoutes(app, deps) {
     }
   });
 
-  app.patch('/api/cameras/:id', requireAuth, requireManager, (req, res) => {
+  app.patch('/api/cameras/:id', requireAuth, capabilityGuard(CAPABILITIES.CAMERA_MANAGE), (req, res) => {
     const camera = store.getCamera(req.params.id);
     if (!camera) return apiNotFound(res, '点位不存在');
     if (!canManageCamera(req.user, camera)) {
@@ -332,14 +344,28 @@ export function registerCameraRoutes(app, deps) {
     }
   });
 
-  app.delete('/api/cameras/:id', requireAuth, requireManager, async (req, res) => {
+  app.delete('/api/cameras/:id', requireAuth, capabilityGuard(CAPABILITIES.CAMERA_MANAGE), async (req, res) => {
     const camera = store.getCamera(req.params.id);
     if (!camera) return apiNotFound(res, '点位不存在');
     if (!canManageCamera(req.user, camera)) {
       return res.status(403).json({ error: '无权管理该站点的点位' });
     }
+    // 有未处置告警时拒绝直接删除：会让告警变成无法复核的孤儿记录。
+    // 与删除站点（有摄像头则拒绝）保持同一防护思路。
+    const openAlarms = store.countOpenAlarmsByCamera?.(camera.id) ?? 0;
+    if (openAlarms > 0) {
+      return res.status(409).json({
+        error: `该点位还有 ${openAlarms} 条未处置告警，请先确认或标记误报后再删除`,
+      });
+    }
     streamManager.stop(camera.id);
     detectionEngine?.stop(camera.id);
+    // 清索引必须早于删目录：反过来的话对账会把「文件已消失」误判为孤儿清理，
+    // 丢掉本应由这里精确控制的删除记录。
+    const removedSegments = store.deleteRecordingSegmentsByCamera?.(camera.id) ?? {
+      files: [],
+      deleted: 0,
+    };
     store.deleteCamera(camera.id);
     syncDetection();
     store.recordAudit({
@@ -347,18 +373,24 @@ export function registerCameraRoutes(app, deps) {
       action: 'camera.delete',
       targetType: 'camera',
       targetId: camera.id,
-      detail: `${camera.code} ${camera.name}`,
+      detail: `${camera.code} ${camera.name}${removedSegments.deleted ? `（清理录像索引 ${removedSegments.deleted} 段）` : ''}`,
       ip: clientIp(req),
     });
-    await fsp.rm(path.join(dataDir, 'streams', camera.id), {
-      recursive: true,
-      force: true,
-    });
-    res.json({ ok: true });
+    // 清理该点位的所有派生文件：流、录像段、回放/导出临时产物、抓拍。
+    // 旧实现只删 streams/，continuous/ 会留到按天保留策略（默认 14 天）才淘汰。
+    for (const dir of [
+      path.join(dataDir, 'streams', camera.id),
+      path.join(dataDir, 'continuous', camera.id),
+      path.join(dataDir, 'continuous-play', camera.id),
+      path.join(dataDir, 'continuous-export', camera.id),
+    ]) {
+      await fsp.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+    res.json({ ok: true, cleanedSegments: removedSegments.deleted });
   });
 
   // 点位批量操作：启停检测 / 灵敏度 / 站点迁移 / 删除，逐条鉴权并在同一响应汇总结果。
-  app.post('/api/cameras/batch-update', requireAuth, requireManager, (req, res) => {
+  app.post('/api/cameras/batch-update', requireAuth, capabilityGuard(CAPABILITIES.CAMERA_MANAGE), (req, res) => {
     const ids = parseCameraIds(req.body);
     if (ids.length === 0) return res.status(400).json({ error: '请选择至少一个点位' });
     const patch = {};
@@ -415,7 +447,7 @@ export function registerCameraRoutes(app, deps) {
   app.post(
     '/api/cameras/batch-delete',
     requireAuth,
-    requireManager,
+    capabilityGuard(CAPABILITIES.CAMERA_MANAGE),
     async (req, res) => {
       const ids = parseCameraIds(req.body);
       if (ids.length === 0) return res.status(400).json({ error: '请选择至少一个点位' });
@@ -556,7 +588,7 @@ export function registerCameraRoutes(app, deps) {
   }
 
   // WS-Discovery 组播扫描：无需设备 IP 或凭据，先列出网段内的 ONVIF 设备。
-  app.post('/api/onvif/scan', requireAuth, requireManager, async (req, res) => {
+  app.post('/api/onvif/scan', requireAuth, capabilityGuard(CAPABILITIES.CAMERA_MANAGE), async (req, res) => {
     const startedAt = Date.now();
     const timeoutMs = Math.min(
       Math.max(Number(req.body.timeoutMs) || 4000, 1000),
@@ -574,7 +606,7 @@ export function registerCameraRoutes(app, deps) {
   });
 
   // ONVIF 自动发现：给定设备 IP/列表 + 凭据，单播 SOAP 探测并取 Profile S 流地址。
-  app.post('/api/onvif/discover', requireAuth, requireManager, async (req, res) => {
+  app.post('/api/onvif/discover', requireAuth, capabilityGuard(CAPABILITIES.CAMERA_MANAGE), async (req, res) => {
     const rawHosts = Array.isArray(req.body.hosts)
       ? req.body.hosts.map((h) => String(h).trim()).filter(Boolean)
       : String(req.body.hosts ?? '')
@@ -588,6 +620,23 @@ export function registerCameraRoutes(app, deps) {
       return res.status(400).json({ error: '单次最多探测 32 台设备' });
     }
     const port = Number(req.body.port) || 80;
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      return res.status(400).json({ error: '设备端口需为 1-65535 之间的整数' });
+    }
+    // 主机格式与出网地址校验：杜绝 userinfo/路径注入与云元数据探测。
+    for (const host of rawHosts) {
+      if (!/^[a-zA-Z0-9._:-]+$/.test(host)) {
+        return res.status(400).json({ error: `设备主机格式无效：${host.slice(0, 40)}` });
+      }
+      const blocked = blockedOutboundHost(host, {
+        allowPrivate: true,
+        allowLoopback: true,
+        allowLinkLocal: true,
+      });
+      if (blocked) {
+        return res.status(400).json({ error: `设备主机被拒绝：${blocked}` });
+      }
+    }
     const username = normalizeText(req.body.username, 64) || '';
     const password = String(req.body.password ?? '');
     const targets = rawHosts.map((host) => ({ host, port, username, password }));
@@ -601,10 +650,15 @@ export function registerCameraRoutes(app, deps) {
     res.json({ results: safe });
   });
 
-  app.post('/api/onvif/import', requireAuth, requireManager, async (req, res) => {
+  app.post('/api/onvif/import', requireAuth, capabilityGuard(CAPABILITIES.CAMERA_MANAGE), async (req, res) => {
     const devices = Array.isArray(req.body.devices) ? req.body.devices : [];
     if (devices.length === 0) {
       return res.status(400).json({ error: '没有可导入的通道' });
+    }
+    // 数量上限：单次导入会逐条写库（每条一次事务 + fsync），
+    // 不设上限时恶意/误操作的大数组会长时间独占写锁并冻结事件循环。
+    if (devices.length > 64) {
+      return res.status(400).json({ error: '单次最多导入 64 个通道' });
     }
     const fallbackSiteId =
       siteIdInput(req) || fallbackSiteIdFor(req.user);
@@ -622,6 +676,16 @@ export function registerCameraRoutes(app, deps) {
         normalizeText(String(device.siteId ?? ''), 64) || fallbackSiteId;
       const guard = siteGuard(req, deviceSiteId, '无权管理目标站点');
       if (guard) return res.status(guard.status).json({ error: guard.error });
+    }
+    // 通道（profile）总数上限：每个通道都会写一次库（事务 + fsync），
+    // 不设上限时超大数组会长时间独占写锁并冻结事件循环。
+    const totalChannels = safeDevices.reduce(
+      (sum, device) =>
+        sum + (Array.isArray(device?.profiles) ? device.profiles.length : 0),
+      0,
+    );
+    if (totalChannels > 256) {
+      return res.status(400).json({ error: '单次最多导入 256 个视频通道' });
     }
     const created = [];
     let skipped = 0;
@@ -686,14 +750,14 @@ export function registerCameraRoutes(app, deps) {
     res.status(201).json({ created, skipped });
   });
 
-  app.post('/api/cameras/import-brand', requireAuth, requireManager, async (req, res) => {
+  app.post('/api/cameras/import-brand', requireAuth, capabilityGuard(CAPABILITIES.CAMERA_MANAGE), async (req, res) => {
     await importBrandCameras(req, res);
   });
 
   app.post(
     '/api/cameras/import-hikvision',
     requireAuth,
-    requireManager,
+    capabilityGuard(CAPABILITIES.CAMERA_MANAGE),
     async (req, res) => {
       await importBrandCameras(req, res, 'hikvision');
     },

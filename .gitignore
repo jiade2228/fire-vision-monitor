@@ -25,3 +25,6 @@ test-results/
 Thumbs.db
 .idea/
 .vscode/
+
+# 对比度扫描生成物
+contrast-report.json

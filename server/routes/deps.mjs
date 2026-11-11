@@ -55,8 +55,8 @@
  * @property {Function} [publicUser] 用户公开信息映射。
  * @property {Function} [validUsername] 用户名校验。
  * @property {Function} [validatePassword] 密码强度校验。
- * @property {Function} [passwordHash] 密码摘要。
- * @property {Function} [verifyPassword] 密码比对。
+ * @property {(password: string, salt: string) => Promise<string>} [passwordHash] 密码摘要（异步 scrypt）。
+ * @property {(password: string, user: object|null) => Promise<boolean>} [verifyPassword] 密码比对。
  * @property {Function} [validateCameraInput] 点位输入校验。
  * @property {Function} [cameraForClient] 点位客户端映射。
  * @property {Function} [capturePreview] ROI 预览抓图。
@@ -70,6 +70,7 @@
  * @property {(res: import('express').Response) => void} [clearSessionCookie] 清除会话 Cookie。
  * @property {(ip: string, key: string) => boolean} [checkLoginBlocked] 登录是否受限。
  * @property {(ip: string, key: string) => void} [recordLoginFailure] 记录登录失败。
+ * @property {(username: string) => void} [clearLoginFailures] 登录成功后清零账号失败计数。
  * @property {Array} [defaultCameras] 默认点位列表。
  * @property {{ inFlight: boolean }} [setupGuard] 首次安装守卫。
  * @property {Set<object>} [sseClients] SSE 客户端集合。

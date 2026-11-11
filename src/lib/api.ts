@@ -328,6 +328,13 @@ export interface AuditLog {
 export interface AuditLogPage {
   logs: AuditLog[];
   total: number;
+  /**
+   * 关键词搜索被服务端默认时间窗收敛时为 true：
+   * 此时结果只覆盖最近 searchWindowDays 天，不代表历史记录不存在。
+   */
+  searchWindowed?: boolean;
+  /** 收敛时使用的默认时间窗（天）。 */
+  searchWindowDays?: number;
 }
 
 export interface DemoStatus {
@@ -402,7 +409,40 @@ export class ApiError extends Error {
 // 单个请求的最长等待：避免网络黑洞让 useAlarms 的防重入标志永不复位。
 const REQUEST_TIMEOUT_MS = 60_000;
 
-async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
+/**
+ * 运行时结构校验：要求响应里指定字段确实是数组。
+ *
+ * 泛型只在编译期有效——后端改了响应结构（例如把 `cameras` 改名）时，
+ * 前端会在**渲染期**解引用 undefined 而整页白屏。这里在网络边界就把
+ * 异常结构转成可读的 ApiError，让它走既有的错误提示路径。
+ *
+ * @param {unknown} payload 解析后的响应体。
+ * @param {string[]} fields 必须为数组的字段名。
+ * @param {number} status HTTP 状态码（用于构造 ApiError）。
+ * @returns {void}
+ * @throws {ApiError} 结构不符合预期时抛出。
+ */
+function expectArrayFields(
+  payload: unknown,
+  fields: string[],
+  status: number,
+): void {
+  if (!payload || typeof payload !== 'object') {
+    throw new ApiError('服务器返回的数据结构异常', status);
+  }
+  const record = payload as Record<string, unknown>;
+  for (const field of fields) {
+    if (!Array.isArray(record[field])) {
+      throw new ApiError('服务器返回的数据结构异常', status);
+    }
+  }
+}
+
+async function request<T>(
+  url: string,
+  init: RequestInit = {},
+  expectArrays: string[] = [],
+): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set('X-Requested-With', 'flame-vision');
   if (init.body && !headers.has('Content-Type')) {
@@ -452,6 +492,9 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
   // 合法的 JSON `null` 是有效响应，只有解析失败才报错。
   if (parseFailed) {
     throw new ApiError('服务器返回了无法解析的响应', response.status);
+  }
+  if (expectArrays.length) {
+    expectArrayFields(payload, expectArrays, response.status);
   }
   return payload as T;
 }
@@ -564,6 +607,8 @@ export const api = {
   cameras: (siteId?: string | null) =>
     request<{ cameras: ManagedCamera[] }>(
       `/api/cameras${siteId ? `?siteId=${encodeURIComponent(siteId)}` : ''}`,
+      {},
+      ['cameras'],
     ),
   createCamera: (body: CameraInput) =>
     request<{ camera: ManagedCamera }>('/api/cameras', {
@@ -626,7 +671,11 @@ export const api = {
       method: 'DELETE',
     }),
   alarms: (limit = 300) =>
-    request<{ alarms: Alarm[] }>(`/api/alarms?limit=${encodeURIComponent(limit)}`),
+    request<{ alarms: Alarm[] }>(
+      `/api/alarms?limit=${encodeURIComponent(limit)}`,
+      {},
+      ['alarms'],
+    ),
   alarmStats: (days = 30) =>
     request<AlarmStats>(`/api/alarms/stats?days=${encodeURIComponent(days)}`),
   falseHotspots: (days = 7) =>
@@ -648,7 +697,7 @@ export const api = {
     request<{ events: AlarmEvent[] }>(
       `/api/alarms/${encodeURIComponent(id)}/events`,
     ),
-  users: () => request<{ users: SessionUser[] }>('/api/users'),
+  users: () => request<{ users: SessionUser[] }>('/api/users', {}, ['users']),
   createUser: (body: UserInput) =>
     request<{ user: SessionUser }>('/api/users', {
       method: 'POST',
@@ -668,7 +717,7 @@ export const api = {
     request<{ ok: boolean }>(`/api/users/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
-  sites: () => request<SitesResult>('/api/sites'),
+  sites: () => request<SitesResult>('/api/sites', {}, ['sites']),
   createSite: (body: { name: string; code?: string }) =>
     request<{ site: Site }>('/api/sites', {
       method: 'POST',
@@ -691,7 +740,11 @@ export const api = {
       body: JSON.stringify({ siteIds }),
     }),
   notifyChannels: () =>
-    request<{ channels: NotifyChannel[]; sites: Site[] }>('/api/notify/channels'),
+    request<{ channels: NotifyChannel[]; sites: Site[] }>(
+      '/api/notify/channels',
+      {},
+      ['channels', 'sites'],
+    ),
   createNotifyChannel: (body: NotifyChannelInput) =>
     request<{ channel: NotifyChannel }>('/api/notify/channels', {
       method: 'POST',
@@ -860,7 +913,8 @@ export const api = {
       response = await fetch(`/api/recordings/export?${search}`, {
         headers: { 'X-Requested-With': 'flame-vision' },
         credentials: 'same-origin',
-        signal,
+        // 合并超时与调用方 signal：大文件导出无上限会永久挂住按钮。
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000),
       });
     } catch (cause) {
       if (signal?.aborted) throw cause;
@@ -875,6 +929,10 @@ export const api = {
         }
       } catch {
         /* 错误响应非 JSON 时保留通用文案 */
+      }
+      // 与其它接口一致：会话过期时触发全局「登录状态已失效」广播。
+      if (response.status === 401) {
+        window.dispatchEvent(new CustomEvent('flame-vision:unauthorized'));
       }
       throw new ApiError(message, response.status);
     }

@@ -13,10 +13,10 @@
  * @property {string} id UUID。
  * @property {string} username 登录名（3-32 位字母数字下划线）。
  * @property {string|null} displayName 显示名。
- * @property {'admin'|'manager'|'viewer'} role 全局角色。
+ * @property {'admin'|'operator'|'viewer'} role 全局角色（schema CHECK 约束同此三值）。
  * @property {boolean} siteAdmin 是否站点管理员。
  * @property {string} salt 密码盐（hex）。
- * @property {string} passwordHash PBKDF2 摘要（hex）。
+ * @property {string} passwordHash scrypt 摘要（hex，64 字节）。
  * @property {boolean} disabled 是否停用。
  * @property {number} tokenVersion 令牌版本（修改密码后递增使旧会话失效）。
  * @property {number} createdAt 创建时间（毫秒时间戳）。
@@ -61,16 +61,16 @@
  * @property {string} cameraName 告警时点位名称快照。
  * @property {string} zone 告警时防区快照。
  * @property {string|null} siteId 告警时所属站点快照。
- * @property {'fire'|'smoke'|'offline'} level 告警级别。
- * @property {number} confidence 识别置信度（0-1）。
- * @property {{x:number,y:number}} hotspot 热点坐标（160×90 画布内）。
+ * @property {'fire'|'smoke'|'offline'|'camera_abnormal'} level 告警级别。
+ * @property {number} confidence 识别置信度（0-100 整数百分值）。
+ * @property {{x:number,y:number}} hotspot 热点坐标（0-100 百分比坐标）。
  * @property {string|null} snapshot 抓拍图接口路径（无文件时为 null）。
  * @property {string|null} snapshotFile 抓拍文件名。
  * @property {string|null} clip 短视频接口路径（无文件时为 null）。
  * @property {string|null} clipFile 短视频文件名。
  * @property {'pending'|'confirmed'|'false'|'archived'} status 处置状态。
  * @property {string} note 处置备注。
- * @property {[boolean,boolean,boolean,boolean]} steps 处置四步勾选。
+ * @property {boolean[]} steps 处置步骤勾选（路由层最多接受 16 项）。
  * @property {number} createdAt 告警时间（毫秒时间戳）。
  * @property {number} updatedAt 更新时间（毫秒时间戳）。
  * @property {number|null} confirmedAt 确认时间。
@@ -107,6 +107,7 @@
  * @property {boolean} enabled 是否启用（连续失败会自动停用）。
  * @property {string|null} templateId 绑定文案模板 ID。
  * @property {string|null} templateBody 模板正文（未绑定模板为 null）。
+ * @property {string} credentialError 凭据解密失败原因（正常为空串；非空表示推送会被跳过）。
  * @property {number} createdAt 创建时间（毫秒时间戳）。
  * @property {number} updatedAt 更新时间（毫秒时间戳）。
  */

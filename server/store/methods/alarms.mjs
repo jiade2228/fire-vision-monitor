@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { now } from '../../schema.mjs';
 import { alarmRowToObject } from '../helpers.mjs';
 import { protectionWindow } from '../../recording-config.mjs';
+import { SHANGHAI_OFFSET_MS, toShanghaiParts } from '../../time.mjs';
 
 export const alarmMethods = {
 /**
@@ -103,15 +104,12 @@ alarmStatsBetween(start, end) {
  */
 alarmStatsByDay({ days = 30, siteIds = null, endAt = now() } = {}) {
     const safeDays = Math.min(Math.max(Number(days) || 30, 1), 366);
-    const endShanghai = new Date(endAt + 8 * 3600 * 1000);
-    const lastDayUtc = Date.UTC(
-      endShanghai.getUTCFullYear(),
-      endShanghai.getUTCMonth(),
-      endShanghai.getUTCDate(),
-    );
+    // 上海时区口径统一走 time.mjs（避免各处重复硬编码 +8h 偏移）。
+    const endParts = toShanghaiParts(endAt);
+    const lastDayUtc = Date.UTC(endParts.y, endParts.m - 1, endParts.d);
     const firstDayUtc = lastDayUtc - (safeDays - 1) * 86_400_000;
-    const start = firstDayUtc - 8 * 3600 * 1000;
-    const end = lastDayUtc + 86_400_000 - 8 * 3600 * 1000;
+    const start = firstDayUtc - SHANGHAI_OFFSET_MS;
+    const end = lastDayUtc + 86_400_000 - SHANGHAI_OFFSET_MS;
     const clauses = ['created_at >= ?', 'created_at < ?'];
     const values = [start, end];
     if (siteIds !== null) {
@@ -193,68 +191,107 @@ createAlarm(alarm) {
  * @returns {import('../../types.mjs').Alarm|null}
  */
 updateAlarm(id, changes, actor) {
-    const current = this.getAlarm(id);
-    if (!current) return null;
-    const fields = ['updated_at = ?'];
-    const values = [now()];
-    if (changes.status !== undefined) {
-      fields.push('status = ?');
-      values.push(changes.status);
-    }
-    if (changes.note !== undefined) {
-      fields.push('note = ?');
-      values.push(changes.note);
-    }
-    if (changes.steps !== undefined) {
-      fields.push('steps_json = ?');
-      values.push(JSON.stringify(changes.steps));
-    }
-    if (changes.confirmedAt !== undefined) {
-      fields.push('confirmed_at = ?');
-      values.push(changes.confirmedAt);
-    }
-    if (changes.falseAt !== undefined) {
-      fields.push('false_at = ?');
-      values.push(changes.falseAt);
-    }
-    if (changes.archivedAt !== undefined) {
-      fields.push('archived_at = ?');
-      values.push(changes.archivedAt);
-    }
-    fields.push('updated_by = ?');
-    values.push(actor?.id ?? null);
-    values.push(id);
-    this.db
-      .prepare(`UPDATE alarms SET ${fields.join(', ')} WHERE id = ?`)
-      .run(...values);
-    // 误报即时解除保护：该告警窗口内若仍有其它未误报告警则保留保护，避免误伤取证段。
-    if (changes.status === 'false' && current.cameraId) {
-      const window = protectionWindow(current.createdAt ?? now());
-      const remaining = this.db
-        .prepare(`
-          SELECT COUNT(*) AS count FROM alarms
-          WHERE id <> ? AND camera_id = ? AND status <> 'false'
-            AND created_at >= ? AND created_at <= ?
-        `)
-        .get(id, current.cameraId, window.from, window.to).count;
-      if (!remaining) {
-        this.db
-          .prepare(`
-            UPDATE recording_segments SET protected = 0
-            WHERE camera_id = ? AND started_at < ? AND ended_at > ?
-          `)
-          .run(current.cameraId, window.to, window.from);
+    // 整体事务化：状态更新、「是否还有其它未误报告警」的判定、取证录像保护段的
+    // 解除必须是一个原子操作。否则 COUNT 与随后的 UPDATE 之间存在 TOCTOU 窗口，
+    // 值班员标误报的同时检测引擎恰好新增同窗口告警时，取证录像会被误清保护。
+    return this.transaction(() => {
+      const current = this.getAlarm(id);
+      if (!current) return null;
+      const fields = ['updated_at = ?'];
+      const values = [now()];
+      if (changes.status !== undefined) {
+        fields.push('status = ?');
+        values.push(changes.status);
       }
-    }
+      if (changes.note !== undefined) {
+        fields.push('note = ?');
+        values.push(changes.note);
+      }
+      if (changes.steps !== undefined) {
+        fields.push('steps_json = ?');
+        values.push(JSON.stringify(changes.steps));
+      }
+      if (changes.confirmedAt !== undefined) {
+        fields.push('confirmed_at = ?');
+        values.push(changes.confirmedAt);
+      }
+      if (changes.falseAt !== undefined) {
+        fields.push('false_at = ?');
+        values.push(changes.falseAt);
+      }
+      if (changes.archivedAt !== undefined) {
+        fields.push('archived_at = ?');
+        values.push(changes.archivedAt);
+      }
+      fields.push('updated_by = ?');
+      values.push(actor?.id ?? null);
+      values.push(id);
+      this.db
+        .prepare(`UPDATE alarms SET ${fields.join(', ')} WHERE id = ?`)
+        .run(...values);
+      // 误报即时解除保护：该告警窗口内若仍有其它未误报告警则保留保护，避免误伤取证段。
+      if (changes.status === 'false' && current.cameraId) {
+        const window = protectionWindow(current.createdAt ?? now());
+        const remaining = this.db
+          .prepare(`
+            SELECT COUNT(*) AS count FROM alarms
+            WHERE id <> ? AND camera_id = ? AND status <> 'false'
+              AND created_at >= ? AND created_at <= ?
+          `)
+          .get(id, current.cameraId, window.from, window.to).count;
+        if (!remaining) {
+          this.db
+            .prepare(`
+              UPDATE recording_segments SET protected = 0
+              WHERE camera_id = ? AND started_at < ? AND ended_at > ?
+            `)
+            .run(current.cameraId, window.to, window.from);
+        }
+      }
+      return this.getAlarm(id);
+    });
+  },
+  /**
+   * 统计某点位处于「未处置」状态的告警数（pending / confirmed）。
+   *
+   * 删除点位前的前置校验：直接删除会留下无法处置的孤儿告警
+   * （列表里能看到、但点位已不存在，无法从大屏定位复核）。
+   *
+   * @param {string} cameraId 点位 ID。
+   * @returns {number} 未处置告警数。
+   */
+  countOpenAlarmsByCamera(cameraId) {
+    if (!cameraId) return 0;
+    return Number(
+      this.db
+        .prepare(
+          "SELECT COUNT(*) AS c FROM alarms WHERE camera_id = ? AND status IN ('pending','confirmed')",
+        )
+        .get(cameraId)?.c ?? 0,
+    );
+  },
+
+  /**
+   * 命中后抓拍完成时回填抓拍文件名。
+   *
+   * RES-2：告警先落库、抓拍异步补齐，因此需要单独的抓拍回填入口。
+   * @param {string} id 告警 ID。
+   * @param {string|null} snapshotFile 文件名。
+   * @returns {import('../../types.mjs').Alarm|null}
+   */
+  setAlarmSnapshot(id, snapshotFile) {
+    this.db
+      .prepare('UPDATE alarms SET snapshot_file = ?, updated_at = ? WHERE id = ?')
+      .run(snapshotFile ?? null, now(), id);
     return this.getAlarm(id);
   },
-/**
- * 命中后补录完成时回填短视频文件名。
- * @param {string} id 告警 ID。
- * @param {string|null} clipFile 文件名。
- * @returns {import('../../types.mjs').Alarm|null}
- */
-setAlarmClip(id, clipFile) {
+  /**
+   * 命中后补录完成时回填短视频文件名。
+   * @param {string} id 告警 ID。
+   * @param {string|null} clipFile 文件名。
+   * @returns {import('../../types.mjs').Alarm|null}
+   */
+  setAlarmClip(id, clipFile) {
     this.db
       .prepare('UPDATE alarms SET clip_file = ?, updated_at = ? WHERE id = ?')
       .run(clipFile ?? null, now(), id);
@@ -303,7 +340,10 @@ listAlarmEvents(alarmId) {
  * @returns {Array<{cameraId: string, cameraName: string, zone: string, count: number}>}
  */
 listFalseAlarmCounts({ days = 7, siteIds = null } = {}) {
-    const since = now() - days * 24 * 60 * 60 * 1000;
+    // 与 alarmStatsByDay 保持一致的口径：days 在 store 层夹取，
+    // 避免 0/负数产生反向时间窗（静默返回错误的统计数字）。
+    const safeDays = Math.min(Math.max(Number(days) || 7, 1), 366);
+    const since = now() - safeDays * 24 * 60 * 60 * 1000;
     const scope = Array.isArray(siteIds)
       ? `AND a.site_id IN (${siteIds.map(() => '?').join(',')})`
       : '';

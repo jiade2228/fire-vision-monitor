@@ -25,13 +25,27 @@ function cleanText(value: string, maxLength: number): string {
   return value.trim().replace(/\s+/g, ' ').slice(0, maxLength);
 }
 
+/**
+ * 返回一份新的默认对象。
+ *
+ * 原实现直接返回模块级的 `DEFAULTS` 引用：任何调用方原地修改返回值，
+ * 都会污染全局默认值，并被后续所有 `loadPreferences()` 观察到。
+ *
+ * @returns {AppPreferences} 独立的偏好副本。
+ */
+function defaultPreferences(): AppPreferences {
+  return { ...DEFAULTS };
+}
+
 export function loadPreferences(): AppPreferences {
-  if (typeof window === 'undefined') return DEFAULTS;
+  if (typeof window === 'undefined') return defaultPreferences();
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULTS;
+    if (!raw) return defaultPreferences();
     const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return DEFAULTS;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return defaultPreferences();
+    }
     const value = parsed as Record<string, unknown>;
     return {
       soundEnabled:
@@ -56,7 +70,7 @@ export function loadPreferences(): AppPreferences {
           : DEFAULTS.localDetection,
     };
   } catch {
-    return DEFAULTS;
+    return defaultPreferences();
   }
 }
 

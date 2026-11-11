@@ -1,5 +1,6 @@
 import { apiNotFound } from '../http/not-found.mjs';
 import fsp from 'node:fs/promises';
+import { CAPABILITIES, resolveCapabilityGuard } from '../auth/roles.mjs';
 import {
   buildTimeline,
   dayRangeFromDate,
@@ -25,12 +26,14 @@ import {
  */
 export function registerRecordingRoutes(app, deps) {
   const {
+    requireManager,
+    requireRole,
     store,
     continuousDir,
     recordingEnabled,
     canAccessCameraSite,
     requireAuth,
-    requireRole,
+    requireCapability,
     normalizeText,
     playbackManager = null,
     captureManager = null,
@@ -41,6 +44,9 @@ export function registerRecordingRoutes(app, deps) {
     recordingProbe = undefined,
     logger = null,
   } = deps;
+  // 能力守卫降级：旧调用方（既有测试/集成方）可能只提供 requireRole，
+  // 此时按能力反查角色兜底，保证零改动兼容；两者都缺失则一律拒绝。
+  const capabilityGuard = resolveCapabilityGuard(requireCapability, requireRole, requireManager);
 
   /** 点位 + 窗口公共校验；失败时直接发送响应并返回 null。 */
   const resolveRequest = (req, res, { maxWindowMs = MAX_PLAYBACK_WINDOW_MS } = {}) => {
@@ -244,14 +250,18 @@ export function registerRecordingRoutes(app, deps) {
   });
 
   // 手动触发一次「文件系统 → 索引」对账，便于部署后校验与故障排查。
-  app.post('/api/recordings/reconcile', requireAuth, requireRole('admin'), async (req, res) => {
+  app.post('/api/recordings/reconcile', requireAuth, capabilityGuard(CAPABILITIES.GLOBAL_ADMIN), async (req, res) => {
     try {
       const result = await reconcileRecordingSegments(store, continuousDir, {
         probe: recordingProbe,
       });
       res.json(result);
     } catch (error) {
-      res.status(500).json({ error: String(error?.message ?? error) });
+      // 不回显内部错误原文（可能含绝对路径与 SQLite 细节）。
+      logger?.warn?.('recording_reconcile_failed', {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      res.status(500).json({ error: '录像索引对账失败，请查看服务端日志' });
     }
   });
 }

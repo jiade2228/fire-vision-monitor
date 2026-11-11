@@ -7,6 +7,7 @@ import type {
   DetectionSensitivity,
 } from '../types';
 import type { FrameAnalysis } from '../lib/detector';
+import { LEVEL_META } from '../lib/detection';
 import { formatTime } from '../lib/format';
 import { useNow } from '../hooks/useNow';
 import { useVideoPlayback } from '../hooks/useVideoPlayback';
@@ -188,7 +189,7 @@ export default function FocusViewer({
                 aria-hidden="true"
               >
                 <span className={`detect-label detect-label--${alarm.level}`}>
-                  {alarm.level === 'fire' ? '火焰' : '烟雾'} {alarm.confidence}%
+                  {LEVEL_META[alarm.level]?.label ?? '告警'} {alarm.confidence}%
                 </span>
               </span>
             </>
@@ -257,7 +258,7 @@ export default function FocusViewer({
             {alarm ? (
               <>
                 <span className={`level-tag level-tag--${alarm.level}`}>
-                  {alarm.level === 'fire' ? '火焰' : '烟雾'}
+                  {LEVEL_META[alarm.level]?.label ?? '告警'}
                 </span>
                 <span>
                   当前告警编号 {alarm.id} · 置信度 {alarm.confidence}%

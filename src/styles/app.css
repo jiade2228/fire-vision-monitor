@@ -15,6 +15,13 @@
   --info: #4cc9f0;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", monospace;
 
+  /* 控件尺寸令牌：同类输入/下拉此前有 6 套 height/radius/font-size，
+     视觉层级不统一。新增控件一律引用这组变量，避免再产生第 7 套值。 */
+  --control-h: 31px;
+  --control-radius: 8px;
+  --control-font: 11.5px;
+  --control-padding-x: 9px;
+
   /* 主题相关取值：深色为既有外观，浅色由 :root[data-theme='light'] 覆盖。 */
   --scheme: dark;
   --text-strong: #fff;
@@ -47,16 +54,16 @@
   --line-strong: rgba(31, 58, 92, 0.32);
   --text: #17243a;
   --text-dim: #47607d;
-  --text-faint: #7187a1;
+  --text-faint: #566b82;
   --flame: #c9540b;
   --danger: #c0392b;
-  --ok: #0f8a5f;
+  --ok: #0b7a52;
   --warn: #a56800;
   --info: #0b7fa8;
 
   --scheme: light;
   --text-strong: #0b1729;
-  --tone-ok: #0f7a52;
+  --tone-ok: #0b6b47;
   --tone-danger: #b3261e;
   --tone-danger-soft: #c0443a;
   --tone-warn: #8a5a00;
@@ -72,6 +79,229 @@
     linear-gradient(180deg, #ffffff 0%, #f2f5f9 55%, #e8eef6 100%);
   --overlay-bg: linear-gradient(180deg, #ffffff, #eef2f7);
   color-scheme: light;
+}
+
+/* 浅色主题结构面覆盖：原组件背景多为硬编码深色（rgba/渐变），浅色下会出现「深字配深底」不可读。
+   仅在此处覆盖浅色主题，原深色规则一字未改，深色外观逐字不变。
+   策略：把面板/卡片/瓦片/工具条等容器设为浅色面，输入框/按钮/标签用浅色面 + 深色字，
+   激活态保留品牌色（flame）但改用可读文字色。 */
+:root[data-theme='light'] .topbar {
+  background: linear-gradient(180deg, #ffffff, #eef2f7);
+  border-bottom: 1px solid var(--line);
+}
+:root[data-theme='light'] .topbar-status,
+:root[data-theme='light'] .nav-tabs {
+  background: transparent;
+}
+:root[data-theme='light'] .panel,
+:root[data-theme='light'] section.panel {
+  background: linear-gradient(180deg, #ffffff, #f4f7fb);
+  border-color: var(--line);
+}
+:root[data-theme='light'] .panel-head {
+  background: transparent;
+  color: var(--text);
+}
+:root[data-theme='light'] .stat {
+  background: linear-gradient(180deg, #ffffff, #eef2f7);
+  border: 1px solid var(--line);
+}
+:root[data-theme='light'] .alarm-card,
+:root[data-theme='light'] .alarm-card--fire,
+:root[data-theme='light'] .alarm-card--smoke {
+  background: #ffffff;
+  border: 1px solid var(--line);
+}
+:root[data-theme='light'] .camera-tile {
+  background: #ffffff;
+  border: 1px solid var(--line);
+}
+:root[data-theme='light'] .tile-surface,
+:root[data-theme='light'] .channel-summary,
+:root[data-theme='light'] .channel-identity {
+  background: transparent;
+}
+:root[data-theme='light'] .recording-controls,
+:root[data-theme='light'] .recording-actions,
+:root[data-theme='light'] .recording-legend,
+:root[data-theme='light'] .recording-status,
+:root[data-theme='light'] .record-stats,
+:root[data-theme='light'] .record-stat,
+:root[data-theme='light'] .alarm-toolbar,
+:root[data-theme='light'] .alarm-list,
+:root[data-theme='light'] .filter-row,
+:root[data-theme='light'] .search-field,
+:root[data-theme='light'] .alarm-view-switch,
+:root[data-theme='light'] .dock-list,
+:root[data-theme='light'] .engine-controls,
+:root[data-theme='light'] .nav-badge {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+:root[data-theme='light'] select,
+:root[data-theme='light'] input,
+:root[data-theme='light'] textarea {
+  background: var(--panel-2);
+  color: var(--text);
+  border-color: var(--line);
+}
+:root[data-theme='light'] .btn:not(.btn-primary):not(.btn-danger):not(.btn-ok):not(.btn-warn) {
+  background: var(--panel-2);
+  color: var(--text);
+  border-color: var(--line);
+}
+:root[data-theme='light'] .btn-ghost {
+  background: transparent;
+  color: var(--text-dim);
+  border-color: var(--line);
+}
+:root[data-theme='light'] .nav-tab {
+  background: transparent;
+  color: var(--text-dim);
+}
+/* .nav-tab.is-active 的浅色规则统一放在下方同主题块（含边框色），此处不重复定义。 */
+:root[data-theme='light'] .admin-tab {
+  background: var(--panel-2);
+  color: var(--text-dim);
+}
+:root[data-theme='light'] .admin-tab.is-active {
+  background: var(--panel);
+  color: var(--text-strong);
+  border-color: var(--flame);
+}
+:root[data-theme='light'] .chip,
+:root[data-theme='light'] .pill,
+:root[data-theme='light'] .pill-button,
+:root[data-theme='light'] .topbar-settings {
+  background: var(--panel-2);
+  color: var(--text);
+  border-color: var(--line);
+}
+:root[data-theme='light'] .pill.is-active,
+:root[data-theme='light'] .chip.is-active {
+  background: var(--panel);
+  color: var(--text-strong);
+  border-color: var(--flame);
+}
+:root[data-theme='light'] .sound-toggle,
+:root[data-theme='light'] .wake-toggle {
+  background: var(--panel-2);
+  border-color: var(--line);
+  color: var(--text-dim);
+}
+:root[data-theme='light'] .sound-toggle.is-on,
+:root[data-theme='light'] .wake-toggle.is-on {
+  background: var(--panel-2);
+  border-color: var(--line-strong);
+  color: var(--ok);
+}
+
+/* 浅色主题下监控瓦片内部：原硬编码深色叠层/浅色字在白底瓦片上不可读，
+   统一改为浅色面 + 深色字，保持语义色（火情红/烟警琥珀/离线）以可辨为准。 */
+:root[data-theme='light'] .nav-tab.is-active {
+  background: #b5470a;
+  border-color: #8f3607;
+  color: #fff;
+}
+:root[data-theme='light'] .tile-empty {
+  background: var(--panel-2);
+  color: var(--text);
+}
+:root[data-theme='light'] .tile-empty-title {
+  color: var(--text-strong);
+}
+:root[data-theme='light'] .tile-empty-sub {
+  color: var(--text-dim);
+}
+:root[data-theme='light'] .tile-hud {
+  color: var(--text-strong);
+  text-shadow: none;
+}
+:root[data-theme='light'] .tile-code {
+  background: var(--panel-3);
+  border-color: var(--line);
+  color: var(--text);
+}
+:root[data-theme='light'] .tile-name {
+  background: var(--panel-3);
+  border-color: var(--line);
+  color: var(--text-strong);
+}
+:root[data-theme='light'] .tile-hud--state {
+  background: var(--panel-3);
+  border-color: var(--line);
+}
+:root[data-theme='light'] .tile-connect-btn {
+  background: var(--panel-3);
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+:root[data-theme='light'] .tile-connect-btn:hover {
+  background: var(--panel-2);
+  color: var(--text-strong);
+}
+:root[data-theme='light'] .tile-connect-btn.is-unavailable {
+  color: var(--tone-warn);
+  border-color: var(--line-strong);
+}
+:root[data-theme='light'] .tile-action {
+  background: var(--panel-3);
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+:root[data-theme='light'] .tile-action--danger {
+  color: var(--tone-danger);
+  border-color: rgba(179, 38, 30, 0.5);
+}
+:root[data-theme='light'] .channel-code {
+  background: var(--panel-3);
+  border-color: var(--line);
+  color: var(--text);
+}
+:root[data-theme='light'] .channel-zone {
+  color: var(--text-dim);
+}
+:root[data-theme='light'] .shot-badge {
+  background: var(--panel-3);
+  border-color: var(--line);
+  color: var(--text);
+}
+:root[data-theme='light'] .point-code {
+  color: var(--text);
+}
+:root[data-theme='light'] .alarm-shot {
+  background: var(--panel-2);
+  border-color: var(--line);
+}
+:root[data-theme='light'] .shot-empty {
+  color: var(--text-dim);
+  background: transparent;
+}
+
+/* 操作反馈与错误提示：深色定义里写死了深色底 + 浅色字，浅色主题下会变成
+   「深底深字」或「白底浅粉字」，两类全局反馈都不可读。
+   这里统一改为跟随主题变量，并保留语义色的边框区分。 */
+:root[data-theme='light'] .toast {
+  background: var(--panel);
+  color: var(--text);
+  border-color: var(--line-strong);
+  box-shadow: 0 14px 30px rgba(23, 36, 58, 0.18);
+}
+:root[data-theme='light'] .toast--danger {
+  background: var(--panel);
+  color: var(--tone-danger);
+  border-color: var(--danger);
+}
+:root[data-theme='light'] .toast--ok {
+  background: var(--panel);
+  color: var(--ok);
+  border-color: var(--ok);
+}
+:root[data-theme='light'] .admin-error {
+  background: var(--panel-2);
+  color: var(--tone-danger);
+  border-color: var(--danger);
 }
 
 * {
@@ -394,6 +624,13 @@ button {
   color: var(--tone-ok);
   border-color: rgba(52, 211, 153, 0.28);
   background: rgba(52, 211, 153, 0.08);
+}
+
+/* 实时推送中断：与「成功/危险」区分开，用琥珀色 + 主题变量前景保证双主题可读。 */
+.pill--warn {
+  color: var(--tone-warn);
+  border-color: rgba(251, 191, 36, 0.38);
+  background: rgba(251, 191, 36, 0.1);
 }
 
 .pill-button {
@@ -740,15 +977,15 @@ button {
 }
 
 .engine-select select {
-  height: 26px;
+  height: var(--control-h);
   padding: 0 21px 0 7px;
   border: 1px solid rgba(var(--line-rgb), 0.22);
-  border-radius: 7px;
+  border-radius: var(--control-radius);
   outline: none;
   background: rgba(9, 16, 25, 0.9);
   color: var(--text-dim);
   font-family: inherit;
-  font-size: 10.5px;
+  font-size: var(--control-font);
   cursor: pointer;
 }
 
@@ -2076,15 +2313,15 @@ button {
 
 .search-field input {
   width: 100%;
-  height: 30px;
+  height: var(--control-h);
   padding: 0 30px 0 28px;
   border: 1px solid rgba(var(--line-rgb), 0.2);
-  border-radius: 8px;
+  border-radius: var(--control-radius);
   outline: none;
   background: rgba(var(--overlay-rgb), 0.85);
   color: var(--text);
   font-family: inherit;
-  font-size: 11.5px;
+  font-size: var(--control-font);
   transition: border-color 0.16s ease, box-shadow 0.16s ease;
   appearance: none;
 }
@@ -2131,15 +2368,15 @@ button {
 }
 
 .toolbar-field select {
-  height: 30px;
+  height: var(--control-h);
   padding: 0 24px 0 8px;
   border: 1px solid rgba(var(--line-rgb), 0.2);
-  border-radius: 8px;
+  border-radius: var(--control-radius);
   outline: none;
   background: rgba(var(--overlay-rgb), 0.85);
   color: var(--text-dim);
   font-family: inherit;
-  font-size: 11px;
+  font-size: var(--control-font);
   cursor: pointer;
 }
 
@@ -2511,15 +2748,15 @@ button {
 
 .settings-input {
   width: 100%;
-  height: 31px;
+  height: var(--control-h);
   padding: 0 9px;
   border: 1px solid rgba(var(--line-rgb), 0.22);
-  border-radius: 7px;
+  border-radius: var(--control-radius);
   outline: none;
   background: rgba(var(--overlay-rgb), 0.85);
   color: var(--text);
   font-family: inherit;
-  font-size: 11.5px;
+  font-size: var(--control-font);
   transition: border-color 0.16s ease, box-shadow 0.16s ease;
 }
 
@@ -2598,6 +2835,17 @@ button {
   background: rgba(255, 75, 62, 0.08);
   color: #ffb7b0;
   font-size: 11px;
+}
+
+/* 提示性说明（不承载关键操作）。只用前景色 + 左边框，不叠半透明背景，
+   保证浅色/深色两套主题下的对比度都只取决于 --tone-warn 与页面底色。 */
+.admin-hint {
+  margin: 0;
+  padding: 6px 9px;
+  border-left: 2px solid var(--tone-warn);
+  color: var(--tone-warn);
+  font-size: 11px;
+  line-height: 1.55;
 }
 
 .admin-body {
@@ -3087,6 +3335,14 @@ button {
   font-size: 8px;
   font-family: var(--mono);
 }
+
+/* 柱状图配色改用 CSS 变量：旧实现把 fill 写成 SVG 属性里的硬编码 rgba，
+   主题切换时完全不变，且不在 contrast-scan 的扫描范围内。 */
+.stats-bar--fire { fill: var(--danger); opacity: 0.9; }
+.stats-bar--smoke { fill: var(--warn); opacity: 0.88; }
+.stats-bar--offline { fill: var(--tone-neutral); opacity: 0.72; }
+:root[data-theme='light'] .stats-bar--smoke { opacity: 0.78; }
+:root[data-theme='light'] .stats-bar--offline { opacity: 0.62; }
 
 .stats-legend {
   display: flex;
@@ -4675,4 +4931,52 @@ button {
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 8px;
+}
+
+/* 全局错误边界：渲染期异常时的降级页面，避免整页白屏。 */
+.app-fatal {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: 720px;
+  margin: 48px auto;
+  padding: 24px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+.app-fatal__title {
+  margin: 0;
+  font-size: 20px;
+  color: var(--danger);
+}
+
+.app-fatal__desc {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text-dim);
+}
+
+.app-fatal__detail {
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.app-fatal__action {
+  align-self: flex-start;
 }

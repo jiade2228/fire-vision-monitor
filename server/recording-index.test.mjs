@@ -99,7 +99,7 @@ test('时间线合并连续段并标记缺口', () => {
   assert.deepEqual(buildTimeline([], from, from).gaps, []);
 });
 
-test('新库为 schema V8 且含录像索引表', async (t) => {
+test('新库为 schema V9 且含录像索引表', async (t) => {
   const dataDir = await tempDir(t);
   const store = await openStore({
     dataDir,
@@ -108,7 +108,8 @@ test('新库为 schema V8 且含录像索引表', async (t) => {
   const version = store.db
     .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
     .get().value;
-  assert.equal(version, '8');
+  // V9：补齐关键性能索引；V10：新增 auth_sessions 会话登记表。
+  assert.equal(version, '10');
   assert.equal(
     store.db
       .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE name = 'recording_segments'")

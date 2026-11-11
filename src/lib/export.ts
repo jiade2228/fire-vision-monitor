@@ -1,5 +1,5 @@
 import type { Alarm } from '../types';
-import { LEVEL_META, STATUS_META } from './detection';
+import { getLevelMeta, getStatusMeta } from './detection';
 
 const pad = (value: number) => String(value).padStart(2, '0');
 
@@ -85,10 +85,10 @@ export function downloadAlarmsCsv(alarms: Alarm[], name: string): void {
     alarm.cameraId,
     alarm.cameraName,
     alarm.zone,
-    LEVEL_META[alarm.level].label,
+    getLevelMeta(alarm.level).label,
     alarm.confidence,
     formatExportTime(alarm.createdAt),
-    STATUS_META[alarm.status].label,
+    getStatusMeta(alarm.status).label,
     formatExportTime(alarm.confirmedAt),
     formatExportTime(alarm.closedAt),
     alarm.confirmedAt ? Math.round((alarm.confirmedAt - alarm.createdAt) / 1000) : '',

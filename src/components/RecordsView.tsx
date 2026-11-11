@@ -1,5 +1,5 @@
 import type { Alarm } from '../types';
-import { LEVEL_META, STATUS_META } from '../lib/detection';
+import { getLevelMeta, getStatusMeta } from '../lib/detection';
 import { downloadAlarmsCsv } from '../lib/export';
 import { formatDateTime, formatDuration } from '../lib/format';
 
@@ -85,13 +85,13 @@ export default function RecordsView({ alarms }: Props) {
                   </td>
                   <td>
                     <span className={`level-tag level-tag--${alarm.level}`}>
-                      {LEVEL_META[alarm.level].label}
+                      {getLevelMeta(alarm.level).label}
                     </span>
                   </td>
                   <td className="mono">{formatDateTime(alarm.createdAt)}</td>
                   <td>
-                    <span className={`status-chip status-chip--${STATUS_META[alarm.status].tone}`}>
-                      {STATUS_META[alarm.status].label}
+                    <span className={`status-chip status-chip--${getStatusMeta(alarm.status).tone}`}>
+                      {getStatusMeta(alarm.status).label}
                     </span>
                   </td>
                   <td className="mono">

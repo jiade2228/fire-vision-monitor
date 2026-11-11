@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { api, ApiError } from '../lib/api';
 import type {
@@ -27,16 +27,12 @@ import type {
   VendorPreset,
 } from '../lib/api';
 import type { ToastKind } from '../types';
-import { formatDateTime } from '../lib/format';
-import { downloadAuditCsv } from '../lib/export';
-import RoiEditor from './RoiEditor';
-import StatsOverview from './StatsOverview';
-import AuditLogTable from './AuditLogTable';
-import UserList from './admin/UserList';
-import NotifyTemplateList from './admin/NotifyTemplateList';
-import NotifyChannelList from './admin/NotifyChannelList';
-import NotifyLogList from './admin/NotifyLogList';
-import AuditPager from './admin/AuditPager';
+import CamerasTab from './admin/CamerasTab';
+import SitesTab from './admin/SitesTab';
+import StatsTab from './admin/StatsTab';
+import NotifyTab from './admin/NotifyTab';
+import AuditTab from './admin/AuditTab';
+import UsersTab from './admin/UsersTab';
 
 interface Props {
   cameras: ManagedCamera[];
@@ -49,13 +45,13 @@ interface Props {
 
 type TabKey = 'cameras' | 'users' | 'sites' | 'stats' | 'notify' | 'audit';
 
-const NOTIFY_KIND_LABELS: Record<NotifyKind, string> = {
+export const NOTIFY_KIND_LABELS: Record<NotifyKind, string> = {
   webhook: 'Webhook',
   wecom: '企业微信',
   dingtalk: '钉钉',
 };
 
-const NOTIFY_EVENT_LABELS: Record<string, string> = {
+export const NOTIFY_EVENT_LABELS: Record<string, string> = {
   created: '告警产生',
   confirmed: '确认处置',
   false: '判定误报',
@@ -65,7 +61,7 @@ const NOTIFY_EVENT_LABELS: Record<string, string> = {
 };
 
 /** 审计动作中文标签：后端 action 为「对象.动作」的点分格式。 */
-const AUDIT_ACTION_LABELS: Record<string, string> = {
+export const AUDIT_ACTION_LABELS: Record<string, string> = {
   'auth.login': '账号登录',
   'system.setup': '系统初始化',
   'system.backup': '数据库备份',
@@ -97,7 +93,7 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   'demo.purge': '清除演示数据',
 };
 
-const AUDIT_ACTION_GROUPS: { value: string; label: string }[] = [
+export const AUDIT_ACTION_GROUPS: { value: string; label: string }[] = [
   { value: '', label: '全部动作' },
   { value: 'auth', label: '登录认证' },
   { value: 'camera', label: '点位变更' },
@@ -109,22 +105,17 @@ const AUDIT_ACTION_GROUPS: { value: string; label: string }[] = [
   { value: 'system', label: '系统操作' },
 ];
 
-const AUDIT_RANGE_OPTIONS: { value: string; label: string; ms: number }[] = [
+export const AUDIT_RANGE_OPTIONS: { value: string; label: string; ms: number }[] = [
   { value: 'all', label: '全部时间', ms: 0 },
   { value: '1h', label: '近 1 小时', ms: 60 * 60 * 1000 },
   { value: 'today', label: '今天', ms: -1 },
   { value: '7d', label: '近 7 天', ms: 7 * 24 * 60 * 60 * 1000 },
 ];
 
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const index = Math.min(Math.floor(Math.log2(bytes) / 10), units.length - 1);
-  const value = bytes / 1024 ** index;
-  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[index]}`;
-}
+// 实现收敛到 lib/format.ts；此处 re-export 保持 CamerasTab 等既有导入路径不变。
+export { formatBytes } from '../lib/format';
 
-const PROTOCOL_LABELS: Record<ManagedCamera['protocol'], string> = {
+export const PROTOCOL_LABELS: Record<ManagedCamera['protocol'], string> = {
   none: '未配置',
   hls: 'HLS',
   http: 'HTTP 视频',
@@ -145,8 +136,8 @@ const EMPTY_CAMERA: CameraInput = {
   schedule: null,
 };
 
-const DAY_LABELS = ['日', '一', '二', '三', '四', '五', '六'];
-const FALSE_ALARM_HOTSPOT_THRESHOLD = 5;
+export const DAY_LABELS = ['日', '一', '二', '三', '四', '五', '六'];
+export const FALSE_ALARM_HOTSPOT_THRESHOLD = 5;
 
 export default function AdminPanel({
   cameras,
@@ -225,6 +216,9 @@ export default function AdminPanel({
   const [auditOffset, setAuditOffset] = useState(0);
   const [auditFilter, setAuditFilter] = useState({ action: '', q: '', range: 'all' });
   const [auditBusy, setAuditBusy] = useState(false);
+  // 服务端对关键词搜索自动收敛了默认时间窗时为 true（结果只覆盖最近 N 天）。
+  const [auditSearchWindowed, setAuditSearchWindowed] = useState(false);
+  const [auditSearchWindowDays, setAuditSearchWindowDays] = useState(0);
   const AUDIT_PAGE_SIZE = 50;
   const [testingChannel, setTestingChannel] = useState<string | null>(null);
   const [notifyForm, setNotifyForm] = useState<{
@@ -265,29 +259,48 @@ export default function AdminPanel({
   const [batchSensitivity, setBatchSensitivity] = useState<'' | CameraSensitivity>('');
   const [batchSiteId, setBatchSiteId] = useState('');
   const [error, setError] = useState('');
+  // 全局只有一条 error，切 Tab 不清会让「点位保存失败」一直挂在
+  // 「站点与分组」等无关页面顶部。集中一个切换函数保证所有入口都清理。
+  const switchTab = useCallback((next: TabKey) => {
+    setError('');
+    setTab(next);
+  }, []);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
+
+  // 卸载守卫：面板关闭后仍在途的请求回来时写 state 会造成状态错写与内存泄漏。
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const loadUsers = async () => {
     setUsersLoading(true);
     try {
       const result = await api.users();
+      if (!mountedRef.current) return;
       setUsers(result.users);
     } catch (requestError) {
+      if (!mountedRef.current) return;
       setError(
         requestError instanceof ApiError ? requestError.message : '账号列表加载失败',
       );
     } finally {
-      setUsersLoading(false);
+      if (mountedRef.current) setUsersLoading(false);
     }
   };
 
   const loadSites = async () => {
     try {
       const result = await api.sites();
+      if (!mountedRef.current) return;
       setSites(result.sites);
       setDefaultSiteId(result.defaultSiteId);
     } catch (requestError) {
+      if (!mountedRef.current) return;
       setError(
         requestError instanceof ApiError ? requestError.message : '站点列表加载失败',
       );
@@ -304,9 +317,11 @@ export default function AdminPanel({
         api.notifyChannels(),
         api.notifyTemplates(),
       ]);
+      if (!mountedRef.current) return;
       setNotifyChannels(channelsResult.channels);
       setNotifyTemplates(templatesResult.templates);
     } catch (requestError) {
+      if (!mountedRef.current) return;
       setError(
         requestError instanceof ApiError ? requestError.message : '通知渠道加载失败',
       );
@@ -316,6 +331,7 @@ export default function AdminPanel({
   const loadNotifyTemplates = async () => {
     try {
       const result = await api.notifyTemplates();
+      if (!mountedRef.current) return;
       setNotifyTemplates(result.templates);
     } catch {
       // 模板加载失败不阻塞通知页。
@@ -380,6 +396,7 @@ export default function AdminPanel({
   const loadNotifyLogs = async () => {
     try {
       const result = await api.notificationLogs(30);
+      if (!mountedRef.current) return;
       setNotifyLogs(result.logs);
     } catch {
       // 推送记录失败不阻塞页面。
@@ -440,6 +457,8 @@ export default function AdminPanel({
       if (seq !== auditRequestRef.current) return;
       setAuditLogs(result.logs);
       setAuditTotal(result.total);
+      setAuditSearchWindowed(Boolean(result.searchWindowed));
+      setAuditSearchWindowDays(Number(result.searchWindowDays ?? 0));
       setAuditFilter({
         action: filter.action,
         q: filter.q,
@@ -526,10 +545,17 @@ export default function AdminPanel({
       .catch(() => undefined);
   }, []);
 
+  // health/edge* 只在「点位管理」Tab 消费。此前 5s 轮询在审计日志等 Tab 下
+  // 也照常发请求并 setState（新对象引用），每 5 秒重渲染整棵面板树。
+  // 用 ref 读取当前 Tab，避免把 tab 加进依赖数组导致切 Tab 时重建定时器。
+  const tabRef = useRef<TabKey>(tab);
+  tabRef.current = tab;
   useEffect(() => {
     const loadHealth = async () => {
+      if (tabRef.current !== 'cameras') return;
       try {
         const result = await api.streamHealth();
+        if (tabRef.current !== 'cameras') return;
         setHealth(
           Object.fromEntries(
             result.cameras.map((camera) => [camera.cameraId, camera]),
@@ -537,6 +563,7 @@ export default function AdminPanel({
         );
         setProbeAvailable(result.probeAvailable);
         const edge = await api.edgeStatus();
+        if (tabRef.current !== 'cameras') return;
         setEdgeGateways(edge.gateways);
         setEdgeEnabled(edge.enabled);
         setEdgeToken(edge.pairingToken);
@@ -1084,20 +1111,51 @@ export default function AdminPanel({
     }
   };
 
-  const resetPassword = async (user: SessionUser) => {
-    const password = window.prompt(`为「${user.displayName}」设置新密码（至少 8 位）`);
-    if (!password) return;
+  // 重置密码：改用受控表单弹窗。
+  // 原实现用 window.prompt 收集明文密码——密码明文显示在系统对话框里
+  // （可被录屏/肩窥获取），无强度校验与二次确认。
+  const [passwordTarget, setPasswordTarget] = useState<SessionUser | null>(null);
+  const [passwordDraft, setPasswordDraft] = useState({ password: '', confirm: '' });
+  const [passwordBusy, setPasswordBusy] = useState(false);
+
+  const resetPassword = (user: SessionUser) => {
+    setPasswordTarget(user);
+    setPasswordDraft({ password: '', confirm: '' });
+  };
+
+  const closePasswordDialog = () => {
+    if (passwordBusy) return;
+    setPasswordTarget(null);
+    setPasswordDraft({ password: '', confirm: '' });
+  };
+
+  const submitPasswordReset = async () => {
+    if (!passwordTarget || passwordBusy) return;
+    const { password, confirm } = passwordDraft;
     if (password.length < 8) {
       setError('新密码至少需要 8 位');
       return;
     }
+    if (password.length > 128) {
+      setError('新密码长度不能超过 128 位');
+      return;
+    }
+    if (password !== confirm) {
+      setError('两次输入的新密码不一致');
+      return;
+    }
+    setPasswordBusy(true);
     try {
-      await api.updateUser(user.id, { password });
+      await api.updateUser(passwordTarget.id, { password });
       onNotify('密码已重置', 'ok');
+      setPasswordTarget(null);
+      setPasswordDraft({ password: '', confirm: '' });
     } catch (requestError) {
       setError(
         requestError instanceof ApiError ? requestError.message : '密码重置失败',
       );
+    } finally {
+      setPasswordBusy(false);
     }
   };
 
@@ -1336,7 +1394,7 @@ export default function AdminPanel({
             role="tab"
             aria-selected={tab === 'cameras'}
             className={`admin-tab ${tab === 'cameras' ? 'is-active' : ''}`}
-            onClick={() => setTab('cameras')}
+            onClick={() => switchTab('cameras')}
           >
             点位与视频流
           </button>
@@ -1346,7 +1404,7 @@ export default function AdminPanel({
               role="tab"
               aria-selected={tab === 'users'}
               className={`admin-tab ${tab === 'users' ? 'is-active' : ''}`}
-              onClick={() => setTab('users')}
+              onClick={() => switchTab('users')}
             >
               账号与权限
             </button>
@@ -1356,7 +1414,7 @@ export default function AdminPanel({
             role="tab"
             aria-selected={tab === 'sites'}
             className={`admin-tab ${tab === 'sites' ? 'is-active' : ''}`}
-            onClick={() => setTab('sites')}
+            onClick={() => switchTab('sites')}
           >
             站点与分组
           </button>
@@ -1366,7 +1424,7 @@ export default function AdminPanel({
             aria-selected={tab === 'stats'}
             className={`admin-tab ${tab === 'stats' ? 'is-active' : ''}`}
             onClick={() => {
-              setTab('stats');
+              switchTab('stats');
               void loadAlarmStats(statsDays);
             }}
           >
@@ -1378,7 +1436,7 @@ export default function AdminPanel({
             aria-selected={tab === 'notify'}
             className={`admin-tab ${tab === 'notify' ? 'is-active' : ''}`}
             onClick={() => {
-              setTab('notify');
+              switchTab('notify');
               if (!isSuperAdmin) {
                 setNotifyForm((prev) => ({
                   ...prev,
@@ -1396,7 +1454,7 @@ export default function AdminPanel({
               aria-selected={tab === 'audit'}
               className={`admin-tab ${tab === 'audit' ? 'is-active' : ''}`}
               onClick={() => {
-                setTab('audit');
+                switchTab('audit');
                 void loadAuditLogs({ offset: 0 });
               }}
             >
@@ -1419,1682 +1477,257 @@ export default function AdminPanel({
 
         <div className="admin-body">
           {tab === 'cameras' ? (
-            <div className="admin-section">
-              <div className="admin-section-head">
-                <div>
-                  <h3>已接入点位</h3>
-                  <p>点位保存在服务器，所有账号登录后看到同一份配置。</p>
-                </div>
-                <div className="admin-section-actions">
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-ghost"
-                    onClick={() => {
-                      setShowOnvifForm((visible) => !visible);
-                      setShowNvrForm(false);
-                      setShowCameraForm(false);
-                      setError('');
-                    }}
-                  >
-                    ONVIF 自动发现
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-ghost"
-                    onClick={() => {
-                      setShowNvrForm((visible) => !visible);
-                      setShowOnvifForm(false);
-                      setShowCameraForm(false);
-                      setError('');
-                    }}
-                  >
-                    品牌设备批量接入
-                  </button>
-                  <button type="button" className="btn btn-sm btn-danger" onClick={openCreateCamera} data-testid="point-add-single">
-                    新增单个点位
-                  </button>
-                  <button
-                    type="button"
-                    className={`btn btn-sm btn-ghost ${selectionMode ? 'is-active' : ''}`}
-                    onClick={() => (selectionMode ? exitSelectionMode() : setSelectionMode(true))}
-                  >
-                    {selectionMode ? '取消批量' : '批量管理'}
-                  </button>
-                </div>
-              </div>
-
-              {isSuperAdmin && edgeEnabled && (
-                <div className="edge-status-strip">
-                  <strong>现场边缘网关</strong>
-                  {edgeGateways.length === 0 && (
-                    <span className="edge-off">已启用，等待现场网关主动连接…</span>
-                  )}
-                  {edgeGateways.map((gateway) => (
-                    <span key={gateway.gatewayId}>
-                      {gateway.name}（{gateway.gatewayId}）：
-                      {gateway.cameras.length
-                        ? gateway.cameras
-                            .map((camera) => `${camera.label}=${camera.key}`)
-                            .join('、')
-                        : '未上报摄像头'}
-                    </span>
-                  ))}
-                  <div className="edge-pairing">
-                    <span>配对令牌（仅用于现场网关配置，不会展示给普通用户）：</span>
-                    <code className="edge-token">{edgeToken || '（未生成）'}</code>
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-ghost"
-                      onClick={() => void copyEdgeToken()}
-                    >
-                      复制令牌
-                    </button>
-                  </div>
-                </div>
-              )}
-              {isSuperAdmin && !edgeEnabled && (
-                <div className="edge-status-strip edge-off">
-                  现场边缘网关未启用：服务端需配置 <code>EDGE_GATEWAY_TOKEN</code> 环境变量后才接受现场网关主动连接。
-                </div>
-              )}
-
-              {isSuperAdmin && system?.detection && (
-                <div
-                  className={`edge-status-strip ${
-                    system.detection.active ? '' : 'edge-off'
-                  }`}
-                >
-                  <strong>服务端识别</strong>
-                  {!system.detection.enabled && (
-                    <span>已通过 SERVER_DETECTION=0 停用</span>
-                  )}
-                  {system.detection.enabled && !system.detection.ffmpegAvailable && (
-                    <span>未找到 FFmpeg，服务端识别不可用</span>
-                  )}
-                  {system.detection.active && (
-                    <>
-                      <span>
-                        {system.detection.width}×{system.detection.height} @
-                        {system.detection.fps}fps · 灵敏度{' '}
-                        {system.detection.sensitivity}
-                      </span>
-                      <span>
-                        巡检{' '}
-                        {
-                          system.detection.cameras.filter((camera) => camera.running)
-                            .length
-                        }{' '}
-                        路 · 已处理 {system.detection.stats.frames} 帧 · 告警{' '}
-                        {system.detection.stats.alarms} 条
-                      </span>
-                    </>
-                  )}
-                </div>
-              )}
-
-              {isSuperAdmin && system?.storage && (
-                <div className="edge-status-strip">
-                  <strong>存储占用</strong>
-                  <span>
-                    数据库 {formatBytes(system.storage.dbBytes)} · 抓拍{' '}
-                    {system.storage.snapshots.files} 张 /{' '}
-                    {formatBytes(system.storage.snapshots.bytes)} · 短视频{' '}
-                    {system.storage.recordings.files} 段 /{' '}
-                    {formatBytes(system.storage.recordings.bytes)}
-                  </span>
-                  <span>
-                    媒体合计 {formatBytes(system.storage.mediaBytes)} / 上限{' '}
-                    {formatBytes(system.storage.mediaMaxBytes)}
-                    （超出自动清理最老的已关闭告警媒体）
-                  </span>
-                </div>
-              )}
-
-              {isSuperAdmin && (
-                <div className="admin-demo-card">
-                  <div className="admin-demo-head">
-                    <div>
-                      <h4>演示模式</h4>
-                      <p>
-                        没有真实摄像头时，用 FFmpeg 合成一段会闪烁的火焰直播流，
-                        自动注册「演示点位」，几秒内即可在监控大屏看到完整闭环：
-                        播放 → 识别 → 告警 → 抓拍/短视频 → 推送 → 统计。
-                      </p>
-                    </div>
-                    <div className="admin-demo-actions">
-                      {demoStatus?.running ? (
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-danger"
-                          disabled={demoBusy}
-                          onClick={() => void toggleDemo('stop')}
-                        >
-                          {demoBusy ? '停止中…' : '停止演示'}
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-primary"
-                          disabled={demoBusy || !demoStatus?.ffmpegAvailable}
-                          onClick={() => void toggleDemo('start')}
-                          title={
-                            demoStatus && !demoStatus.ffmpegAvailable
-                              ? '服务器未安装 FFmpeg'
-                              : ''
-                          }
-                        >
-                          {demoBusy ? '启动中…' : '启动演示'}
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-ghost"
-                        disabled={demoBusy || !demoStatus?.purgeable?.alarms}
-                        onClick={() => void purgeDemoData()}
-                        title="清除演示产生的告警、抓拍、短视频与推送日志（真实数据不受影响）"
-                      >
-                        清除演示数据
-                        {demoStatus?.purgeable?.alarms
-                          ? `（${demoStatus.purgeable.alarms}）`
-                          : ''}
-                      </button>
-                    </div>
-                  </div>
-                  {demoStatus?.lastError && (
-                    <p className="admin-error">{demoStatus.lastError}</p>
-                  )}
-                  {demoStatus?.running && (
-                    <p className="admin-demo-status">
-                      正在播放合成火焰流（{demoStatus.width}×{demoStatus.height}@
-                      {demoStatus.fps}fps · {demoStatus.segmentSeconds}s 分片）。
-                      演示点位代码 <code>{demoStatus.camera?.code ?? 'DEMO-01'}</code>，
-                      播放地址 <code>{demoStatus.playlistUrl}</code>。
-                    </p>
-                  )}
-                  {demoStatus && demoStatus.purgeable && demoStatus.purgeable.alarms > 0 && (
-                    <p className="admin-demo-status">
-                      演示已产生 {demoStatus.purgeable.alarms} 条告警
-                      （抓拍 {demoStatus.purgeable.snapshots} 张、短视频{' '}
-                      {demoStatus.purgeable.clips} 段）。这些数据会计入趋势看板与每日摘要，
-                      可用「清除演示数据」一键清理。
-                    </p>
-                  )}
-                  {demoStatus &&
-                    !demoStatus.running &&
-                    !demoStatus.ffmpegAvailable && (
-                      <p className="admin-demo-status">
-                        服务器未检测到 FFmpeg，演示模式不可用。
-                      </p>
-                    )}
-                </div>
-              )}
-
-              {showNvrForm && (
-                <form className="admin-form admin-nvr-form" onSubmit={submitNvr}>
-                  <div className="admin-form-title">
-                    <h4>品牌 NVR / 摄像机批量接入</h4>
-                    <button
-                      type="button"
-                      className="admin-form-close"
-                      onClick={() => setShowNvrForm(false)}
-                    >
-                      取消
-                    </button>
-                  </div>
-                  <p className="admin-form-hint admin-nvr-intro">
-                    {selectedVendor?.hint ??
-                      '服务器需能直接访问设备。选择品牌后按标准 RTSP 规则生成地址，导入后由服务端转 HLS。'}
-                  </p>
-                  <div className="admin-nvr-grid">
-                    <label className="admin-nvr-vendor">
-                      <span>设备品牌 / 接入方式</span>
-                      <select
-                        className="settings-input"
-                        value={nvrForm.vendorId}
-                        onChange={(event) => changeVendor(event.target.value)}
-                      >
-                        {vendors.length === 0 && (
-                          <option value="hikvision">海康威视 / 海康兼容</option>
-                        )}
-                        {vendors.map((vendor) => (
-                          <option key={vendor.id} value={vendor.id}>
-                            {vendor.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      <span>{selectedVendor?.singleChannel ? '设备地址' : 'NVR 地址'}</span>
-                      <input
-                        className="settings-input"
-                        value={nvrForm.host}
-                        placeholder="192.168.1.64"
-                        required
-                        onChange={(event) =>
-                          setNvrForm((prev) => ({ ...prev, host: event.target.value }))
-                        }
-                      />
-                    </label>
-                    <label>
-                      <span>RTSP 端口</span>
-                      <input
-                        type="number"
-                        className="settings-input"
-                        value={nvrForm.rtspPort}
-                        min={1}
-                        max={65535}
-                        required
-                        onChange={(event) =>
-                          setNvrForm((prev) => ({
-                            ...prev,
-                            rtspPort: Number(event.target.value),
-                          }))
-                        }
-                      />
-                    </label>
-                    <label>
-                      <span>{selectedVendor?.singleChannel ? '设备用户名' : 'NVR 用户名'}</span>
-                      <input
-                        className="settings-input"
-                        value={nvrForm.username}
-                        autoComplete="off"
-                        required
-                        onChange={(event) =>
-                          setNvrForm((prev) => ({ ...prev, username: event.target.value }))
-                        }
-                      />
-                    </label>
-                    <label>
-                      <span>{selectedVendor?.singleChannel ? '设备密码' : 'NVR 密码'}</span>
-                      <input
-                        type="password"
-                        className="settings-input"
-                        value={nvrForm.password}
-                        autoComplete="new-password"
-                        required
-                        onChange={(event) =>
-                          setNvrForm((prev) => ({ ...prev, password: event.target.value }))
-                        }
-                      />
-                    </label>
-                    {!selectedVendor?.singleChannel && (
-                      <>
-                        <label>
-                          <span>起始通道</span>
-                          <input
-                            type="number"
-                            className="settings-input"
-                            value={nvrForm.startChannel}
-                            min={1}
-                            max={256}
-                            required
-                            onChange={(event) =>
-                              setNvrForm((prev) => ({
-                                ...prev,
-                                startChannel: Number(event.target.value),
-                              }))
-                            }
-                          />
-                        </label>
-                        <label>
-                          <span>导入通道数</span>
-                          <input
-                            type="number"
-                            className="settings-input"
-                            value={nvrForm.count}
-                            min={1}
-                            max={64}
-                            required
-                            onChange={(event) =>
-                              setNvrForm((prev) => ({
-                                ...prev,
-                                count: Number(event.target.value),
-                              }))
-                            }
-                          />
-                        </label>
-                      </>
-                    )}
-                    {selectedVendor && selectedVendor.supportsSubstream !== false && (
-                      <label>
-                        <span>码流</span>
-                        <select
-                          className="settings-input"
-                          value={nvrForm.stream}
-                          onChange={(event) =>
-                            setNvrForm((prev) => ({
-                              ...prev,
-                              stream: event.target.value as 'main' | 'sub',
-                            }))
-                          }
-                        >
-                          <option value="sub">子码流（推荐）</option>
-                          <option value="main">主码流</option>
-                        </select>
-                      </label>
-                    )}
-                    {selectedVendor?.custom && (
-                      <label className="admin-nvr-template">
-                        <span>RTSP 地址模板</span>
-                        <input
-                          className="settings-input"
-                          value={nvrForm.template}
-                          placeholder="rtsp://{user}:{password}@{host}:{port}/live/{channel}"
-                          required
-                          onChange={(event) =>
-                            setNvrForm((prev) => ({ ...prev, template: event.target.value }))
-                          }
-                        />
-                      </label>
-                    )}
-                    <label>
-                      <span>所属区域</span>
-                      <input
-                        className="settings-input"
-                        value={nvrForm.zone}
-                        placeholder="例如：园区 A 区"
-                        required
-                        onChange={(event) =>
-                          setNvrForm((prev) => ({ ...prev, zone: event.target.value }))
-                        }
-                      />
-                    </label>
-                    <label>
-                      <span>点位名前缀</span>
-                      <input
-                        className="settings-input"
-                        value={nvrForm.namePrefix}
-                        maxLength={20}
-                        onChange={(event) =>
-                          setNvrForm((prev) => ({ ...prev, namePrefix: event.target.value }))
-                        }
-                      />
-                    </label>
-                    <label>
-                      <span>所属站点</span>
-                      <select
-                        className="settings-input"
-                        value={nvrForm.siteId || defaultSiteId || ''}
-                        onChange={(event) =>
-                          setNvrForm((prev) => ({ ...prev, siteId: event.target.value }))
-                        }
-                      >
-                        {sites.length === 0 && <option value={defaultSiteId}>默认站点</option>}
-                        {sites.map((site) => (
-                          <option key={site.id} value={site.id}>
-                            {site.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-                  <p className="admin-form-hint">
-                    {selectedVendor?.custom
-                      ? '模板占位符：{user}、{password}、{host}、{port}、{channel}、{stream}、{streamNum}。仅适用于支持标准 RTSP 的设备；仅厂商云内出流的型号需走厂商开放平台或现场网关。'
-                      : selectedVendor?.singleChannel
-                        ? '该品牌按单机位接入，一台设备创建一个点位；多台摄像机请分别填写各自 IP。相同地址会跳过。'
-                        : '系统按所选品牌的通道规则批量生成 RTSP 地址，相同地址会自动跳过；子码流可降低多路查看压力。'}
-                  </p>
-                  <div className="admin-form-actions">
-                    <button type="submit" className="btn btn-sm btn-danger" disabled={nvrBusy}>
-                      {nvrBusy ? '导入中…' : '批量导入点位'}
-                    </button>
-                  </div>
-                </form>
-              )}
-
-              {showOnvifForm && (
-                <div className="admin-form admin-onvif-form">
-                  <div className="admin-form-title">
-                    <h4>ONVIF 自动发现</h4>
-                    <button
-                      type="button"
-                      className="admin-form-close"
-                      onClick={() => setShowOnvifForm(false)}
-                    >
-                      取消
-                    </button>
-                  </div>
-                  <p className="admin-form-hint admin-nvr-intro">
-                    可直接点击「扫描全网段」自动发现设备 IP，或手工填写（多个用逗号分隔）及 ONVIF
-                    端口与凭据。服务端将通过 SOAP/WS-Security 探测取流地址，免手工填写 RTSP。
-                  </p>
-                  <form onSubmit={runOnvifDiscover}>
-                    <div className="admin-nvr-grid">
-                      <label className="admin-nvr-vendor">
-                        <span>设备地址（IP 或主机，逗号分隔）</span>
-                        <input
-                          className="settings-input"
-                          value={onvifForm.hosts}
-                          placeholder="192.168.1.64, 192.168.1.65"
-                          required
-                          onChange={(event) =>
-                            setOnvifForm((prev) => ({ ...prev, hosts: event.target.value }))
-                          }
-                        />
-                      </label>
-                      <label>
-                        <span>ONVIF 端口</span>
-                        <input
-                          type="number"
-                          className="settings-input"
-                          value={onvifForm.port}
-                          min={1}
-                          max={65535}
-                          required
-                          onChange={(event) =>
-                            setOnvifForm((prev) => ({ ...prev, port: Number(event.target.value) }))
-                          }
-                        />
-                      </label>
-                      <label>
-                        <span>用户名</span>
-                        <input
-                          className="settings-input"
-                          value={onvifForm.username}
-                          autoComplete="off"
-                          onChange={(event) =>
-                            setOnvifForm((prev) => ({ ...prev, username: event.target.value }))
-                          }
-                        />
-                      </label>
-                      <label>
-                        <span>密码</span>
-                        <input
-                          type="password"
-                          className="settings-input"
-                          value={onvifForm.password}
-                          autoComplete="new-password"
-                          onChange={(event) =>
-                            setOnvifForm((prev) => ({ ...prev, password: event.target.value }))
-                          }
-                        />
-                      </label>
-                      <label>
-                        <span>所属区域</span>
-                        <input
-                          className="settings-input"
-                          value={onvifForm.zone}
-                          placeholder="例如：园区 A 区"
-                          onChange={(event) =>
-                            setOnvifForm((prev) => ({ ...prev, zone: event.target.value }))
-                          }
-                        />
-                      </label>
-                      <label>
-                        <span>所属站点</span>
-                        <select
-                          className="settings-input"
-                          value={onvifForm.siteId || defaultSiteId || ''}
-                          onChange={(event) =>
-                            setOnvifForm((prev) => ({ ...prev, siteId: event.target.value }))
-                          }
-                        >
-                          {sites.length === 0 && <option value={defaultSiteId}>默认站点</option>}
-                          {sites.map((site) => (
-                            <option key={site.id} value={site.id}>
-                              {site.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-                    <div className="admin-form-actions">
-                      <button
-                        type="button"
-                        className="btn btn-sm"
-                        disabled={onvifScanBusy || onvifBusy}
-                        onClick={() => void runOnvifScan()}
-                      >
-                        {onvifScanBusy ? '扫描中…' : '扫描全网段'}
-                      </button>
-                      <button type="submit" className="btn btn-sm btn-danger" disabled={onvifBusy}>
-                        {onvifBusy ? '探测中…' : '开始发现'}
-                      </button>
-                    </div>
-                  </form>
-
-                  {onvifScanDevices.length > 0 && (
-                    <p className="admin-form-hint">
-                      已扫描到 {onvifScanDevices.length} 台设备：
-                      {onvifScanDevices
-                        .slice(0, 4)
-                        .map(
-                          (device) =>
-                            `${device.host}${device.name ? `（${device.name}）` : ''}`,
-                        )
-                        .join('、')}
-                      {onvifScanDevices.length > 4
-                        ? ` 等 ${onvifScanDevices.length} 台`
-                        : ''}
-                      。请核对端口与凭据后点击「开始发现」。
-                    </p>
-                  )}
-
-                  {onvifResults.length > 0 && (
-                    <div className="onvif-results">
-                      {onvifResults.map((entry) => (
-                        <div
-                          key={`${entry.target.host}:${entry.target.port}`}
-                          className={`onvif-device ${entry.ok ? 'is-ok' : 'is-error'}`}
-                        >
-                          <div className="onvif-device-head">
-                            <strong>{entry.target.host}:{entry.target.port}</strong>
-                            <span>
-                              {entry.ok && entry.device
-                                ? `${entry.device.manufacturer || '未知厂商'} ${
-                                    entry.device.model || ''
-                                  }`.trim()
-                                : entry.error ?? '探测失败'}
-                            </span>
-                          </div>
-                          {entry.ok && entry.device && (
-                            <div className="onvif-profiles">
-                              {entry.device.profiles.length === 0 && (
-                                <span className="onvif-profile-empty">无可用通道</span>
-                              )}
-                              {entry.device.profiles.map((profile) => {
-                                const key = `${entry.device!.host}:${profile.token}`;
-                                return (
-                                  <label
-                                    key={key}
-                                    className={`onvif-profile ${
-                                      profile.rtspUri ? '' : 'is-disabled'
-                                    }`}
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={onvifSelected.includes(key)}
-                                      disabled={!profile.rtspUri}
-                                      onChange={() => toggleOnvifProfile(key)}
-                                    />
-                                    <span>
-                                      {profile.name || profile.token}
-                                      {profile.rtspUri ? (
-                                        <code className="onvif-uri">{profile.rtspUri}</code>
-                                      ) : (
-                                        <span className="onvif-no-uri">（无 RTSP 流）</span>
-                                      )}
-                                    </span>
-                                  </label>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                      <div className="admin-form-actions">
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-danger"
-                          disabled={onvifImporting || onvifSelected.length === 0}
-                          onClick={() => void importOnvifSelected()}
-                        >
-                          {onvifImporting
-                            ? '导入中…'
-                            : `导入选中通道（${onvifSelected.length}）`}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {cameras.length === 0 ? (
-                <p className="admin-empty">还没有点位，请先新增一个网络监控点位。</p>
-              ) : (
-                <>
-                  {selectionMode && (
-                    <div className="batch-bar">
-                      <label className="batch-select-all">
-                        <input
-                          type="checkbox"
-                          checked={
-                            selectedIds.length === visibleCameraIds.length &&
-                            visibleCameraIds.length > 0
-                          }
-                          onChange={toggleSelectAll}
-                        />
-                        全选（{selectedIds.length}/{visibleCameraIds.length}）
-                      </label>
-                      <div className="batch-actions">
-                        <button
-                          type="button"
-                          className="btn btn-sm"
-                          disabled={selectedIds.length === 0 || cameraBusy}
-                          onClick={() => void runBatchUpdate({ detectEnabled: true }, '启用检测')}
-                        >
-                          启用检测
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-sm"
-                          disabled={selectedIds.length === 0 || cameraBusy}
-                          onClick={() => void runBatchUpdate({ detectEnabled: false }, '停用检测')}
-                        >
-                          停用检测
-                        </button>
-                        <select
-                          className="settings-input batch-select"
-                          value={batchSensitivity}
-                          disabled={selectedIds.length === 0 || cameraBusy}
-                          onChange={(event) => {
-                            const value = event.target.value as '' | CameraSensitivity;
-                            setBatchSensitivity(value);
-                            if (value) {
-                              void runBatchUpdate(
-                                { detectSensitivity: value },
-                                `设为${value === 'low' ? '低' : value === 'high' ? '高' : '标准'}灵敏度`,
-                              );
-                            }
-                          }}
-                        >
-                          <option value="">灵敏度…</option>
-                          <option value="low">低</option>
-                          <option value="standard">标准</option>
-                          <option value="high">高</option>
-                        </select>
-                        <select
-                          className="settings-input batch-select"
-                          value={batchSiteId}
-                          disabled={selectedIds.length === 0 || cameraBusy}
-                          onChange={(event) => {
-                            const value = event.target.value;
-                            setBatchSiteId(value);
-                            if (value) void runBatchUpdate({ siteId: value }, '调整所属站点');
-                          }}
-                        >
-                          <option value="">移动到站点…</option>
-                          {sites.map((site) => (
-                            <option key={site.id} value={site.id}>
-                              {site.name}
-                            </option>
-                          ))}
-                        </select>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-danger"
-                          disabled={selectedIds.length === 0 || cameraBusy}
-                          onClick={() => void runBatchDelete()}
-                        >
-                          删除选中
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-ghost"
-                          onClick={exitSelectionMode}
-                        >
-                          退出
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  {sites.length > 0 && (
-                    <div className="admin-filter-row">
-                      <label className="admin-filter">
-                        <span>按站点筛选</span>
-                        <select
-                          className="settings-input"
-                          value={siteFilter}
-                          onChange={(event) => setSiteFilter(event.target.value)}
-                        >
-                          <option value="">全部站点</option>
-                          {sites.map((site) => (
-                            <option key={site.id} value={site.id}>
-                              {site.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <span className="admin-filter-count">
-                        共 {siteFilter ? cameras.filter((camera) => siteKey(camera.siteId) === siteFilter).length : cameras.length} 个点位
-                      </span>
-                    </div>
-                  )}
-                  <div className="point-list">
-                    {cameras
-                      .filter((camera) =>
-                        siteFilter ? siteKey(camera.siteId) === siteFilter : true,
-                      )
-                      .map((camera) => {
-                    const item = health[camera.id];
-                    const probe = probeResults[camera.id];
-                    return (
-                      <Fragment key={camera.id}>
-                        <div className="point-row">
-                          {selectionMode && (
-                            <input
-                              type="checkbox"
-                              className="point-select"
-                              checked={selectedIds.includes(camera.id)}
-                              onChange={() => toggleSelect(camera.id)}
-                            />
-                          )}
-                          <span className="point-code">{camera.code}</span>
-                          <div className="point-main">
-                            <strong>{camera.name}</strong>
-                            <span>
-                              {camera.zone} · {PROTOCOL_LABELS[camera.protocol]}
-                              {!camera.hasSource && ' · 待配置视频流'}
-                            </span>
-                            {(falseHotspots[camera.id] ?? 0) >= FALSE_ALARM_HOTSPOT_THRESHOLD && (
-                              <span
-                                className="false-alarm-badge"
-                                title="近 7 天误报偏多，建议调整识别灵敏度或在屏蔽区中排除常亮干扰源"
-                              >
-                                7 天误报 {falseHotspots[camera.id]} 次 · 建议调优
-                              </span>
-                            )}
-                          </div>
-                          <span className="point-site" title="所属站点">
-                            {siteName(camera.siteId)}
-                          </span>
-                          <span
-                            className={`point-state ${
-                              item?.status === 'running' ||
-                              item?.status === 'gateway' ||
-                              item?.status === 'external'
-                                ? 'is-on'
-                                : item?.status === 'error'
-                                  ? 'is-error'
-                                  : ''
-                            }`}
-                            title={item?.lastError ?? undefined}
-                          >
-                            {healthText(item)}
-                          </span>
-                          <div className="point-actions">
-                            <button
-                              type="button"
-                              className="btn btn-sm btn-ghost"
-                              disabled={!probeAvailable || !camera.hasSource || testingId === camera.id}
-                              title={
-                                probeAvailable
-                                  ? '让服务器实际拉流并读取编码、分辨率和首帧耗时'
-                                  : '服务器未安装 FFprobe'
-                              }
-                              onClick={() => void runProbe(camera)}
-                            >
-                              {testingId === camera.id ? '测流中…' : '测试'}
-                            </button>
-                            <button type="button" className="btn btn-sm btn-ghost" onClick={() => openEditCamera(camera)}>
-                              编辑
-                            </button>
-                            <button type="button" className="btn btn-sm btn-ghost" onClick={() => void deleteCamera(camera)}>
-                              删除
-                            </button>
-                          </div>
-                        </div>
-                        {probe && (
-                          <div className={`stream-test-result ${probe.ok ? 'is-ok' : 'is-error'}`}>
-                            {probe.ok
-                              ? `${probe.codec ?? '视频'} ${
-                                  probe.width && probe.height
-                                    ? `${probe.width}×${probe.height}`
-                                    : ''
-                                } · ${probe.fps ?? ''} · ${probe.latencyMs}ms`
-                              : probe.error}
-                          </div>
-                        )}
-                      </Fragment>
-                    );
-                  })}
-                  </div>
-                </>
-              )}
-
-              {showCameraForm && (
-                <form className="admin-form" onSubmit={submitCamera}>
-                  <div className="admin-form-title">
-                    <h4>{editingId ? '编辑点位' : '新增点位'}</h4>
-                    <button type="button" className="admin-form-close" onClick={() => setShowCameraForm(false)}>
-                      取消
-                    </button>
-                  </div>
-                  <div className="admin-form-grid">
-                    <label>
-                      <span>点位名称</span>
-                      <input
-                        className="settings-input"
-                        value={cameraForm.name}
-                        maxLength={24}
-                        data-testid="point-name-input"
-                        required
-                        onChange={(event) =>
-                          setCameraForm((prev) => ({ ...prev, name: event.target.value }))
-                        }
-                      />
-                    </label>
-                    <label>
-                      <span>所属区域</span>
-                      <input
-                        className="settings-input"
-                        value={cameraForm.zone}
-                        maxLength={32}
-                        data-testid="point-zone-input"
-                        required
-                        onChange={(event) =>
-                          setCameraForm((prev) => ({ ...prev, zone: event.target.value }))
-                        }
-                      />
-                    </label>
-                    <label>
-                      <span>视频流类型</span>
-                      <select
-                        className="settings-input"
-                        value={cameraForm.protocol}
-                        onChange={(event) =>
-                          setCameraForm((prev) => ({
-                            ...prev,
-                            protocol: event.target.value as CameraInput['protocol'],
-                          }))
-                        }
-                      >
-                        <option value="none">暂不配置</option>
-                        <option value="hls">HLS（.m3u8）</option>
-                        <option value="http">HTTP 视频</option>
-                        <option value="rtsp">RTSP / NVR</option>
-                        <option value="edge">现场边缘网关</option>
-                      </select>
-                    </label>
-                    <label>
-                      <span>所属站点</span>
-                      <select
-                        className="settings-input"
-                        value={cameraForm.siteId || defaultSiteId || ''}
-                        onChange={(event) =>
-                          setCameraForm((prev) => ({ ...prev, siteId: event.target.value }))
-                        }
-                      >
-                        {sites.length === 0 && <option value={defaultSiteId}>默认站点</option>}
-                        {sites.map((site) => (
-                          <option key={site.id} value={site.id}>
-                            {site.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="admin-form-url">
-                      <span>视频流地址</span>
-                      <input
-                        className="settings-input"
-                        value={cameraForm.sourceUrl}
-                        disabled={cameraForm.protocol === 'none'}
-                        placeholder={
-                          cameraForm.protocol === 'rtsp'
-                            ? 'rtsp://用户名:密码@192.168.1.10:554/Streaming/Channels/101'
-                            : cameraForm.protocol === 'edge'
-                              ? 'edge://site-a/ch01'
-                              : 'https://example.com/live/stream.m3u8'
-                        }
-                        required={cameraForm.protocol !== 'none'}
-                        onChange={(event) =>
-                          setCameraForm((prev) => ({ ...prev, sourceUrl: event.target.value }))
-                        }
-                      />
-                    </label>
-                    <div className="admin-form-detect-group">
-                      <label>
-                        <span>服务端检测</span>
-                        <select
-                          className="settings-input"
-                          value={cameraForm.detectEnabled === false ? 'off' : 'on'}
-                          onChange={(event) =>
-                            setCameraForm((prev) => ({
-                              ...prev,
-                              detectEnabled: event.target.value === 'on',
-                            }))
-                          }
-                        >
-                          <option value="on">启用</option>
-                          <option value="off">停用</option>
-                        </select>
-                      </label>
-                      <label>
-                        <span>识别灵敏度</span>
-                        <select
-                          className="settings-input"
-                          value={cameraForm.detectSensitivity ?? ''}
-                          onChange={(event) =>
-                            setCameraForm((prev) => ({
-                              ...prev,
-                              detectSensitivity:
-                                (event.target.value as CameraSensitivity) || null,
-                            }))
-                          }
-                        >
-                          <option value="">跟随全局（标准）</option>
-                          <option value="low">稳健</option>
-                          <option value="standard">标准</option>
-                          <option value="high">灵敏</option>
-                        </select>
-                      </label>
-                    </div>
-                    <label className="admin-form-roi">
-                      <span>布防时间表（撤防时段仅暂停火情检测，播放与画面异常监测不受影响）</span>
-                      <select
-                        className="settings-input"
-                        value={cameraForm.schedule ? 'custom' : 'always'}
-                        onChange={(event) =>
-                          setCameraForm((prev) => ({
-                            ...prev,
-                            schedule:
-                              event.target.value === 'custom'
-                                ? {
-                                    windows: [
-                                      { days: [1, 2, 3, 4, 5], start: '08:00', end: '20:00' },
-                                    ],
-                                  }
-                                : null,
-                          }))
-                        }
-                      >
-                        <option value="always">全天候布防（7×24 检测）</option>
-                        <option value="custom">按时段布防</option>
-                      </select>
-                      {cameraForm.schedule && (
-                        <div className="schedule-editor">
-                          {cameraForm.schedule.windows.map((win, index) => (
-                            <div key={index} className="schedule-row">
-                              <div className="schedule-days">
-                                {DAY_LABELS.map((label, day) => (
-                                  <button
-                                    type="button"
-                                    key={day}
-                                    className={`schedule-day ${win.days.includes(day) ? 'is-on' : ''}`}
-                                    onClick={() => toggleScheduleDay(index, day)}
-                                  >
-                                    {label}
-                                  </button>
-                                ))}
-                              </div>
-                              <input
-                                type="time"
-                                className="settings-input schedule-time"
-                                value={win.start}
-                                onChange={(event) =>
-                                  updateScheduleWindow(index, { start: event.target.value })
-                                }
-                              />
-                              <span className="schedule-sep">至</span>
-                              <input
-                                type="time"
-                                className="settings-input schedule-time"
-                                value={win.end}
-                                onChange={(event) =>
-                                  updateScheduleWindow(index, { end: event.target.value })
-                                }
-                              />
-                              <button
-                                type="button"
-                                className="btn btn-sm btn-ghost"
-                                onClick={() => removeScheduleWindow(index)}
-                              >
-                                删除
-                              </button>
-                            </div>
-                          ))}
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-ghost"
-                            onClick={addScheduleWindow}
-                          >
-                            + 添加时段
-                          </button>
-                          <span className="schedule-hint">
-                            结束时间早于开始时间表示跨零点（如 22:00 至 06:00）。
-                          </span>
-                        </div>
-                      )}
-                    </label>
-                    {(cameraForm.protocol === 'rtsp' ||
-                      cameraForm.protocol === 'hls' ||
-                      cameraForm.protocol === 'http') && (
-                      <label className="admin-form-roi">
-                        <span>
-                          屏蔽区（拖拽框选不需要检测的区域，如天空、路灯、屏幕）
-                        </span>
-                        <RoiEditor
-                          value={cameraForm.detectRoi ?? []}
-                          onChange={(next) =>
-                            setCameraForm((prev) => ({ ...prev, detectRoi: next }))
-                          }
-                          previewUrl={
-                            editingId
-                              ? `/api/cameras/${editingId}/preview?refresh=1`
-                              : null
-                          }
-                        />
-                      </label>
-                    )}
-                  </div>
-                  <label className="admin-check">
-                    <input
-                      type="checkbox"
-                      checked={cameraForm.enabled}
-                      onChange={(event) =>
-                        setCameraForm((prev) => ({ ...prev, enabled: event.target.checked }))
-                      }
-                    />
-                    启用该点位
-                  </label>
-                  <p className="admin-form-hint">
-                    RTSP 地址保存在服务器，由服务端 FFmpeg 转为浏览器可播放的 HLS；HLS/HTTP
-                    地址直接由浏览器播放，跨域视频源需允许 CORS，浏览器才能播放并做帧识别。
-                    现场边缘网关使用 edge://网关ID/摄像头标识，由现场设备主动连中心，不需要公网 IP。
-                  </p>
-                  <div className="admin-form-actions">
-                    <button type="submit" className="btn btn-sm btn-danger" disabled={cameraBusy} data-testid="point-save">
-                      {cameraBusy ? '保存中…' : '保存点位'}
-                    </button>
-                  </div>
-                </form>
-              )}
-            </div>
+            <CamerasTab
+              isSuperAdmin={isSuperAdmin}
+              selectionMode={selectionMode}
+              edgeEnabled={edgeEnabled}
+              edgeGateways={edgeGateways}
+              edgeToken={edgeToken}
+              system={system}
+              demoStatus={demoStatus}
+              demoBusy={demoBusy}
+              showNvrForm={showNvrForm}
+              nvrBusy={nvrBusy}
+              showOnvifForm={showOnvifForm}
+              onvifScanBusy={onvifScanBusy}
+              onvifBusy={onvifBusy}
+              onvifScanDevices={onvifScanDevices}
+              onvifResults={onvifResults}
+              onvifSelected={onvifSelected}
+              onvifImporting={onvifImporting}
+              cameras={cameras}
+              siteFilter={siteFilter}
+              selectedIds={selectedIds}
+              cameraBusy={cameraBusy}
+              batchSensitivity={batchSensitivity}
+              batchSiteId={batchSiteId}
+              sites={sites}
+              health={health}
+              probeResults={probeResults}
+              falseHotspots={falseHotspots}
+              testingId={testingId}
+              probeAvailable={probeAvailable}
+              showCameraForm={showCameraForm}
+              editingId={editingId}
+              cameraForm={cameraForm}
+              vendors={vendors}
+              nvrForm={nvrForm}
+              onvifForm={onvifForm}
+              selectedVendor={selectedVendor}
+              visibleCameraIds={visibleCameraIds}
+              defaultSiteId={defaultSiteId}
+              siteKey={siteKey}
+              siteName={siteName}
+              healthText={healthText}
+              setShowOnvifForm={setShowOnvifForm}
+              setShowNvrForm={setShowNvrForm}
+              setShowCameraForm={setShowCameraForm}
+              setError={setError}
+              setSelectionMode={setSelectionMode}
+              setNvrForm={setNvrForm}
+              setOnvifForm={setOnvifForm}
+              setBatchSensitivity={setBatchSensitivity}
+              setBatchSiteId={setBatchSiteId}
+              setSiteFilter={setSiteFilter}
+              setCameraForm={setCameraForm}
+              openCreateCamera={openCreateCamera}
+              exitSelectionMode={exitSelectionMode}
+              copyEdgeToken={copyEdgeToken}
+              toggleDemo={toggleDemo}
+              purgeDemoData={purgeDemoData}
+              submitNvr={submitNvr}
+              changeVendor={changeVendor}
+              runOnvifScan={runOnvifScan}
+              runOnvifDiscover={runOnvifDiscover}
+              toggleOnvifProfile={toggleOnvifProfile}
+              importOnvifSelected={importOnvifSelected}
+              toggleSelectAll={toggleSelectAll}
+              toggleSelect={toggleSelect}
+              runBatchUpdate={runBatchUpdate}
+              runBatchDelete={runBatchDelete}
+              runProbe={runProbe}
+              openEditCamera={openEditCamera}
+              deleteCamera={deleteCamera}
+              submitCamera={submitCamera}
+              updateScheduleWindow={updateScheduleWindow}
+              toggleScheduleDay={toggleScheduleDay}
+              removeScheduleWindow={removeScheduleWindow}
+              addScheduleWindow={addScheduleWindow}
+            />
           ) : tab === 'sites' ? (
-            <div className="admin-section">
-              <div className="admin-section-head">
-                <div>
-                  <h3>站点与分组</h3>
-                  <p>将摄像头按园区、楼宇或客户分组，并为值班员 / 只读账号分配可见站点。</p>
-                </div>
-              </div>
-
-              {isSuperAdmin && (
-                <form className="admin-site-form" onSubmit={submitSite}>
-                  <input
-                    className="settings-input"
-                    value={siteForm.name}
-                    placeholder="新站点名称（如：园区 A 区）"
-                    maxLength={48}
-                    required
-                    aria-label="新站点名称"
-                    onChange={(event) =>
-                      setSiteForm((prev) => ({ ...prev, name: event.target.value }))
-                    }
-                  />
-                  <input
-                    className="settings-input"
-                    value={siteForm.code}
-                    placeholder="编码（可选，如 A1）"
-                    maxLength={24}
-                    aria-label="新站点编码"
-                    onChange={(event) =>
-                      setSiteForm((prev) => ({ ...prev, code: event.target.value }))
-                    }
-                  />
-                  <button type="submit" className="btn btn-sm btn-danger" disabled={siteBusy}>
-                    {siteBusy ? '创建中…' : '新增站点'}
-                  </button>
-                </form>
-              )}
-
-              {sites.length === 0 ? (
-                <p className="admin-empty">
-                  还没有自定义站点，系统已有一个默认站点用于归类未分配的点位。
-                </p>
-              ) : (
-                <div className="site-list">
-                  {sites.map((site) => {
-                    const count = cameras.filter(
-                      (camera) => siteKey(camera.siteId) === site.id,
-                    ).length;
-                    const isDefault = site.id === defaultSiteId;
-                    return (
-                      <div className="site-row" key={site.id}>
-                        <div className="site-main">
-                          {editingSiteId === site.id ? (
-                            <input
-                              className="settings-input"
-                              value={editingSiteName}
-                              maxLength={48}
-                              aria-label="编辑站点名称"
-                              onChange={(event) => setEditingSiteName(event.target.value)}
-                            />
-                          ) : (
-                            <strong>{site.name}</strong>
-                          )}
-                          <span>
-                            {site.code}
-                            {isDefault && ' · 默认站点'}
-                            {` · ${count} 个点位`}
-                          </span>
-                        </div>
-                        <div className="point-actions">
-                          {editingSiteId === site.id ? (
-                            <>
-                              <button
-                                type="button"
-                                className="btn btn-sm btn-danger"
-                                disabled={siteBusy}
-                                onClick={() => void saveEditSite(site)}
-                              >
-                                保存
-                              </button>
-                              <button
-                                type="button"
-                                className="btn btn-sm btn-ghost"
-                                onClick={cancelEditSite}
-                              >
-                                取消
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <button
-                                type="button"
-                                className="btn btn-sm btn-ghost"
-                                onClick={() => startEditSite(site)}
-                              >
-                                改名
-                              </button>
-                              {isSuperAdmin && !isDefault && (
-                                <button
-                                  type="button"
-                                  className="btn btn-sm btn-ghost"
-                                  onClick={() => void removeSite(site)}
-                                >
-                                  删除
-                                </button>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {assigningUser && (
-                <div className="user-site-assign">
-                  <div className="admin-form-title">
-                    <h4>{`为「${assigningUser.displayName}」分配可见站点`}</h4>
-                    <button
-                      type="button"
-                      className="admin-form-close"
-                      onClick={() => setAssigningUser(null)}
-                    >
-                      关闭
-                    </button>
-                  </div>
-                  <p className="admin-form-hint">
-                    未勾选任何站点时，该账号将看不到任何点位；管理员默认可见全部站点。
-                  </p>
-                  {assignBusy ? (
-                    <p className="admin-empty">正在加载授权…</p>
-                  ) : (
-                    <div className="assign-sites">
-                      {sites.map((site) => (
-                        <label key={site.id} className="assign-site">
-                          <input
-                            type="checkbox"
-                            checked={assignSiteIds.includes(site.id)}
-                            onChange={() => toggleAssignSite(site.id)}
-                          />
-                          <span>{site.name}</span>
-                        </label>
-                      ))}
-                    </div>
-                  )}
-                  <div className="admin-form-actions">
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-danger"
-                      disabled={assignBusy}
-                      onClick={() => void saveAssignUser()}
-                    >
-                      保存授权
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
+            <SitesTab
+              isSuperAdmin={isSuperAdmin}
+              sites={sites}
+              cameras={cameras}
+              siteForm={siteForm}
+              siteBusy={siteBusy}
+              editingSiteId={editingSiteId}
+              editingSiteName={editingSiteName}
+              defaultSiteId={defaultSiteId}
+              assigningUser={assigningUser}
+              assignBusy={assignBusy}
+              assignSiteIds={assignSiteIds}
+              setSiteForm={setSiteForm}
+              setEditingSiteName={setEditingSiteName}
+              setAssigningUser={setAssigningUser}
+              siteKey={siteKey}
+              submitSite={submitSite}
+              saveEditSite={saveEditSite}
+              cancelEditSite={cancelEditSite}
+              startEditSite={startEditSite}
+              removeSite={removeSite}
+              toggleAssignSite={toggleAssignSite}
+              saveAssignUser={saveAssignUser}
+            />
           ) : tab === 'stats' ? (
-            <div className="admin-section">
-              <div className="admin-section-head">
-                <div>
-                  <h3>告警趋势</h3>
-                  <p>
-                    近 {statsDays} 天 · 误报率 = 判定误报 ÷（火焰 + 烟雾告警数），设备离线不计入分母。
-                  </p>
-                </div>
-                <div className="filter-row" role="group" aria-label="统计周期">
-                  {[7, 30, 90].map((value) => (
-                    <button
-                      key={value}
-                      type="button"
-                      className={`chip ${statsDays === value ? 'is-active' : ''}`}
-                      onClick={() => {
-                        setStatsDays(value);
-                        void loadAlarmStats(value);
-                      }}
-                    >
-                      {value} 天
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {alarmStats ? (
-                <StatsOverview stats={alarmStats} />
-              ) : (
-                <p className="admin-empty">正在加载统计数据…</p>
-              )}
-            </div>
+            <StatsTab
+              statsDays={statsDays}
+              setStatsDays={setStatsDays}
+              alarmStats={alarmStats}
+              loadAlarmStats={loadAlarmStats}
+            />
           ) : tab === 'notify' ? (
-            <div className="admin-section">
-              <div className="admin-section-head">
-                <div>
-                  <h3>告警通知</h3>
-                  <p>
-                    告警产生、确认、判定误报或设备离线时，按站点推送到企业微信、钉钉或自建
-                    Webhook。
-                  </p>
-                </div>
-                <div className="admin-section-actions">
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-ghost"
-                    onClick={() => void loadNotifyLogs()}
-                  >
-                    刷新推送记录
-                  </button>
-                </div>
-              </div>
-
-              <div className="template-card">
-                <div className="admin-subhead">
-                  <h4>告警通知文案模板</h4>
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-ghost"
-                    onClick={() => openTemplateEditor()}
-                  >
-                    新建模板
-                  </button>
-                </div>
-                <p className="admin-form-hint">
-                  可用变量：{'{site}'} 站点 · {'{camera}'} 点位 · {'{zone}'} 区域 · {'{level}'} 类型 ·
-                  {'{confidence}'} 置信度 · {'{time}'} 时间 · {'{hotspot}'} 热区 · {'{link}'} 处置入口。
-                  仅作用于「告警产生」通知，其余事件沿用内置文案。
-                </p>
-                {showTemplateEditor && (
-                  <div className="template-editor">
-                    <input
-                      className="settings-input"
-                      placeholder="模板名称"
-                      value={templateDraft.name}
-                      maxLength={32}
-                      onChange={(event) =>
-                        setTemplateDraft((prev) => ({ ...prev, name: event.target.value }))
-                      }
-                    />
-                    <textarea
-                      className="settings-input template-body"
-                      rows={3}
-                      placeholder="例如：{time} {site}/{camera} 触发{level}（{confidence}%），请核实：{link}"
-                      value={templateDraft.body}
-                      onChange={(event) =>
-                        setTemplateDraft((prev) => ({ ...prev, body: event.target.value }))
-                      }
-                    />
-                    <div className="template-var-row">
-                      {[
-                        'site',
-                        'camera',
-                        'zone',
-                        'level',
-                        'confidence',
-                        'time',
-                        'hotspot',
-                        'link',
-                      ].map((variable) => (
-                        <button
-                          type="button"
-                          key={variable}
-                          className="chip"
-                          onClick={() => insertTemplateVar(variable)}
-                        >
-                          {`{${variable}}`}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="admin-form-actions">
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-danger"
-                        disabled={templateBusy}
-                        onClick={() => void saveTemplate()}
-                      >
-                        {templateBusy ? '保存中…' : '保存模板'}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-ghost"
-                        onClick={closeTemplateEditor}
-                      >
-                        取消
-                      </button>
-                    </div>
-                  </div>
-                )}
-                <NotifyTemplateList
-                  notifyTemplates={notifyTemplates}
-                  showTemplateEditor={showTemplateEditor}
-                  openTemplateEditor={openTemplateEditor}
-                  removeTemplate={removeTemplate}
-                />
-              </div>
-
-              <form className="admin-form admin-notify-form" onSubmit={submitNotify}>
-                <div className="admin-form-title">
-                  <h4>新增通知渠道</h4>
-                </div>
-                <div className="admin-nvr-grid">
-                  <label>
-                    <span>渠道名称</span>
-                    <input
-                      className="settings-input"
-                      value={notifyForm.name}
-                      placeholder="例如：消防值班群"
-                      maxLength={32}
-                      required
-                      onChange={(event) =>
-                        setNotifyForm((prev) => ({ ...prev, name: event.target.value }))
-                      }
-                    />
-                  </label>
-                  <label>
-                    <span>类型</span>
-                    <select
-                      className="settings-input"
-                      value={notifyForm.kind}
-                      onChange={(event) =>
-                        setNotifyForm((prev) => ({
-                          ...prev,
-                          kind: event.target.value as NotifyKind,
-                        }))
-                      }
-                    >
-                      <option value="wecom">企业微信机器人</option>
-                      <option value="dingtalk">钉钉机器人</option>
-                      <option value="webhook">通用 Webhook</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>生效站点</span>
-                    <select
-                      className="settings-input"
-                      value={notifyForm.siteId}
-                      onChange={(event) =>
-                        setNotifyForm((prev) => ({ ...prev, siteId: event.target.value }))
-                      }
-                    >
-                      {isSuperAdmin && <option value="">全部站点（全局）</option>}
-                      {sites.map((site) => (
-                        <option key={site.id} value={site.id}>
-                          {site.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span>消息模板</span>
-                    <select
-                      className="settings-input"
-                      value={notifyForm.templateId}
-                      onChange={(event) =>
-                        setNotifyForm((prev) => ({ ...prev, templateId: event.target.value }))
-                      }
-                    >
-                      <option value="">默认文案</option>
-                      {notifyTemplates.map((tpl) => (
-                        <option key={tpl.id} value={tpl.id}>
-                          {tpl.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="admin-nvr-template">
-                    <span>推送地址</span>
-                    <input
-                      className="settings-input"
-                      value={notifyForm.url}
-                      placeholder="企业微信/钉钉机器人 Webhook 地址，或自建接收地址"
-                      maxLength={2048}
-                      required
-                      onChange={(event) =>
-                        setNotifyForm((prev) => ({ ...prev, url: event.target.value }))
-                      }
-                    />
-                  </label>
-                  <label>
-                    <span>签名密钥（Webhook 可选）</span>
-                    <input
-                      type="password"
-                      className="settings-input"
-                      value={notifyForm.secret}
-                      autoComplete="new-password"
-                      placeholder="配置后请求头带 X-Fire-Signature"
-                      onChange={(event) =>
-                        setNotifyForm((prev) => ({ ...prev, secret: event.target.value }))
-                      }
-                    />
-                  </label>
-                  <label className="admin-notify-enable">
-                    <span>启用</span>
-                    <input
-                      type="checkbox"
-                      checked={notifyForm.enabled}
-                      onChange={(event) =>
-                        setNotifyForm((prev) => ({
-                          ...prev,
-                          enabled: event.target.checked,
-                        }))
-                      }
-                    />
-                  </label>
-                </div>
-                <div className="admin-form-actions">
-                  <button type="submit" className="btn btn-sm btn-danger" disabled={notifyBusy}>
-                    {notifyBusy ? '保存中…' : '新增渠道'}
-                  </button>
-                </div>
-              </form>
-
-              <NotifyChannelList
-                notifyChannels={notifyChannels}
-                notifyTemplates={notifyTemplates}
-                testingChannel={testingChannel}
-                kindLabels={NOTIFY_KIND_LABELS}
-                testNotifyChannel={testNotifyChannel}
-                toggleNotifyChannel={toggleNotifyChannel}
-                removeNotifyChannel={removeNotifyChannel}
-              />
-
-              <NotifyLogList
-                notifyLogs={notifyLogs}
-                eventLabels={NOTIFY_EVENT_LABELS}
-                formatDateTime={formatDateTime}
-              />
-            </div>
+            <NotifyTab
+              isSuperAdmin={isSuperAdmin}
+              sites={sites}
+              notifyTemplates={notifyTemplates}
+              showTemplateEditor={showTemplateEditor}
+              templateDraft={templateDraft}
+              templateBusy={templateBusy}
+              notifyForm={notifyForm}
+              notifyBusy={notifyBusy}
+              notifyChannels={notifyChannels}
+              testingChannel={testingChannel}
+              notifyLogs={notifyLogs}
+              setTemplateDraft={setTemplateDraft}
+              setNotifyForm={setNotifyForm}
+              loadNotifyLogs={loadNotifyLogs}
+              openTemplateEditor={openTemplateEditor}
+              insertTemplateVar={insertTemplateVar}
+              saveTemplate={saveTemplate}
+              closeTemplateEditor={closeTemplateEditor}
+              removeTemplate={removeTemplate}
+              submitNotify={submitNotify}
+              testNotifyChannel={testNotifyChannel}
+              toggleNotifyChannel={toggleNotifyChannel}
+              removeNotifyChannel={removeNotifyChannel}
+            />
           ) : tab === 'audit' ? (
-            <div className="admin-section">
-              <div className="admin-section-head">
-                <div>
-                  <h3>审计日志</h3>
-                  <p>
-                    记录所有账号的关键操作（登录、点位变更、告警处置、通知与系统操作），
-                    共 {auditTotal} 条，按时间倒序。
-                  </p>
-                </div>
-                <div className="admin-section-actions">
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-ghost"
-                    disabled={auditBusy || auditLogs.length === 0}
-                    onClick={() =>
-                      downloadAuditCsv(auditLogs, AUDIT_ACTION_LABELS, '审计日志')
-                    }
-                  >
-                    导出当前页 CSV
-                  </button>
-                </div>
-              </div>
-
-              <div className="audit-filters">
-                <select
-                  className="settings-input"
-                  aria-label="按动作类型筛选"
-                  value={auditFilter.action}
-                  onChange={(event) =>
-                    void loadAuditLogs({ action: event.target.value, offset: 0 })
-                  }
-                >
-                  {AUDIT_ACTION_GROUPS.map((group) => (
-                    <option key={group.value} value={group.value}>
-                      {group.label}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  className="settings-input"
-                  aria-label="按时间范围筛选"
-                  value={auditFilter.range}
-                  onChange={(event) =>
-                    void loadAuditLogs({ range: event.target.value, offset: 0 })
-                  }
-                >
-                  {AUDIT_RANGE_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  className="settings-input"
-                  value={auditFilter.q}
-                  placeholder="搜索账号 / 详情 / 对象 ID"
-                  aria-label="搜索审计日志"
-                  onChange={(event) => setAuditFilter((prev) => ({ ...prev, q: event.target.value }))}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') void loadAuditLogs({ offset: 0 });
-                  }}
-                />
-                <button
-                  type="button"
-                  className="btn btn-sm btn-primary"
-                  disabled={auditBusy}
-                  onClick={() => void loadAuditLogs({ offset: 0 })}
-                >
-                  {auditBusy ? '查询中…' : '查询'}
-                </button>
-              </div>
-
-              {auditLogs.length === 0 ? (
-                <p className="admin-empty">没有符合条件的审计记录。</p>
-              ) : (
-                <AuditLogTable logs={auditLogs} actionLabels={AUDIT_ACTION_LABELS} />
-              )}
-
-              <AuditPager
-                auditBusy={auditBusy}
-                auditOffset={auditOffset}
-                auditTotal={auditTotal}
-                pageSize={AUDIT_PAGE_SIZE}
-                loadAuditLogs={loadAuditLogs}
-              />
-            </div>
+            <AuditTab
+              auditTotal={auditTotal}
+              auditBusy={auditBusy}
+              auditFilter={auditFilter}
+              auditLogs={auditLogs}
+              auditOffset={auditOffset}
+              AUDIT_PAGE_SIZE={AUDIT_PAGE_SIZE}
+              auditSearchWindowed={auditSearchWindowed}
+              auditSearchWindowDays={auditSearchWindowDays}
+              setAuditFilter={setAuditFilter}
+              loadAuditLogs={loadAuditLogs}
+            />
           ) : (
-            <div className="admin-section">
-              <div className="admin-section-head">
-                <div>
-                  <h3>访问账号</h3>
-                  <p>管理员可配置点位；值班员可处置告警；只读账号仅查看。</p>
-                </div>
-              </div>
-
-              <form className="admin-user-form" onSubmit={submitUser}>
-                <input
-                  className="settings-input"
-                  value={userForm.username}
-                  placeholder="用户名"
-                  required
-                  aria-label="新账号用户名"
-                  onChange={(event) =>
-                    setUserForm((prev) => ({ ...prev, username: event.target.value }))
-                  }
-                />
-                <input
-                  className="settings-input"
-                  value={userForm.displayName}
-                  placeholder="显示名称"
-                  aria-label="新账号显示名称"
-                  onChange={(event) =>
-                    setUserForm((prev) => ({ ...prev, displayName: event.target.value }))
-                  }
-                />
-                <select
-                  className="settings-input"
-                  value={userForm.role}
-                  aria-label="新账号角色"
-                  onChange={(event) =>
-                    setUserForm((prev) => ({
-                      ...prev,
-                      role: event.target.value as UserRole,
-                      siteAdmin:
-                        event.target.value === 'admin' ? false : prev.siteAdmin,
-                    }))
-                  }
-                >
-                  <option value="operator">值班员</option>
-                  <option value="viewer">只读</option>
-                  <option value="admin">管理员</option>
-                </select>
-                <input
-                  type="password"
-                  className="settings-input"
-                  value={userForm.password}
-                  placeholder="初始密码（至少 8 位）"
-                  minLength={8}
-                  required
-                  aria-label="新账号初始密码"
-                  onChange={(event) =>
-                    setUserForm((prev) => ({ ...prev, password: event.target.value }))
-                  }
-                />
-                <label className="admin-check admin-user-siteadmin">
-                  <input
-                    type="checkbox"
-                    checked={userForm.siteAdmin}
-                    disabled={userForm.role === 'admin'}
-                    onChange={(event) =>
-                      setUserForm((prev) => ({
-                        ...prev,
-                        siteAdmin: event.target.checked,
-                      }))
-                    }
-                  />
-                  站点管理员（仅管理被授权站点）
-                </label>
-                <button type="submit" className="btn btn-sm btn-danger" disabled={userBusy}>
-                  {userBusy ? '创建中…' : '新增账号'}
-                </button>
-              </form>
-
-              <UserList
-                users={users}
-                usersLoading={usersLoading}
-                currentUser={currentUser}
-                updateUser={updateUser}
-                openAssignUser={openAssignUser}
-                resetPassword={resetPassword}
-                deleteUser={deleteUser}
-              />
-            </div>
+            <UsersTab
+              currentUser={currentUser}
+              userForm={userForm}
+              userBusy={userBusy}
+              users={users}
+              usersLoading={usersLoading}
+              setUserForm={setUserForm}
+              submitUser={submitUser}
+              updateUser={updateUser}
+              openAssignUser={openAssignUser}
+              resetPassword={resetPassword}
+              deleteUser={deleteUser}
+            />
           )}
         </div>
       </div>
+
+      {passwordTarget && (
+        <div
+          className="settings-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closePasswordDialog();
+          }}
+        >
+          <div
+            className="settings-shell admin-shell"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="password-reset-title"
+          >
+            <header className="settings-head">
+              <div>
+                <h2 id="password-reset-title">重置密码</h2>
+                <p>为「{passwordTarget.displayName}」设置新的登录密码</p>
+              </div>
+              <button
+                type="button"
+                className="settings-close"
+                onClick={closePasswordDialog}
+                disabled={passwordBusy}
+              >
+                关闭
+              </button>
+            </header>
+            <div className="admin-form">
+              <label>
+                <span>新密码</span>
+                <input
+                  className="settings-input"
+                  type="password"
+                  autoComplete="new-password"
+                  maxLength={128}
+                  value={passwordDraft.password}
+                  onChange={(event) =>
+                    setPasswordDraft((prev) => ({
+                      ...prev,
+                      password: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <label>
+                <span>确认新密码</span>
+                <input
+                  className="settings-input"
+                  type="password"
+                  autoComplete="new-password"
+                  maxLength={128}
+                  value={passwordDraft.confirm}
+                  onChange={(event) =>
+                    setPasswordDraft((prev) => ({
+                      ...prev,
+                      confirm: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <p className="admin-form-hint">
+                密码长度 8-128 位。重置后该账号已登录的其它会话会立即失效。
+              </p>
+              <div className="admin-form-actions">
+                <button
+                  type="button"
+                  className="btn btn-sm btn-danger"
+                  disabled={passwordBusy}
+                  onClick={() => void submitPasswordReset()}
+                >
+                  {passwordBusy ? '提交中…' : '确认重置'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost"
+                  disabled={passwordBusy}
+                  onClick={closePasswordDialog}
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -18,6 +18,8 @@ import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { spawn as nodeSpawn, spawnSync } from 'node:child_process';
 import { isArmedNow } from './schedule.mjs';
+import { sanitizeErrorText } from './sanitize.mjs';
+import { ffmpegBudget } from './ffmpeg-budget.mjs';
 
 /** 点位 ID 必须是安全路径片段，杜绝目录穿越。 */
 const SAFE_ID = /^[A-Za-z0-9_-]+$/;
@@ -94,7 +96,15 @@ class CaptureWorker {
     this.lastError = null;
     this.dayStamp = null;
     this.startedAt = manager.clock();
-    void this.start();
+    // RES-1：FFmpeg 进程预算名额。
+    this.budgetToken = null;
+    // P0-2：裸 void 的 rejection 会变成 unhandledRejection 并终止进程，这里显式兜住。
+    void this.start().catch((error) => {
+      manager.logger?.warn?.('recording_capture_start_failed', {
+        cameraId: camera.id,
+        message: error.message,
+      });
+    });
   }
 
   sourceFor() {
@@ -108,9 +118,24 @@ class CaptureWorker {
 
   async start() {
     if (this.stopping) return;
+    // RES-1：先申请 FFmpeg 进程预算，避免录像与检测/共享源一起把进程数打爆。
+    let token = null;
+    try {
+      token = await this.manager.budget.acquire({ label: `capture:${this.camera.code}` });
+    } catch (error) {
+      this.scheduleRestart(error.message);
+      return;
+    }
+    if (this.stopping) {
+      this.manager.budget.release(token);
+      return;
+    }
+    this.budgetToken = token;
     const at = this.manager.clock();
     const dir = captureDirFor(this.manager.rootDir, this.camera.id, at);
     if (!dir) {
+      this.manager.budget.release(this.budgetToken);
+      this.budgetToken = null;
       this.lastError = '点位 ID 含非法字符，已跳过录像';
       this.manager.logger?.warn?.('recording_capture_invalid_camera_id', {
         cameraId: this.camera.id,
@@ -121,10 +146,16 @@ class CaptureWorker {
     try {
       await fsp.mkdir(dir, { recursive: true, mode: this.manager.dirMode });
     } catch (error) {
+      this.manager.budget.release(this.budgetToken);
+      this.budgetToken = null;
       this.scheduleRestart(`创建录像目录失败：${error.message}`);
       return;
     }
-    if (this.stopping) return;
+    if (this.stopping) {
+      this.manager.budget.release(this.budgetToken);
+      this.budgetToken = null;
+      return;
+    }
     const source = this.sourceFor();
     if (!source) {
       this.lastError = '点位未配置视频源';
@@ -144,13 +175,17 @@ class CaptureWorker {
         env: { ...process.env, TZ: 'UTC' },
       });
     } catch (error) {
+      this.manager.budget.release(this.budgetToken);
+      this.budgetToken = null;
       this.scheduleRestart(`FFmpeg 启动失败：${error.message}`);
       return;
     }
     this.child = child;
     child.stderr?.on?.('data', (chunk) => {
       const text = chunk.toString().trim();
-      if (text) this.lastError = text.slice(-400);
+      // FFmpeg 会把输入 URL 原样打进 stderr（含 rtsp://user:pass@host），
+      // 落库前先抹除 userinfo，否则状态接口会把摄像头密码回传给前端。
+      if (text) this.lastError = sanitizeErrorText(text, 400);
     });
     // 用 token 判定回调是否属于当前进程：换日/停止时先置空 this.child，
     // 旧进程被 kill 后触发的 exit 会被忽略，不会误触发退避重启。
@@ -167,18 +202,29 @@ class CaptureWorker {
   }
 
   onExit(reason) {
+    // RES-1：进程退出即归还预算名额。
+    if (this.budgetToken) {
+      this.manager.budget.release(this.budgetToken);
+      this.budgetToken = null;
+    }
     if (this.stopping) return;
     this.scheduleRestart(reason);
   }
 
   scheduleRestart(reason) {
     if (this.stopping || this.restartTimer) return;
-    if (reason) this.lastError = reason;
+    if (reason) this.lastError = sanitizeErrorText(reason, 400);
     const delay = this.backoffMs;
     this.backoffMs = Math.min(this.backoffMs * 2, 30_000);
     this.restartTimer = setTimeout(() => {
       this.restartTimer = null;
-      void this.start();
+      // P0-2：裸 void 的 rejection 会变成 unhandledRejection 并终止进程，这里显式兜住。
+      void this.start().catch((error) => {
+        this.manager.logger?.warn?.('recording_capture_restart_failed', {
+          cameraId: this.camera.id,
+          message: error.message,
+        });
+      });
     }, delay);
     this.restartTimer.unref?.();
     this.manager.logger?.warn?.('recording_capture_restart', {
@@ -212,6 +258,11 @@ class CaptureWorker {
     } catch {
       // ignore
     }
+    // RES-1：换日/停止时必须立刻归还名额，否则录像位会一直占着预算不放。
+    if (this.budgetToken) {
+      this.manager.budget.release(this.budgetToken);
+      this.budgetToken = null;
+    }
   }
 
   stop() {
@@ -222,6 +273,7 @@ class CaptureWorker {
   status() {
     return {
       cameraId: this.camera.id,
+      siteId: this.camera.siteId ?? null,
       day: this.dayStamp,
       running: Boolean(this.child),
       lastError: this.lastError,
@@ -255,6 +307,8 @@ export class RecordingCaptureManager {
     sharedHub = null,
     logger = console,
     dirMode = 0o700,
+    // RES-1：全局 FFmpeg 进程预算（可注入，便于测试）。
+    budget = ffmpegBudget,
   } = {}) {
     this.rootDir = rootDir;
     this.ffmpegPath = ffmpegPath;
@@ -271,6 +325,7 @@ export class RecordingCaptureManager {
     this.sharedHub = sharedHub;
     this.logger = logger;
     this.dirMode = dirMode;
+    this.budget = budget;
     this.workers = new Map();
     this.ffmpegAvailable = false;
     this.skipped = 0;
@@ -368,8 +423,14 @@ export class RecordingCaptureManager {
     this.sharedHub?.stopAll();
   }
 
-  status() {
+  status(options = {}) {
     const shared = this.sharedHub?.status?.();
+    // 站点管理员只应看到自己站点的采集状态（状态含摄像头错误详情）。
+    const allowedSiteIds = Array.isArray(options.allowedSiteIds)
+      ? options.allowedSiteIds
+      : null;
+    const visible = (siteId) => allowedSiteIds === null || allowedSiteIds.includes(siteId);
+    const cameras = shared ? shared.cameras : [...this.workers.values()].map((worker) => worker.status());
     return {
       enabled: this.enabled,
       ffmpegAvailable: this.ffmpegAvailable,
@@ -378,9 +439,7 @@ export class RecordingCaptureManager {
       skipped: this.skipped,
       maxCameras: this.maxCameras,
       segmentSeconds: this.segmentSeconds,
-      cameras: shared
-        ? shared.cameras
-        : [...this.workers.values()].map((worker) => worker.status()),
+      cameras: cameras.filter((item) => visible(item.siteId ?? null)),
     };
   }
 }

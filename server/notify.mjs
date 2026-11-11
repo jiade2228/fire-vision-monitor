@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { shanghaiDateKey } from './time.mjs';
+import { guardedFetch } from './net-guard.mjs';
 
 /**
  * 告警推送：企业微信群机器人 / 钉钉机器人 / 通用 Webhook。
@@ -218,9 +220,14 @@ export class Notifier {
   constructor({
     store,
     logger = console,
-    fetchImpl = globalThis.fetch,
+    // 默认用受控 fetch：逐跳校验重定向目标，避免 302 把推送引导到内网/云元数据。
+    // 保留注入点供测试 mock；生产装配不传，因此自动获得防护。
+    fetchImpl = guardedFetch,
     timeoutMs = 8000,
-    maxFailures = Number(process.env.NOTIFY_MAX_FAILURES) || 5,
+    // `0` 表示「连续失败不停用渠道」，旧写法 Number('0') || 5 会把它吞成 5。
+    maxFailures = process.env.NOTIFY_MAX_FAILURES === undefined
+      ? 5
+      : Number(process.env.NOTIFY_MAX_FAILURES),
   } = {}) {
     this.store = store;
     this.logger = logger;
@@ -266,7 +273,13 @@ export class Notifier {
       });
       const text = await response.text().catch(() => '');
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status} ${String(text).slice(0, 180)}`);
+        // 上游响应体可能包含内网地址、令牌等内部信息，不直接回显给前端：
+        // 只截断后写入服务端日志，抛出的错误仅携带状态码。
+        const detail = String(text).slice(0, 180).replace(/\s+/g, ' ').trim();
+        this.logger?.warn?.(
+          `[notify] 推送失败 HTTP ${response.status}${detail ? `：${detail}` : ''}`,
+        );
+        throw new Error(`HTTP ${response.status}`);
       }
       if (text) {
         let data = null;
@@ -276,7 +289,9 @@ export class Notifier {
           data = null;
         }
         if (data && typeof data === 'object' && data.errcode && data.errcode !== 0) {
-          throw new Error(`errcode ${data.errcode}：${data.errmsg ?? ''}`);
+          // 业务错误码保留，errmsg 压平空白并截断，避免夹带大段上游内容。
+          const errmsg = String(data.errmsg ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
+          throw new Error(`errcode ${data.errcode}${errmsg ? `：${errmsg}` : ''}`);
         }
       }
       return text;
@@ -382,7 +397,16 @@ export class Notifier {
    * @returns {Promise<'sent'|'failed'|'skipped'>} 单渠道投递结果。
    */
   async deliver(channel, alarm, event, context) {
-    if (!channel?.url) return 'skipped';
+    if (!channel?.url) {
+      // 地址为空只有一种合理解释：凭据解密失败。明确记录原因，
+      // 否则运维只会看到「告警没推送」却无从排查。
+      if (channel?.credentialError) {
+        this.logger?.warn?.(
+          `[notify] 渠道「${channel.name ?? channel.id}」${channel.credentialError}，本次推送已跳过`,
+        );
+      }
+      return 'skipped';
+    }
     if (!this.store.claimNotification(alarm.id, channel.id, event)) return 'skipped';
     try {
       // 渠道自带模板优先于全局默认正文。
@@ -400,6 +424,8 @@ export class Notifier {
         status: 'failed',
         error: message,
       });
+      // 保留失败日志：consecutiveFailures 依赖它自动停用渠道。
+      // 重试由 claimNotification 允许复用 failed 记录实现（不是删除）。
       this.logger?.warn?.(`[notify] ${this.channelLabel(channel)} 推送失败：${message}`);
       await this.maybeDisableChannel(channel);
       return 'failed';
@@ -431,9 +457,7 @@ export class Notifier {
         .filter((item) => item.enabled && item.id !== channel.id);
       if (!others.length) return;
       // 与告警按天统计/展示一致使用上海日（固定 +8，无夏令时），否则 00:00-08:00 去重键跨天。
-      const dayKey = new Date(Date.now() + 8 * 60 * 60 * 1000)
-        .toISOString()
-        .slice(0, 10);
+      const dayKey = shanghaiDateKey(Date.now());
       await this.notifyBroadcast(
         'channel.disabled',
         {
@@ -468,6 +492,11 @@ export class Notifier {
     let skipped = 0;
     for (const channel of channels) {
       if (!channel?.url) {
+        if (channel?.credentialError) {
+          this.logger?.warn?.(
+            `[notify] 渠道「${channel.name ?? channel.id}」${channel.credentialError}，本次推送已跳过`,
+          );
+        }
         skipped += 1;
         continue;
       }

@@ -2,6 +2,7 @@ import { apiNotFound } from '../http/not-found.mjs';
 import crypto from 'node:crypto';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { CAPABILITIES, resolveCapabilityGuard } from '../auth/roles.mjs';
 
 /**
  * 告警相关接口：列表、趋势统计、事件流、抓图/短视频回放、创建与状态流转。
@@ -17,6 +18,8 @@ import path from 'node:path';
  */
 export function registerAlarmRoutes(app, deps) {
   const {
+    requireManager,
+    requireRole,
     store,
     metrics,
     broadcastEvent,
@@ -29,10 +32,13 @@ export function registerAlarmRoutes(app, deps) {
     recordingsDir,
     allowedSiteIdsFor,
     requireAuth,
-    requireRole,
+    requireCapability,
     normalizeText,
     clientIp,
   } = deps;
+  // 能力守卫降级：旧调用方（既有测试/集成方）可能只提供 requireRole，
+  // 此时按能力反查角色兜底，保证零改动兼容；两者都缺失则一律拒绝。
+  const capabilityGuard = resolveCapabilityGuard(requireCapability, requireRole, requireManager);
 
   // 统计接口的天数钳制：fallback 与下界按各接口原值传入，上界恒为 90。
   const clampDays = (value, fallback, min) =>
@@ -52,7 +58,9 @@ export function registerAlarmRoutes(app, deps) {
     const hotspots = store
       .listFalseAlarmCounts({ days, siteIds: allowed === null ? null : allowed })
       .map((row) => ({ ...row, count: Number(row.count) }));
-    res.json({ days, hotspots });
+    // days 是数字（查询窗口天数），与 /api/alarms/stats 的同名字段（数组）语义冲突。
+    // 保留 days 兼容旧客户端，新增语义明确的 windowDays。
+    res.json({ days, windowDays: days, hotspots });
   });
 
   // 趋势统计：按上海时区按天聚合，站点管理员只能看自己的站点。
@@ -128,7 +136,9 @@ export function registerAlarmRoutes(app, deps) {
         name: store.getSite(item.siteId)?.name ?? '未归属站点',
       }))
       .sort((a, b) => b.total - a.total);
-    res.json({ days: daysOut, totals, falseRate, bySite });
+    // days 是日序列数组，与 /api/alarms/false-hotspots 的同名字段（数字）语义冲突。
+    // 保留 days 兼容旧客户端，新增语义明确的 series + windowDays。
+    res.json({ days: daysOut, series: daysOut, windowDays: days, totals, falseRate, bySite });
   });
 
   app.get('/api/alarms/:id/events', requireAuth, (req, res) => {
@@ -182,7 +192,7 @@ export function registerAlarmRoutes(app, deps) {
   app.post(
     '/api/alarms',
     requireAuth,
-    requireRole('operator', 'admin'),
+    capabilityGuard(CAPABILITIES.ALARM_CREATE),
     async (req, res) => {
       const camera = store.getCamera(String(req.body.cameraId ?? ''));
       if (!camera) return apiNotFound(res, '点位不存在');
@@ -256,7 +266,7 @@ export function registerAlarmRoutes(app, deps) {
   app.patch(
     '/api/alarms/:id',
     requireAuth,
-    requireRole('operator', 'admin'),
+    capabilityGuard(CAPABILITIES.ALARM_UPDATE),
     (req, res) => {
       const alarm = store.getAlarm(req.params.id);
       if (!alarm) return apiNotFound(res, '告警不存在');

@@ -1,9 +1,31 @@
-// 数据库 schema 定义与版本迁移（V1→V8）。由 store.mjs 的 openStore 调用。
+// 数据库 schema 定义与版本迁移（V1→V10）。由 store.mjs 的 openStore 调用。
 // 本模块只依赖 node:crypto，所有函数接收已打开的 DatabaseSync 实例。
 import crypto from 'node:crypto';
 
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 10;
+
+/**
+ * V10：服务端会话登记表。
+ *
+ * 纯新增表，不影响 users 表任何既有列 —— 升级安全、无数据风险。
+ * 用途：让登出只撤销「当前会话」，而不是把该账号所有设备的令牌一起作废。
+ */
+export const AUTH_SESSIONS_DDL = `
+  CREATE TABLE IF NOT EXISTS auth_sessions (
+    sid TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    revoked_at INTEGER,
+    user_agent TEXT,
+    ip TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_auth_session_user
+    ON auth_sessions(user_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_auth_session_expires
+    ON auth_sessions(expires_at);
+`;
 
 /** 持续录像分段索引（V8）。文件系统是事实源，本表只作为查询缓存。 */
 export const RECORDING_SEGMENTS_DDL = `
@@ -21,6 +43,61 @@ export const RECORDING_SEGMENTS_DDL = `
   CREATE INDEX IF NOT EXISTS idx_recording_started
     ON recording_segments(started_at);
 `;
+
+/**
+ * V9 性能索引：只建索引，不改任何表结构，因此对存量库与新库都安全、可回滚。
+ *
+ * 背景（20 万告警 / 50 万审计日志 / 20 万录像段基准库实测）：
+ *   - 管理员告警列表 `ORDER BY created_at DESC` 走全表扫描 + USE TEMP B-TREE，38 ms/请求；
+ *   - 磁盘水位清理按「已关闭 + 有媒体文件」过滤后升序取最旧，同样临时排序，单次 1.2 秒；
+ *   - 按渠道删除推送日志无索引，2.3 秒。
+ *
+ * 注意（重要）：这些索引**不能**写进 createSchema。
+ * createSchema 对存量库是「不重建已有表」的，它先于 V4/V7 迁移执行，
+ * 而旧版 alarms 表还没有 clip_file / site_id 列 —— 在那里建索引会直接报
+ * "no such column: clip_file" 让整个启动失败。
+ * 因此统一由 ensurePerformanceIndexes() 在**所有表结构迁移完成之后**执行。
+ *
+ * 与 createSchema 共用同一段 DDL，保证新库与升级库结构完全一致。
+ */
+export const PERFORMANCE_INDEXES_DDL = `
+  -- 告警列表（无站点过滤时按创建时间倒序）：单列降序索引，避免临时排序
+  CREATE INDEX IF NOT EXISTS idx_alarm_created
+    ON alarms(created_at DESC);
+  -- 磁盘水位清理：WHERE 条件与 ORDER BY created_at ASC 同时命中该部分索引
+  CREATE INDEX IF NOT EXISTS idx_alarm_media_old
+    ON alarms(created_at)
+    WHERE status IN ('archived','false')
+      AND (snapshot_file IS NOT NULL OR clip_file IS NOT NULL);
+  -- 推送日志的渠道维度：查询与「删除某渠道历史推送」都走索引
+  CREATE INDEX IF NOT EXISTS idx_notify_channel
+    ON notification_logs(channel_id, created_at DESC);
+  -- 录像段保护位维度：解除保护、按保护状态统计用量
+  CREATE INDEX IF NOT EXISTS idx_seg_protected
+    ON recording_segments("protected", started_at);
+  -- 审计日志按 action 前缀筛选时的分页总数：此前 COUNT 全表 SCAN，
+  -- 10 万行实测 13.8ms；覆盖索引后 5.5ms，且查询语义完全不变。
+  CREATE INDEX IF NOT EXISTS idx_audit_action_created
+    ON audit_logs(action, created_at DESC);
+  -- 删除账号时清理孤儿引用：这四列此前无索引，单用户删除实测约 58ms 全表扫描。
+  CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs(user_id);
+  CREATE INDEX IF NOT EXISTS idx_alarm_event_user ON alarm_events(user_id);
+  CREATE INDEX IF NOT EXISTS idx_alarm_created_by ON alarms(created_by);
+  CREATE INDEX IF NOT EXISTS idx_alarm_updated_by ON alarms(updated_by);
+`;
+
+/**
+ * 补齐 V9 性能索引（幂等）。
+ *
+ * 必须在所有表结构迁移（V2~V8）完成之后调用：
+ * alarms 表在 V4/V7 迁移中会被重建，clip_file / site_id 列是那时才有的。
+ *
+ * @param {import('node:sqlite').DatabaseSync} db 已打开的数据库。
+ * @returns {void}
+ */
+export function ensurePerformanceIndexes(db) {
+  db.exec(PERFORMANCE_INDEXES_DDL);
+}
 
 export function now() {
   return Date.now();
@@ -328,6 +405,7 @@ export function createSchema(db) {
       ON notification_logs(created_at DESC);
 
     ${RECORDING_SEGMENTS_DDL}
+    ${AUTH_SESSIONS_DDL}
   `);
 }
 
@@ -573,6 +651,45 @@ export function migrateSchemaV5(db) {
   }
 }
 
+/**
+ * 内置通知模板定义（单一来源）。
+ *
+ * 迁移与恢复脚本共用这一份，避免内容漂移。INSERT OR IGNORE 语义保证
+ * 不会覆盖用户已改过的同名模板。
+ */
+export const BUILTIN_TEMPLATES = Object.freeze([
+  {
+    id: 'builtin-default',
+    name: '标准告警（默认）',
+    body:
+      '【{level}】{site} / {camera}（{zone}）\n识别：{level} · 置信度 {confidence}%\n时间：{time}\n请立即登录平台核实处置，处置入口：{link}',
+  },
+  {
+    id: 'builtin-concise',
+    name: '精简告警',
+    body: '{time} {site}/{camera} 触发{level}（{confidence}%），请尽快核实：{link}',
+  },
+]);
+
+/**
+ * 幂等补种内置模板（供 V6 迁移与恢复脚本共用）。
+ * @param {import('node:sqlite').DatabaseSync} db 已打开且表存在的数据库。
+ * @returns {number} 实际新增条数。
+ */
+export function seedBuiltinTemplates(db) {
+  const ts = now();
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO notification_templates
+     (id, name, body, builtin, created_at, updated_at)
+     VALUES (?, ?, ?, 1, ?, ?)`,
+  );
+  let inserted = 0;
+  for (const tpl of BUILTIN_TEMPLATES) {
+    inserted += insert.run(tpl.id, tpl.name, tpl.body, ts, ts).changes;
+  }
+  return inserted;
+}
+
 export function migrateSchemaV6(db) {
   const version = Number(
     db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()?.value ?? 0,
@@ -597,28 +714,7 @@ export function migrateSchemaV6(db) {
       )`,
     );
     // 内置模板仅首次迁移时写入（INSERT OR IGNORE 保证重复迁移不覆盖用户改动）。
-    const seedTemplates = [
-      {
-        id: 'builtin-default',
-        name: '标准告警（默认）',
-        body:
-          '【{level}】{site} / {camera}（{zone}）\n识别：{level} · 置信度 {confidence}%\n时间：{time}\n请立即登录平台核实处置，处置入口：{link}',
-      },
-      {
-        id: 'builtin-concise',
-        name: '精简告警',
-        body: '{time} {site}/{camera} 触发{level}（{confidence}%），请尽快核实：{link}',
-      },
-    ];
-    const ts = now();
-    const insertTpl = db.prepare(
-      `INSERT OR IGNORE INTO notification_templates
-       (id, name, body, builtin, created_at, updated_at)
-       VALUES (?, ?, ?, 1, ?, ?)`,
-    );
-    for (const tpl of seedTemplates) {
-      insertTpl.run(tpl.id, tpl.name, tpl.body, ts, ts);
-    }
+    seedBuiltinTemplates(db);
     db.prepare(
       "INSERT INTO meta(key, value) VALUES('schema_version', '6') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
     ).run();
@@ -750,6 +846,71 @@ export function migrateSchemaV8(db) {
     db.exec(RECORDING_SEGMENTS_DDL);
     db.prepare(
       "INSERT INTO meta(key, value) VALUES('schema_version', '8') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+    ).run();
+    db.exec('COMMIT');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // SQLite 可能已自动回滚；吞掉 ROLLBACK 失败才能抛出真实的迁移错误。
+    }
+    throw error;
+  }
+}
+
+/**
+ * V9：补齐关键性能索引。只执行 CREATE INDEX（不改表结构、不删数据），
+ * 与 createSchema 共用 PERFORMANCE_INDEXES_DDL，保证新库与升级库结构一致。
+ * 存量 V8 库在此处完成索引补建；全新库由 createSchema 直接建好并跳过本迁移。
+ */
+export function migrateSchemaV9(db) {
+  const version = Number(
+    db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()?.value ?? 0,
+  );
+  if (version >= 9) return;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    // 索引必须在 V4/V7 之后建：那时 alarms 才有 clip_file / site_id 列。
+    ensurePerformanceIndexes(db);
+    db.prepare(
+      "INSERT INTO meta(key, value) VALUES('schema_version', '9') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+    ).run();
+    db.exec('COMMIT');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // SQLite 可能已自动回滚；吞掉 ROLLBACK 失败才能抛出真实的迁移错误。
+    }
+    throw error;
+  }
+}
+
+/**
+ * V10：新增 auth_sessions 表（服务端会话登记）。
+ *
+ * 目的：让「登出」只撤销当前会话，而不是像改造前那样通过 users.token_version
+ * 把该账号所有设备/标签页的令牌一起作废。
+ *
+ * 表结构说明：
+ *   - sid：会话 ID（UUID），主键，与令牌载荷中的 sid 对应。
+ *   - user_id：所属账号。
+ *   - revoked_at：撤销时间；非空即表示已撤销。
+ *   - expires_at：过期时间；清理任务据此回收过期行。
+ *
+ * 兼容性：这是**纯新增表**，不改 users 表结构、不影响既有列，
+ * 因此升级无需停机、不会丢失任何数据。
+ */
+export function migrateSchemaV10(db) {
+  const version = Number(
+    db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()?.value ?? 0,
+  );
+  if (version >= 10) return;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.exec(AUTH_SESSIONS_DDL);
+    db.prepare(
+      "INSERT INTO meta(key, value) VALUES('schema_version', '10') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
     ).run();
     db.exec('COMMIT');
   } catch (error) {

@@ -1,16 +1,110 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError } from '../lib/api';
 import type { AlarmCreateInput, AlarmPatchInput } from '../lib/api';
+import { connectSse } from '../lib/sse';
 import type { Alarm } from '../types';
+
+const clampPercent = (value: number): number =>
+  Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0;
+
+/**
+ * 告警数据入口归一化。
+ *
+ * 服务端异常或旧数据可能给出 NaN / 负数 / 超范围的 confidence 与 hotspot，
+ * 旧实现直接把它们写进 `width: ${x}%` / `left: ${x}%`，会撑破布局或显示
+ * `NaN%`。轮询与 SSE 两条路径都经过这里，一处收敛即可覆盖所有渲染。
+ */
+function normalizeAlarm(alarm: Alarm): Alarm {
+  const confidence = clampPercent(Number(alarm.confidence));
+  const hotspot = alarm.hotspot ?? { x: 0, y: 0 };
+  const steps = Array.isArray(alarm.steps) ? alarm.steps.map(Boolean) : [];
+  return {
+    ...alarm,
+    confidence,
+    steps,
+    hotspot: {
+      x: clampPercent(Number(hotspot.x)),
+      y: clampPercent(Number(hotspot.y)),
+    },
+  };
+}
 
 function sortAlarms(alarms: Alarm[]) {
   return [...alarms].sort((a, b) => b.createdAt - a.createdAt);
+}
+
+/**
+ * 判断两条告警在展示层面是否等价。
+ *
+ * SSE 事件与轮询可能推送同一条告警的相同内容；此时若仍返回新数组，
+ * React 会重渲染整张告警列表（列表项都拿到了新的 props 引用）。
+ * 返回 true 时复用原数组引用，可让 React 直接跳过这次渲染。
+ */
+function sameAlarm(a: Alarm, b: Alarm) {
+  return (
+    a.id === b.id &&
+    a.status === b.status &&
+    a.level === b.level &&
+    a.confidence === b.confidence &&
+    a.cameraId === b.cameraId &&
+    a.cameraName === b.cameraName &&
+    a.zone === b.zone &&
+    a.siteId === b.siteId &&
+    a.note === b.note &&
+    a.snapshot === b.snapshot &&
+    a.clip === b.clip &&
+    a.createdAt === b.createdAt &&
+    a.confirmedAt === b.confirmedAt &&
+    a.closedAt === b.closedAt &&
+    a.steps.length === b.steps.length &&
+    a.steps.every((step, index) => step === b.steps[index])
+  );
+}
+
+/** 两个已排序列表在展示层面是否完全一致（用于定时补刷时复用数组引用）。 */
+function sameAlarms(a: Alarm[], b: Alarm[]) {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((item, index) => sameAlarm(item, b[index]));
+}
+
+/**
+ * 合并一条告警到列表。
+ *
+ * RES-3 重渲染优化：不做全量排序。
+ * - 新告警由服务端刚创建，createdAt 必然最大，直接前插即可；
+ * - 已存在的告警只是状态/备注变化，createdAt 不变，位置不动，无需重排；
+ * - 内容完全没变时返回原数组引用，让 React 跳过整表重渲染。
+ *
+ * @param prev 当前列表。
+ * @param alarm 新增或更新的告警。
+ * @returns {Alarm[]} 新列表（内容无变化时返回原引用）。
+ */
+function upsertAlarm(prev: Alarm[], alarm: Alarm): Alarm[] {
+  const index = prev.findIndex((item) => item.id === alarm.id);
+  if (index < 0) {
+    if (prev.length === 0 || prev[0].createdAt <= alarm.createdAt) {
+      return [alarm, ...prev];
+    }
+    // 兜底：万一 createdAt 不是最新，仍要保证整体倒序正确。
+    const next = [...prev];
+    let at = next.length;
+    while (at > 0 && next[at - 1].createdAt < alarm.createdAt) at -= 1;
+    next.splice(at, 0, alarm);
+    return next;
+  }
+  if (sameAlarm(prev[index], alarm)) return prev;
+  const next = [...prev];
+  next[index] = alarm;
+  return next;
 }
 
 export function useAlarms() {
   const [alarms, setAlarms] = useState<Alarm[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  // 实时推送中断标记：供顶栏展示「正在重连」，避免值守人员误以为告警仍在实时到达。
+  const [sseDown, setSseDown] = useState(false);
   const fetching = useRef(false);
   const mounted = useRef(true);
   const lastRefreshRef = useRef(0);
@@ -21,7 +115,10 @@ export function useAlarms() {
     try {
       const result = await api.alarms();
       if (mounted.current) {
-        setAlarms(sortAlarms(result.alarms));
+        const sorted = sortAlarms(result.alarms.map(normalizeAlarm));
+        // 内容未变时复用原数组引用，让 React 跳过整张列表的重渲染。
+        // SSE 路径已用 sameAlarm 做同样的优化，定时补刷不应把它抵消掉。
+        setAlarms((prev) => (sameAlarms(prev, sorted) ? prev : sorted));
         setError('');
         lastRefreshRef.current = Date.now();
       }
@@ -43,47 +140,39 @@ export function useAlarms() {
   useEffect(() => {
     mounted.current = true;
     void refresh();
-    const events =
-      typeof EventSource === 'undefined' ? null : new EventSource('/api/events');
+    /**
+     * RES-3：合并告警时不做全量排序（详见 upsertAlarm）。
+     */
     const mergeAlarm = (alarm: Alarm) => {
-      setAlarms((prev) => {
-        const exists = prev.some((item) => item.id === alarm.id);
-        return sortAlarms(
-          exists
-            ? prev.map((item) => (item.id === alarm.id ? alarm : item))
-            : [alarm, ...prev],
-        );
-      });
+      setAlarms((prev) => upsertAlarm(prev, alarm));
     };
-    const onCreate = (event: MessageEvent) => {
+    const onEvent = (type: string, data: string) => {
+      if (type !== 'alarm.created' && type !== 'alarm.updated') return;
       try {
-        const payload = JSON.parse(event.data) as { alarm: Alarm };
-        if (payload.alarm) mergeAlarm(payload.alarm);
+        const payload = JSON.parse(data) as { alarm: Alarm };
+        if (payload.alarm) mergeAlarm(normalizeAlarm(payload.alarm));
       } catch {
         // 忽略格式异常的单条事件。
       }
     };
-    const onUpdate = onCreate;
-    const onOpen = () => {
-      void refresh();
-    };
-    const onError = () => {
-      void refresh();
-    };
-    events?.addEventListener('alarm.created', onCreate as EventListener);
-    events?.addEventListener('alarm.updated', onUpdate as EventListener);
-    events?.addEventListener('open', onOpen);
-    events?.addEventListener('error', onError);
-
+    // RES-3：自行管理重连与退避，断开期间不再反复全量刷新。
+    const client = connectSse({
+      url: '/api/events',
+      events: ['alarm.created', 'alarm.updated'],
+      onEvent,
+      onOpen: () => {
+        setSseDown(false);
+        // 重连成功后补一次全量（断线期间可能有事件丢失）。
+        void refresh();
+      },
+      onDisconnect: () => setSseDown(true),
+    });
+    // 断线时 SSE 客户端已在做指数退避重连；全量轮询只是兜底，
+    // 每 3 秒打一次 /api/alarms 会在服务端故障期间形成持续压力。
     const timer = window.setInterval(() => {
       if (document.visibilityState !== 'visible') return;
-      if (
-        typeof EventSource !== 'undefined' &&
-        events?.readyState === EventSource.OPEN &&
-        Date.now() - lastRefreshRef.current < 20_000
-      ) {
-        return;
-      }
+      const interval = client.connected ? 20_000 : 15_000;
+      if (Date.now() - lastRefreshRef.current < interval) return;
       void refresh();
     }, 3000);
     const handleVisible = () => {
@@ -92,7 +181,7 @@ export function useAlarms() {
     document.addEventListener('visibilitychange', handleVisible);
     return () => {
       mounted.current = false;
-      events?.close();
+      client.close();
       window.clearInterval(timer);
       document.removeEventListener('visibilitychange', handleVisible);
     };
@@ -101,18 +190,17 @@ export function useAlarms() {
   const createAlarm = useCallback(async (input: AlarmCreateInput) => {
     try {
       const result = await api.createAlarm(input);
-      setAlarms((prev) => {
-        if (prev.some((alarm) => alarm.id === result.alarm.id)) return prev;
-        return sortAlarms([result.alarm, ...prev]);
-      });
+      if (mounted.current) {
+        // RES-3：复用 upsertAlarm，内容未变时保持原数组引用。
+        setAlarms((prev) => upsertAlarm(prev, normalizeAlarm(result.alarm)));
+      }
       return result.alarm;
     } catch (requestError) {
       if (requestError instanceof ApiError && requestError.status === 413) {
         const withoutSnapshot = await api.createAlarm({ ...input, snapshot: null });
-        setAlarms((prev) => {
-          if (prev.some((alarm) => alarm.id === withoutSnapshot.alarm.id)) return prev;
-          return sortAlarms([withoutSnapshot.alarm, ...prev]);
-        });
+        if (mounted.current) {
+          setAlarms((prev) => upsertAlarm(prev, normalizeAlarm(withoutSnapshot.alarm)));
+        }
         return withoutSnapshot.alarm;
       }
       throw requestError;
@@ -122,13 +210,14 @@ export function useAlarms() {
   const patchAlarm = useCallback(
     async (id: string, patch: AlarmPatchInput) => {
       const result = await api.updateAlarm(id, patch);
-      setAlarms((prev) =>
-        sortAlarms(prev.map((alarm) => (alarm.id === id ? result.alarm : alarm))),
-      );
+      if (mounted.current) {
+        // RES-3：状态/备注变更不影响 createdAt，位置不变，无需重排。
+        setAlarms((prev) => upsertAlarm(prev, normalizeAlarm(result.alarm)));
+      }
       return result.alarm;
     },
     [],
   );
 
-  return { alarms, loading, error, refresh, createAlarm, patchAlarm };
+  return { alarms, loading, error, sseDown, refresh, createAlarm, patchAlarm };
 }

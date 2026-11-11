@@ -80,6 +80,9 @@ export async function loadSessionSecret(dataDir, legacySecret = '') {
   }
 }
 
+/** 密文前缀（版本标记）。 */
+const CIPHER_PREFIX = 'enc:v1:';
+
 export class SecretBox {
   constructor(key) {
     if (!Buffer.isBuffer(key) || key.length !== 32) {
@@ -88,19 +91,33 @@ export class SecretBox {
     this.key = key;
   }
 
+  /**
+   * 加密明文。
+   *
+   * 注意：**不再**因为明文「看起来像密文」就原样返回——那会让一条恰好以
+   * `enc:v1:` 开头的凭据被明文入库，随后 decrypt 又把它当密文解析而报错。
+   * 现在任何明文都会被真实加密，幂等性由调用方（先查后写）保证。
+   *
+   * @param {string} value 明文。
+   * @returns {string} 形如 enc:v1:iv:tag:cipher 的密文。
+   */
   encrypt(value) {
     const plaintext = String(value ?? '');
-    if (plaintext.startsWith('enc:v1:')) return plaintext;
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', this.key, iv);
     const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
     const tag = cipher.getAuthTag();
-    return `enc:v1:${iv.toString('base64')}:${tag.toString('base64')}:${encrypted.toString('base64')}`;
+    return `${CIPHER_PREFIX}${iv.toString('base64')}:${tag.toString('base64')}:${encrypted.toString('base64')}`;
   }
 
+  /**
+   * 解密密文；非本格式的值按明文原样返回（兼容历史明文数据）。
+   * @param {string} value 密文或明文。
+   * @returns {string} 明文。
+   */
   decrypt(value) {
     const text = String(value ?? '');
-    if (!text.startsWith('enc:v1:')) return text;
+    if (!text.startsWith(CIPHER_PREFIX)) return text;
     const [, version, ivValue, tagValue, cipherValue] = text.split(':');
     if (version !== 'v1' || !ivValue || !tagValue || !cipherValue) {
       throw new Error('加密数据格式无效');

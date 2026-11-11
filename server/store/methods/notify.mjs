@@ -2,32 +2,42 @@ import crypto from 'node:crypto';
 import { now, bool } from '../../schema.mjs';
 
 export const notifyMethods = {
-/**
- * 行对象 → 渠道对象（解密 url/secret，内联模板正文）。
- * @param {object|null} row notify_channels 行。
- * @returns {import('../../types.mjs').NotifyChannel|null}
- */
-notifyChannelRowToObject(row) {
+  /**
+   * 行对象 → 渠道对象（解密 url/secret，内联模板正文）。
+   *
+   * 解密失败（密钥轮换、数据库局部损坏）**不再**静默降级为空字符串：
+   * 那样推送会带着空地址被跳过，运维只能看到「没收到告警」却找不到根因。
+   * 这里显式记录 credentialError，由调用方记录日志并跳过该渠道。
+   *
+   * @param {object|null} row notify_channels 行。
+   * @returns {import('../../types.mjs').NotifyChannel|null}
+   */
+  notifyChannelRowToObject(row) {
     if (!row) return null;
-    const decode = (value) => {
+    let credentialError = '';
+    const decode = (value, label) => {
       if (!value) return '';
       if (!value.startsWith('enc:v1:')) return value;
       try {
         return this.secretBox.decrypt(value);
       } catch {
+        credentialError = `${label}解密失败（密钥可能已更换或数据损坏）`;
         return '';
       }
     };
+    const url = decode(row.url, '推送地址');
+    const secret = row.secret ? decode(row.secret, '签名密钥') : '';
     return {
       id: row.id,
       siteId: row.site_id ?? null,
       kind: row.kind,
       name: row.name,
-      url: decode(row.url),
-      secret: row.secret ? decode(row.secret) : '',
+      url,
+      secret,
       enabled: bool(row.enabled),
       templateId: row.template_id ?? null,
       templateBody: row.template_id ? this.getNotificationTemplateBody(row.template_id) : null,
+      credentialError,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -202,9 +212,10 @@ updateNotificationTemplate(id, { name, body } = {}) {
  * @param {string} id 模板 ID。
  * @returns {boolean} 是否删除成功（内置模板拒绝）。
  */
-deleteNotificationTemplate(id) {
+  deleteNotificationTemplate(id) {
     const current = this.getNotificationTemplate(id);
-    if (!current) return false;
+    // 内置模板由 V6 迁移播种，且迁移不会重跑 —— 删除后永久丢失，无法恢复。
+    if (!current || current.builtin) return false;
     // 删除模板后，引用它的渠道回退到默认文案（template_id 置空）。
     this.db
       .prepare('UPDATE notify_channels SET template_id = NULL WHERE template_id = ?')
@@ -253,14 +264,25 @@ channelsForSite(siteId) {
  * @returns {boolean}
  */
 claimNotification(alarmId, channelId, event) {
-    const result = this.db
+    // 先尝试新插入；唯一键冲突时检查既有记录。
+    // - status='sent'：已完成投递，跳过（幂等语义不变）。
+    // - status='failed'：允许重试，重置为 pending 并刷新时间 —— 告警升级失败后
+    //   下一轮巡检可再次投递，避免「显示已升级但实际未送达且永不重试」。
+    const inserted = this.db
       .prepare(`
         INSERT OR IGNORE INTO notification_logs
         (id, alarm_id, channel_id, event, status, error, created_at)
         VALUES (?, ?, ?, ?, 'pending', NULL, ?)
       `)
-      .run(crypto.randomUUID(), alarmId, channelId, event, now());
-    return result.changes > 0;
+      .run(crypto.randomUUID(), alarmId, channelId, event, now()).changes > 0;
+    if (inserted) return true;
+    return this.db
+      .prepare(`
+        UPDATE notification_logs
+        SET status = 'pending', error = NULL, created_at = ?
+        WHERE alarm_id = ? AND channel_id = ? AND event = ? AND status = 'failed'
+      `)
+      .run(now(), alarmId, channelId, event).changes > 0;
   },
 /**
  * 回写推送结果。

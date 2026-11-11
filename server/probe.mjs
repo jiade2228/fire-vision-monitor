@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { stripUserinfo } from './sanitize.mjs';
 
 export function ffprobeAvailable(ffprobePath = process.env.FFPROBE_PATH || 'ffprobe') {
   const result = spawnSync(ffprobePath, ['-version'], {
@@ -8,12 +9,19 @@ export function ffprobeAvailable(ffprobePath = process.env.FFPROBE_PATH || 'ffpr
   return result.status === 0;
 }
 
+/**
+ * 抹除 URL 中的 userinfo（账号密码）。
+ *
+ * 不能用正则按 `@` 贪心/懒惰匹配：密码里本身可能含 `@`
+ * （rtsp://us@er:pass@host），正则只能匹配到第一个 `@`，
+ * 残余的密码片段会同时出现在响应体与审计日志里。
+ * 这里改为解析 URL 结构后整体替换 userinfo。
+ *
+ * @param {string} value 原始文本。
+ * @returns {string} 脱敏后的文本。
+ */
 function sanitize(value) {
-  return String(value ?? '')
-    .replace(/rtsps?:\/\/[^\s@]+@/gi, 'rtsp://***@')
-    .replace(/https?:\/\/[^\s]+@/gi, 'https://***@')
-    .replace(/\s+/g, ' ')
-    .slice(0, 500);
+  return stripUserinfo(value).replace(/\s+/g, ' ').slice(0, 500);
 }
 
 export function probeStream({
