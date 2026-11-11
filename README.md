@@ -1,6 +1,8 @@
 # 火情视频识别监控平台（Flame Vision）
 
-> **交付与验收**：全部条目对照、部署步骤、发布脚本与验收清单见 [DELIVERY.md](./DELIVERY.md)；历次审查记录见 [REVIEW.md](./REVIEW.md)。
+**简体中文** · [English](./README.en.md)
+
+> **部署与交付**：一键部署参数见下文 §4，交付物与验收基线见 [DELIVERY.md](./DELIVERY.md)，macOS 适配见 [docs/MACOS-COMPAT.md](./docs/MACOS-COMPAT.md)，GitHub 推送见 [docs/GITHUB.md](./docs/GITHUB.md)。
 
 浏览器与服务器双栈的火焰 / 烟雾视频识别监控平台：接入现场摄像头（RTSP / ONVIF / 网络摄像头 / 边缘网关），7×24 自动识别火焰与烟雾，命中即告警、抓拍、录短视频，并按站点推送给企业微信 / 钉钉 / Webhook。支持多租户站点隔离、多角色账号、告警处置闭环、趋势看板与审计日志。
 
@@ -145,7 +147,7 @@ docker compose up -d     # 构建时自动跑 npm test，数据落命名卷 fire
 ## 8. 测试与 CI
 
 ```bash
-npm test        # 65 项单元 / 接口测试（串行，约 1-2 分钟）
+npm test        # 289 项单元 / 接口测试（串行，约 1-2 分钟）
 npm run e2e     # 25+ 项端到端断言（含失败登录、未登录 401；无 Chrome 时自动跳过）
 npm run build   # tsc --noEmit + vite build
 ```
@@ -208,7 +210,11 @@ node scripts/detect-file.mjs test-videos/火灾-酒精壁炉明火.webm standard
 
 ```
 server/            服务端（Express 5 + node:sqlite）
+  boot.mjs         启动入口：Node 版本、数据目录、长路径与可执行文件定位
   index.mjs        启动引导、中间件、单实例锁与路由注册
+  config.mjs       数值/布尔/端口/时刻配置的统一解析（非法值回退并告警）
+  runtime-check.mjs / binary-locate.mjs / ffmpeg-capabilities.mjs
+                   运行时自检、ffmpeg 定位、编码器探测与回退
   routes/          按域拆分的 HTTP 路由（auth/cameras/alarms/notify/
                    sites/users/admin/demo/media/recordings）
   recording-index.mjs    持续录像段扫描、对账与时间线构建（不依赖 FFmpeg）
@@ -216,7 +222,8 @@ server/            服务端（Express 5 + node:sqlite）
   recording-playback.mjs 按需 HLS 回放会话与 MP4 导出（选段/路径校验/参数构造）
   ffmpeg-once.mjs        一次性 FFmpeg 进程公共骨架
   http/            鉴权守卫、会话与登录限流
-  schema.mjs       建表与 V1→V8 迁移
+  net-guard.mjs    出网地址校验（云元数据/内网拦截、逐跳重定向校验）
+  schema.mjs       建表与 V1→V10 迁移
   store.mjs        数据层入口（openStore / Store）
   store/           领域方法（methods/）与行级辅助（helpers.mjs）
   types.mjs        共享 JSDoc 类型定义（不改变构建链）
@@ -226,18 +233,22 @@ server/            服务端（Express 5 + node:sqlite）
   streams.mjs      RTSP→HLS 转码管理
   notify.mjs       通知推送、模板渲染与渠道自愈
   demo-source.mjs  演示视频源
+  vendors.mjs      13+ 品牌 NVR 的 RTSP 地址模板
   edge-hub/edge-gateway.mjs  边缘网关（中心侧/现场侧）
-  onvif*.mjs       ONVIF 发现与扫描
-  reset-password.mjs  密码重置工具
+  onvif*.mjs       ONVIF 发现与扫描（SOAP 1.1/1.2 自适应）
+  reset-password.mjs / restore-builtin-templates.mjs  运维工具
 src/               前端（React 19 + TS + Vite 7）
-scripts/           e2e-smoke.mjs / detect-file.mjs / 守护脚本
-docs/              设计方案（持续录像回放等）
+scripts/           部署与运维：deploy.ps1 / deploy.sh / db-backup.mjs /
+                   fire-watchdog.ps1 / launchd/ / e2e-smoke.mjs /
+                   contrast-scan.mjs / detect-file.mjs
+docs/              使用与设计文档（macOS 适配、GitHub 推送、录像设计、评审清单）
 test-videos/       测试视频（Wikimedia Commons CC 授权，不入库）
 data/              运行数据（不入库）：SQLite / 凭据 / 备份 / 媒体
   recordings/      告警短视频 mp4（受 MEDIA_MAX_BYTES 水位管理）
   continuous/      持续录像 TS 分段（独立目录，避免被短视频水位误清理）
   continuous-play/ 回放会话临时 HLS 产物（启动清空）
   continuous-export/ 导出用临时 MP4（下载后即删）
+  backups/         自动与手工备份（VACUUM INTO 快照）
 ```
 
 ## 11. 常见问题
@@ -268,6 +279,21 @@ A：演示点位地址只在演示运行期有效，重启后已自动清理；�
 
 **Q：手机在外网看不了内网画面？**
 A：外网不能主动入内网。用边缘网关（现场主动外连）或给现场公网 IP + HTTPS 反代，详见第 4.3 节。
+
+---
+
+## 12. 文档索引
+
+| 文档 | 内容 |
+|---|---|
+| [README.md](./README.md) / [README.en.md](./README.en.md) | 项目说明（中文 / English） |
+| [DELIVERY.md](./DELIVERY.md) | 交付物清单、验收基线、备份恢复、升级回滚、已知限制 |
+| [SECURITY.md](./SECURITY.md) | 安全模型与加固说明 |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) | 开发与评审约定 |
+| [docs/MACOS-COMPAT.md](./docs/MACOS-COMPAT.md) | macOS 适配范围、版本要求、安装与 launchd |
+| [docs/GITHUB.md](./docs/GITHUB.md) | 推送到 GitHub 的完整步骤 |
+| [docs/continuous-recording-design.md](./docs/continuous-recording-design.md) | 持续录像设计说明 |
+| [docs/REVIEW-CHECKLIST.md](./docs/REVIEW-CHECKLIST.md) | 评审清单（防回归） |
 
 ---
 

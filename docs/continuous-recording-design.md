@@ -1,7 +1,7 @@
 # 持续录像时间线回放 · 设计文档
 
 状态：**全部功能已实施（索引、采集、回放、导出、保护段联动、配额淘汰、前端播放器）；§8 真机验收清单仍需在有真实设备的现场执行**。
-关联：`REVIEW.md` 第二节新功能优先级；现有告警短视频（`ALARM_CLIP_SECONDS`）与磁盘水位（`MEDIA_MAX_BYTES`）机制。
+关联：`DELIVERY.md` 已知限制；现有告警短视频（`ALARM_CLIP_SECONDS`）与磁盘水位（`MEDIA_MAX_BYTES`）机制。
 
 > 2026-11-06 实施记录（第一阶段）
 > - 录像段目录改为 **`data/continuous/<cameraId>/<YYYYMMDD>/<HHmmss>.ts`**（全部按 UTC 解释）。

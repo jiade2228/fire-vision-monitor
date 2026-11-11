@@ -1,7 +1,12 @@
 # macOS 兼容支持说明
 
-> 版本：**v1.1.2**（在 v1.1.1 基础上新增 macOS 适配）
+> 版本：**v1.1.3** · 简体中文（English summary at the end）
 > 原则：**只增不改** —— 所有改动都以「PATH 能找到就不改变行为」为前提，Windows/Linux 现有部署行为完全不变。
+
+**English TL;DR** — Supported: **macOS 11 (Big Sur) or later**, Apple Silicon and Intel, Node ≥ 22.5, FFmpeg via Homebrew.
+The main macOS pitfalls handled here: (1) launchd's `PATH` does not include Homebrew, so `ffmpeg` is resolved from `/opt/homebrew/bin` and `/usr/local/bin` when not on `PATH`; (2) the default file-descriptor soft limit is low (often 256) and is detected with a startup warning; (3) Chrome is located under `/Applications` for E2E and the contrast scan; (4) `deploy.sh` uses `launchctl`/`nohup` instead of `setsid`/`systemd`.
+Install with `brew install node@22 ffmpeg`, then run `./scripts/deploy.sh`. For auto-start use `scripts/launchd/com.flamevision.monitor.plist` (see §3.3) and prevent sleep with `caffeinate` (§3.4).
+**Status: adapted but not yet validated on real macOS hardware** — see §七.
 
 ---
 
