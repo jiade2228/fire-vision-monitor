@@ -57,6 +57,7 @@ export function registerAuthRoutes(app, deps) {
     normalizeText,
     validUsername,
     validatePassword,
+    passwordIssue,
     passwordHash,
     verifyPassword,
     clientIp,
@@ -89,8 +90,9 @@ export function registerAuthRoutes(app, deps) {
     if (!validUsername(username)) {
       return res.status(400).json({ error: '用户名需为 3-32 位字母、数字、点、横线或下划线' });
     }
-    if (!validatePassword(req.body.password)) {
-      return res.status(400).json({ error: '密码至少需要 8 位' });
+    const passwordProblem = passwordIssue(req.body.password);
+    if (passwordProblem) {
+      return res.status(400).json({ error: passwordProblem });
     }
     setupGuard.inFlight = true;
     try {

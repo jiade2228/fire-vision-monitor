@@ -4980,3 +4980,140 @@ button {
 .app-fatal__action {
   align-self: flex-start;
 }
+
+/* ---------------------------------------------------------------------------
+ * 云端验收 D-02 / D-11 / D-04 修复
+ *
+ * D-02：.step 的背景是硬编码深色 rgba(16,26,38,.7)，浅色主题下 --text-dim 变深，
+ *       形成「深底深字」，实测对比度 1.29:1（WCAG AA 要求 4.5:1）。
+ *       这里显式给浅色面与深色字，深色主题规则一字未动。
+ * D-11：.clip-download 原为 flex 尾部右对齐，会掉到播放器外侧；
+ *       改为贴播放器右上角，与「下载抓拍」的位置规则一致（媒体区内）。
+ * D-04：375px 下卡内标题、状态徽标与操作按钮叠压；窄屏改为加高卡片、
+ *       名称省略号、状态徽标移到左下，与右下操作按钮分列两侧。
+ * ------------------------------------------------------------------------- */
+
+/* D-11：下载入口收敛到播放器内部 */
+.alarm-clip {
+  position: relative;
+}
+
+.clip-download {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  z-index: 2;
+  margin-left: 0;
+  align-self: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(76, 201, 240, 0.34);
+  background: rgba(6, 12, 20, 0.78);
+  font-size: 9.5px;
+  line-height: 1.7;
+  text-decoration: none;
+}
+
+/* D-02：浅色主题下的处置清单与下载入口 */
+:root[data-theme='light'] .step {
+  background: #ffffff;
+  border-color: rgba(31, 58, 92, 0.18);
+  color: var(--text);
+}
+
+:root[data-theme='light'] .step:hover {
+  background: #eef4fb;
+}
+
+:root[data-theme='light'] .step.is-done {
+  background: #eef8f3;
+  border-color: rgba(11, 122, 82, 0.38);
+  color: #0b5c40;
+}
+
+:root[data-theme='light'] .step-box {
+  background: #eef2f7;
+  border-color: rgba(31, 58, 92, 0.28);
+  color: #3c5570;
+}
+
+:root[data-theme='light'] .step.is-done .step-box {
+  background: #0b7a52;
+  border-color: #0b7a52;
+  color: #ffffff;
+}
+
+/* 步骤计数用 --flame（#c9540b）在白底上仅 4.42:1，略低于 AA，这里加深一档 */
+:root[data-theme='light'] .steps-count {
+  color: #a8450a;
+}
+
+:root[data-theme='light'] .clip-download,
+:root[data-theme='light'] .shot-download {
+  color: #0b4a63;
+  background: rgba(255, 255, 255, 0.92);
+  border-color: rgba(11, 127, 168, 0.45);
+}
+
+:root[data-theme='light'] .clip-download:hover,
+:root[data-theme='light'] .shot-download:hover {
+  background: #ffffff;
+  border-color: rgba(11, 127, 168, 0.75);
+  color: #07374a;
+}
+
+/* D-04：窄屏下的视频瓦片 */
+@media (max-width: 560px) {
+  .camera-tile {
+    aspect-ratio: 4 / 3;
+  }
+
+  /* 名称让出右侧状态徽标的位置并省略，避免两者叠压。
+     状态徽标保留在右上：移到左下会盖住「本地视频测试」按钮（实测截图确认）。 */
+  .tile-hud--name {
+    max-width: calc(100% - 88px);
+  }
+
+  .tile-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tile-hud--state {
+    font-size: 9px;
+    padding: 1px 6px 1px 5px;
+  }
+
+  .tile-signal-note {
+    max-width: 58%;
+    font-size: 9.5px;
+    padding: 3px 7px;
+  }
+}
+
+/* D-03：告警列表「加载更多」 */
+.alarm-load-more {
+  display: flex;
+  justify-content: center;
+  padding: 10px 0 4px;
+}
+
+.alarm-load-more .btn {
+  min-width: 220px;
+}
+
+/* 工具栏日期输入与下拉风格一致 */
+.toolbar-field input[type='date'] {
+  background: var(--surface-2, rgba(12, 20, 30, 0.7));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+  border-radius: 8px;
+  color: var(--text);
+  padding: 4px 8px;
+  font: inherit;
+}
+
+:root[data-theme='light'] .toolbar-field input[type='date'] {
+  background: #ffffff;
+  border-color: rgba(31, 58, 92, 0.24);
+}

@@ -4,29 +4,71 @@ import { alarmRowToObject } from '../helpers.mjs';
 import { protectionWindow } from '../../recording-config.mjs';
 import { SHANGHAI_OFFSET_MS, toShanghaiParts } from '../../time.mjs';
 
+/**
+ * 构造告警列表的 WHERE 子句。
+ *
+ * 直接按告警自身的 site_id 过滤：删除点位后历史告警仍可见，也不再依赖 JOIN。
+ * 时间范围用 created_at（毫秒时间戳）闭区间，供界面按日期筛选。
+ *
+ * @param {{allowedSiteIds?: string[]|null, from?: number|null, to?: number|null}} query
+ * @returns {{where: string, params: unknown[]}}
+ */
+function buildAlarmFilter({ allowedSiteIds = null, from = null, to = null } = {}) {
+  const clauses = [];
+  const params = [];
+  if (allowedSiteIds) {
+    clauses.push(`a.site_id IN (${allowedSiteIds.map(() => '?').join(',')})`);
+    params.push(...allowedSiteIds);
+  }
+  if (Number.isFinite(from)) {
+    clauses.push('a.created_at >= ?');
+    params.push(from);
+  }
+  if (Number.isFinite(to)) {
+    clauses.push('a.created_at <= ?');
+    params.push(to);
+  }
+  return { where: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', params };
+}
+
 export const alarmMethods = {
 /**
- * 告警列表（新→旧），支持按可见站点集合过滤。
+ * 告警列表（新→旧），支持站点过滤、时间范围与分页。
+ *
+ * D-03：界面原先一次取 300 条、服务端上限 1000，更早的历史告警不可达。
+ * 现在暴露 offset，并配合 countAlarms 返回总数，由界面「加载更多」翻页。
+ *
  * @param {number} [limit] 返回条数上限，默认 300。
- * @param {{allowedSiteIds?: string[]|null}} [query]
+ * @param {{allowedSiteIds?: string[]|null, offset?: number, from?: number|null, to?: number|null}} [query]
  * @returns {import('../../types.mjs').Alarm[]}
  */
-listAlarms(limit = 300, { allowedSiteIds = null } = {}) {
+listAlarms(limit = 300, { allowedSiteIds = null, offset = 0, from = null, to = null } = {}) {
     const safeLimit = Math.min(Math.max(Number(limit) || 200, 1), 1000);
+    const safeOffset = Math.max(Number(offset) || 0, 0);
     if (allowedSiteIds !== null && allowedSiteIds.length === 0) {
       return [];
     }
-    // 直接按告警自身的 site_id 过滤：删除点位后历史告警仍可见，也不再依赖 JOIN。
-    const where = allowedSiteIds
-      ? 'WHERE a.site_id IN (' + allowedSiteIds.map(() => '?').join(',') + ')'
-      : '';
-    const params = allowedSiteIds ? [...allowedSiteIds, safeLimit] : [safeLimit];
+    const { where, params } = buildAlarmFilter({ allowedSiteIds, from, to });
     return this.db
       .prepare(
-        `SELECT a.* FROM alarms a ${where} ORDER BY a.created_at DESC LIMIT ?`,
+        `SELECT a.* FROM alarms a ${where} ORDER BY a.created_at DESC LIMIT ? OFFSET ?`,
       )
-      .all(...params)
+      .all(...params, safeLimit, safeOffset)
       .map(alarmRowToObject);
+  },
+
+/**
+ * 统计满足条件的告警总数（与 listAlarms 使用同一套过滤条件）。
+ * @param {{allowedSiteIds?: string[]|null, from?: number|null, to?: number|null}} [query]
+ * @returns {number}
+ */
+countAlarms({ allowedSiteIds = null, from = null, to = null } = {}) {
+    if (allowedSiteIds !== null && allowedSiteIds.length === 0) return 0;
+    const { where, params } = buildAlarmFilter({ allowedSiteIds, from, to });
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS c FROM alarms a ${where}`)
+      .get(...params);
+    return Number(row?.c ?? 0);
   },
 /**
  * @param {string} id 告警 ID。

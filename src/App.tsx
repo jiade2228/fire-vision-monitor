@@ -70,6 +70,12 @@ export default function App() {
     sseDown,
     createAlarm,
     patchAlarm,
+    total: alarmTotal,
+    hasMore: alarmsHasMore,
+    loadingMore: alarmsLoadingMore,
+    loadMore: loadMoreAlarms,
+    range: alarmRange,
+    applyRange: applyAlarmRange,
   } = useAlarms();
   const [view, setView] = useState<ViewKey>('monitor');
   const [sources, setSources] = useState<Record<string, CameraSource>>({});
@@ -827,6 +833,12 @@ export default function App() {
               expandedId={expandedId}
               handlers={handlers}
               readOnly={readOnly}
+              total={alarmTotal}
+              hasMore={alarmsHasMore}
+              loadingMore={alarmsLoadingMore}
+              onLoadMore={loadMoreAlarms}
+              range={alarmRange}
+              onRangeChange={applyAlarmRange}
             />
           )}
 

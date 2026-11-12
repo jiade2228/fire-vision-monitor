@@ -4,12 +4,22 @@ import { downloadAlarmsCsv } from '../lib/export';
 import { LEVEL_META } from '../lib/detection';
 import AlarmCard from './AlarmCard';
 import AlarmClipTimeline from './AlarmClipTimeline';
+import type { AlarmRange } from '../hooks/useAlarms';
 
 interface Props {
   alarms: Alarm[];
   expandedId: string | null;
   handlers: AlarmHandlers;
   readOnly?: boolean;
+  /** 服务端过滤后的总条数（含未加载部分）。 */
+  total?: number;
+  /** 是否还有下一页（D-03 分页）。 */
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
+  /** 时间范围筛选（YYYY-MM-DD，空字符串表示不限）。 */
+  range?: AlarmRange;
+  onRangeChange?: (next: AlarmRange) => void;
 }
 
 type LevelFilter = 'all' | AlarmLevel;
@@ -27,6 +37,12 @@ export default function AlarmCenter({
   expandedId,
   handlers,
   readOnly = false,
+  total,
+  hasMore = false,
+  loadingMore = false,
+  onLoadMore,
+  range,
+  onRangeChange,
 }: Props) {
   const [filter, setFilter] = useState<AlarmFilter>('all');
   const [levelFilter, setLevelFilter] = useState<LevelFilter>('all');
@@ -171,7 +187,49 @@ export default function AlarmCenter({
           </select>
         </label>
 
-        <span className="toolbar-count">共 {list.length} 条</span>
+        <label className="toolbar-field">
+          <span>起始</span>
+          <input
+            type="date"
+            value={range?.from ?? ''}
+            aria-label="告警起始日期"
+            onChange={(event) =>
+              onRangeChange?.({ from: event.target.value, to: range?.to ?? '' })
+            }
+          />
+        </label>
+
+        <label className="toolbar-field">
+          <span>截止</span>
+          <input
+            type="date"
+            value={range?.to ?? ''}
+            aria-label="告警截止日期"
+            min={range?.from || undefined}
+            onChange={(event) =>
+              onRangeChange?.({ from: range?.from ?? '', to: event.target.value })
+            }
+          />
+        </label>
+
+        {(range?.from || range?.to) && (
+          <button
+            type="button"
+            className="btn btn-sm"
+            aria-label="清除时间范围"
+            onClick={() => onRangeChange?.({ from: '', to: '' })}
+          >
+            清除时间
+          </button>
+        )}
+
+        <span className="toolbar-count">
+          {typeof total === 'number' && (range?.from || range?.to)
+            ? `符合 ${total} 条`
+            : typeof total === 'number'
+              ? `共 ${total} 条`
+              : `共 ${list.length} 条`}
+        </span>
 
         <button
           type="button"
@@ -198,18 +256,34 @@ export default function AlarmCenter({
           )}
         </div>
       ) : (
-        <div className="alarm-list">
-          {list.map((alarm) => (
-            <AlarmCard
-              key={alarm.id}
-              alarm={alarm}
-              expanded={expandedId === alarm.id}
-              handlers={handlers}
-              readOnly={readOnly}
-            />
-          ))}
-        </div>
-        )}
+        <>
+          <div className="alarm-list">
+            {list.map((alarm) => (
+              <AlarmCard
+                key={alarm.id}
+                alarm={alarm}
+                expanded={expandedId === alarm.id}
+                handlers={handlers}
+                readOnly={readOnly}
+              />
+            ))}
+          </div>
+          {hasMore && onLoadMore && (
+            <div className="alarm-load-more">
+              <button
+                type="button"
+                className="btn"
+                disabled={loadingMore}
+                onClick={onLoadMore}
+              >
+                {loadingMore
+                  ? '加载中…'
+                  : `加载更多（已显示 ${list.length} / ${typeof total === 'number' ? total : list.length} 条）`}
+              </button>
+            </div>
+          )}
+        </>
+      )}
       </>)}
     </section>
   );

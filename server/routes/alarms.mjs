@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { CAPABILITIES, resolveCapabilityGuard } from '../auth/roles.mjs';
+import { SHANGHAI_OFFSET_MS } from '../time.mjs';
 
 /**
  * 告警相关接口：列表、趋势统计、事件流、抓图/短视频回放、创建与状态流转。
@@ -44,11 +45,51 @@ export function registerAlarmRoutes(app, deps) {
   const clampDays = (value, fallback, min) =>
     Math.min(Math.max(Number(value) || fallback, min), 90);
 
+  /**
+   * 解析时间筛选参数。
+   *
+   * 界面传的是 `YYYY-MM-DD`（日期选择器），按**上海时区**解释那一整天：
+   * 若按 UTC 解析，本地 11-01 00:00 会被算成 11-01 08:00，边界当天漏数据。
+   * 也接受毫秒时间戳与 ISO 字符串，便于脚本调用。
+   *
+   * @param {unknown} value 原始查询值。
+   * @param {{endOfDay?: boolean}} [options] 是否取当天 23:59:59.999。
+   * @returns {number|null}
+   */
+  const parseInstant = (value, { endOfDay = false } = {}) => {
+    if (value === undefined || value === null || value === '') return null;
+    const text = String(value).trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+      const [year, month, day] = text.split('-').map(Number);
+      const start = Date.UTC(year, month - 1, day) - SHANGHAI_OFFSET_MS;
+      return endOfDay ? start + 86_400_000 - 1 : start;
+    }
+    const numeric = Number(text);
+    if (Number.isFinite(numeric)) return numeric;
+    const parsed = Date.parse(text);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
   app.get('/api/alarms', requireAuth, (req, res) => {
+    const allowedSiteIds = allowedSiteIdsFor(req.user, store);
+    const from = parseInstant(req.query.from);
+    const to = parseInstant(req.query.to, { endOfDay: true });
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
     const alarms = store.listAlarms(req.query.limit, {
-      allowedSiteIds: allowedSiteIdsFor(req.user, store),
+      allowedSiteIds,
+      offset,
+      from,
+      to,
     });
-    res.json({ alarms });
+    // D-03：返回总数与是否还有下一页，界面据此显示「加载更多」与总条数。
+    const total = store.countAlarms({ allowedSiteIds, from, to });
+    res.json({
+      alarms,
+      total,
+      offset,
+      hasMore: offset + alarms.length < total,
+      range: { from, to },
+    });
   });
 
   // 误报热点：近 N 天按点位聚合的误报计数（站点隔离），供「误报治理」调优提示。

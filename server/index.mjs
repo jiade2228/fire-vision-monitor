@@ -35,6 +35,7 @@ import { createSession } from './http/session.mjs';
 // 统一错误类型。原先这些逻辑定义在本文件里并经 deps 透传给各路由模块。
 import {
   passwordHash,
+  passwordIssue,
   validatePassword,
   verifyPassword,
   validUsername,
@@ -222,6 +223,52 @@ function broadcastEvent(event, data, siteId = null) {
   }
 }
 
+/* 文件日志。
+ *
+ * 现场部署时窗口一关，控制台输出就没了；只靠 stdout 会让「服务起不来」「转码
+ * 失败」这类问题无从排查。统一写到 <dataDir>/logs/server.log：
+ * - 同步追加：崩溃前最后几行一定落盘（日志量小，代价可忽略）；
+ * - 超过 5 MB 轮转为 server.log.1，只保留一份，避免无限增长吃满磁盘；
+ * - 任何写盘异常都只是关掉文件日志，绝不影响主流程。
+ */
+const LOG_MAX_BYTES = 5 * 1024 * 1024;
+let logFilePath = null;
+let logBytes = 0;
+
+/** @param {string} dir 数据目录。 */
+function initLogFile(dir) {
+  try {
+    const logsDir = path.join(dir, 'logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+    logFilePath = path.join(logsDir, 'server.log');
+    logBytes = fs.existsSync(logFilePath) ? fs.statSync(logFilePath).size : 0;
+  } catch {
+    logFilePath = null;
+  }
+}
+
+function rotateLogFile() {
+  if (!logFilePath || logBytes < LOG_MAX_BYTES) return;
+  try {
+    fs.renameSync(logFilePath, `${logFilePath}.1`);
+    logBytes = 0;
+  } catch {
+    // 轮转失败继续追加，不能因为日志把服务拖垮。
+  }
+}
+
+/** @param {string} line 已序列化的单行日志。 */
+function writeLogLine(line) {
+  if (!logFilePath) return;
+  try {
+    rotateLogFile();
+    fs.appendFileSync(logFilePath, `${line}\n`);
+    logBytes += Buffer.byteLength(line) + 1;
+  } catch {
+    logFilePath = null;
+  }
+}
+
 function log(level, event, fields = {}) {
   const line = JSON.stringify({
     time: new Date().toISOString(),
@@ -232,7 +279,13 @@ function log(level, event, fields = {}) {
   if (level === 'error') console.error(line);
   else if (level === 'warn') console.warn(line);
   else console.log(line);
+  writeLogLine(line);
 }
+
+// 文件日志目录随数据目录：便携包为 <包>/data/logs，安装形态为 <数据目录>/logs。
+// 必须放在上面 let logFilePath 之后调用——函数声明会提升，但 let 变量处于 TDZ。
+// 初始化失败只影响文件日志，服务本身照常启动。
+initLogFile(dataDir);
 
 function parseCookies(header = '') {
   return Object.fromEntries(
@@ -308,12 +361,34 @@ async function acquireInstanceLock() {
   throw new Error('无法获取数据目录实例锁');
 }
 
+/** 点位名称上限。
+ *
+ * 原为 24 字符，对「A 区 3 号楼 B1 消防通道」这类现场命名不够用；
+ * 放宽到 60。超出时**明确报错**而不是静默截断——静默截断会让用户以为
+ * 全名已保存，直到在大屏上看到被砍掉的名字才发现。
+ */
+const CAMERA_NAME_MAX = 60;
+const CAMERA_PROTOCOLS = ['none', 'hls', 'http', 'rtsp', 'edge'];
+
 function validateCameraInput(body) {
-  const name = normalizeText(body.name, 24);
+  const rawName = typeof body.name === 'string' ? body.name.trim() : '';
+  if (rawName.length > CAMERA_NAME_MAX) {
+    return {
+      error: `点位名称最多 ${CAMERA_NAME_MAX} 个字符（当前 ${rawName.length} 个）`,
+    };
+  }
+  const name = normalizeText(rawName, CAMERA_NAME_MAX);
   const zone = normalizeText(body.zone, 32);
-  const protocol = ['none', 'hls', 'http', 'rtsp', 'edge'].includes(body.protocol)
-    ? body.protocol
-    : 'none';
+  // 缺省或空串仍视为 none（兼容既有客户端）；传了白名单外的值则明确报错，
+  // 不再静默降级为 none——否则前端的配置错误会被悄悄吞掉。
+  const rawProtocol =
+    body.protocol === undefined || body.protocol === null || body.protocol === ''
+      ? 'none'
+      : body.protocol;
+  if (!CAMERA_PROTOCOLS.includes(rawProtocol)) {
+    return { error: `不支持的协议类型：${String(rawProtocol).slice(0, 32)}` };
+  }
+  const protocol = rawProtocol;
   const sourceUrl = typeof body.sourceUrl === 'string' ? body.sourceUrl.trim() : '';
   if (!name) return { error: '请填写点位名称' };
   if (!zone) return { error: '请填写所属区域' };
@@ -1703,6 +1778,7 @@ async function main() {
       normalizeText,
       validUsername,
       validatePassword,
+      passwordIssue,
       passwordHash,
       verifyPassword,
       clientIp,
@@ -1836,6 +1912,7 @@ async function main() {
       passwordHash,
       validUsername,
       validatePassword,
+      passwordIssue,
       requireAuth,
       requireRole,
       requireCapability,

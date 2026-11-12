@@ -264,8 +264,20 @@ async function main() {
     await fsp.chmod(shPath, 0o755);
   }
 
-  // 10) 快速开始
+  // 10) 快速开始（D-08：目录说明按实际打包内容渲染，不再硬编码「含 FFmpeg」）
   const startHint = platform === 'win32' ? '双击 start.cmd' : './start.sh';
+  // D-08：按包内实际是否存在 FFmpeg 渲染文案（不引用上方 if 块内的局部变量）。
+  const bundledFfmpeg = fs.existsSync(path.join(programDir, platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'));
+  const programDesc = bundledFfmpeg
+    ? 'program/   程序（Node 运行时 + 应用 + FFmpeg），升级时整体替换'
+    : 'program/   程序（Node 运行时 + 应用；本包不含 FFmpeg），升级时整体替换';
+  const ffmpegHints = bundledFfmpeg
+    ? []
+    : [
+        '  · 本包不含 FFmpeg：HLS/HTTP 点位可直接播放，但 RTSP 转码、持续录像、',
+        '    告警短视频、一键测流、回放导出均不可用。需要这些能力时请安装 FFmpeg',
+        '    并加入 PATH（或在 config 中设置 FFMPEG_PATH），重新启动即可。',
+      ];
   await fsp.writeFile(
     path.join(bundleDir, 'README-QUICKSTART.txt'),
     [
@@ -277,12 +289,13 @@ async function main() {
       '  3. 首次访问会引导创建管理员账号',
       '',
       '二、目录说明',
-      '  program/   程序（Node 运行时 + 应用 + FFmpeg），升级时整体替换',
+      programDesc,
       '  config/    配置文件（复制 fire-vision.env.example 为 fire-vision.env）',
       '  data/      全部运行数据（数据库、凭据密钥、录像、备份）',
-      '  logs/      日志',
+      '  logs/      日志（logs/server.log；控制台同步输出）',
       '',
       '三、重要提醒',
+      ...ffmpegHints,
       '  · data/ 与 config/ 请定期备份；迁移时整个目录一起拷贝。',
       '  · data/credentials.key 与 data/app.db 必须成对保存，否则已加密的渠道配置无法解密。',
       '  · 如需放到 Program Files 等只读目录，请在 config 中显式设置 DATA_DIR，',

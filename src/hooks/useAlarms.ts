@@ -99,26 +99,64 @@ function upsertAlarm(prev: Alarm[], alarm: Alarm): Alarm[] {
   return next;
 }
 
+/** 每页条数。历史告警超过这个数量时用「加载更多」翻页（D-03）。 */
+const PAGE_SIZE = 50;
+
+/** 日期字符串（YYYY-MM-DD）按上海时区换算成当天起止时间戳。 */
+function shanghaiDayStart(date: string): number {
+  const [year, month, day] = date.split('-').map(Number);
+  return Date.UTC(year, month - 1, day) - 8 * 3600 * 1000;
+}
+
+/** 判断一条告警是否落在当前时间筛选区间内。 */
+function withinRange(createdAt: number, from: string, to: string): boolean {
+  if (from && createdAt < shanghaiDayStart(from)) return false;
+  if (to && createdAt > shanghaiDayStart(to) + 86_400_000 - 1) return false;
+  return true;
+}
+
+export type AlarmRange = { from: string; to: string };
+
 export function useAlarms() {
   const [alarms, setAlarms] = useState<Alarm[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   // 实时推送中断标记：供顶栏展示「正在重连」，避免值守人员误以为告警仍在实时到达。
   const [sseDown, setSseDown] = useState(false);
+  // 分页与时间筛选状态（D-03）。
+  const [total, setTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [range, setRange] = useState<AlarmRange>({ from: '', to: '' });
   const fetching = useRef(false);
   const mounted = useRef(true);
   const lastRefreshRef = useRef(0);
+  // 当前已加载条数：定时补刷沿用这个上限，避免「加载更多」的结果被一次补刷冲掉。
+  const loadedRef = useRef(PAGE_SIZE);
+  // 请求代次：时间筛选切换时让在途的旧请求结果失效，避免旧区间数据覆盖新区间。
+  const generation = useRef(0);
+  const rangeRef = useRef<AlarmRange>(range);
+  rangeRef.current = range;
 
   const refresh = useCallback(async () => {
     if (fetching.current) return;
     fetching.current = true;
+    const run = ++generation.current;
     try {
-      const result = await api.alarms();
-      if (mounted.current) {
+      const { from, to } = rangeRef.current;
+      const limit = Math.min(Math.max(loadedRef.current, PAGE_SIZE), 1000);
+      const result = await api.alarms(limit, {
+        from: from || undefined,
+        to: to || undefined,
+      });
+      if (mounted.current && generation.current === run) {
         const sorted = sortAlarms(result.alarms.map(normalizeAlarm));
         // 内容未变时复用原数组引用，让 React 跳过整张列表的重渲染。
         // SSE 路径已用 sameAlarm 做同样的优化，定时补刷不应把它抵消掉。
         setAlarms((prev) => (sameAlarms(prev, sorted) ? prev : sorted));
+        loadedRef.current = Math.max(sorted.length, PAGE_SIZE);
+        setTotal(Number(result.total ?? sorted.length));
+        setHasMore(Boolean(result.hasMore));
         setError('');
         lastRefreshRef.current = Date.now();
       }
@@ -137,6 +175,60 @@ export function useAlarms() {
     }
   }, []);
 
+  /**
+   * 加载下一页并追加到列表尾部。
+   * 以当前已加载条数作为 offset，重复项按 id 去重（SSE 可能已插入同一条）。
+   */
+  const loadMore = useCallback(async () => {
+    if (fetching.current || loadingMore) return;
+    fetching.current = true;
+    setLoadingMore(true);
+    try {
+      const { from, to } = rangeRef.current;
+      const result = await api.alarms(PAGE_SIZE, {
+        offset: loadedRef.current,
+        from: from || undefined,
+        to: to || undefined,
+      });
+      if (mounted.current) {
+        const page = result.alarms.map(normalizeAlarm);
+        setAlarms((prev) => {
+          const seen = new Set(prev.map((item) => item.id));
+          const appended = page.filter((item) => !seen.has(item.id));
+          return appended.length ? sortAlarms([...prev, ...appended]) : prev;
+        });
+        loadedRef.current += page.length;
+        setTotal(Number(result.total ?? 0));
+        setHasMore(Boolean(result.hasMore));
+      }
+    } catch (requestError) {
+      if (mounted.current) {
+        setError(
+          requestError instanceof Error ? requestError.message : '加载更多失败',
+        );
+      }
+    } finally {
+      fetching.current = false;
+      if (mounted.current) setLoadingMore(false);
+    }
+  }, [loadingMore]);
+
+  /** 应用时间筛选：重置分页并重新拉取第一页。 */
+  const applyRange = useCallback(
+    (next: AlarmRange) => {
+      rangeRef.current = next;
+      setRange(next);
+      loadedRef.current = PAGE_SIZE;
+      generation.current += 1;
+      fetching.current = false;
+      setAlarms([]);
+      setHasMore(false);
+      setLoading(true);
+      void refresh();
+    },
+    [refresh],
+  );
+
   useEffect(() => {
     mounted.current = true;
     void refresh();
@@ -144,6 +236,8 @@ export function useAlarms() {
      * RES-3：合并告警时不做全量排序（详见 upsertAlarm）。
      */
     const mergeAlarm = (alarm: Alarm) => {
+      const { from, to } = rangeRef.current;
+      if (!withinRange(alarm.createdAt, from, to)) return;
       setAlarms((prev) => upsertAlarm(prev, alarm));
     };
     const onEvent = (type: string, data: string) => {
@@ -219,5 +313,20 @@ export function useAlarms() {
     [],
   );
 
-  return { alarms, loading, error, sseDown, refresh, createAlarm, patchAlarm };
+  return {
+    alarms,
+    loading,
+    error,
+    sseDown,
+    refresh,
+    createAlarm,
+    patchAlarm,
+    // D-03：分页与时间筛选
+    total,
+    hasMore,
+    loadingMore,
+    loadMore,
+    range,
+    applyRange,
+  };
 }

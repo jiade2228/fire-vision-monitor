@@ -251,7 +251,21 @@ async function main() {
     });
     const cameraId = cam.body?.camera?.id;
     if (cameraId) {
-      await api('/api/alarms', { method: 'POST', cookie: adminCookie, body: { cameraId, level: 'fire', confidence: 90, hotspot: { x: 40, y: 60 } } });
+      const created = await api('/api/alarms', {
+        method: 'POST',
+        cookie: adminCookie,
+        body: { cameraId, level: 'fire', confidence: 90, hotspot: { x: 40, y: 60 } },
+      });
+      const alarmId = created.body?.alarm?.id;
+      // 关键：只有「处置中」的告警在展开后才渲染应急处置清单与下载入口。
+      // 旧扫描只建了 pending 告警且从不展开，因此 D-02 的 1.29:1 一直没被扫到。
+      if (alarmId) {
+        await api(`/api/alarms/${alarmId}`, {
+          method: 'PATCH',
+          cookie: adminCookie,
+          body: { status: 'confirmed', steps: [true, false, false, false] },
+        });
+      }
     }
 
     // 切浅色主题
@@ -313,6 +327,10 @@ async function main() {
 
     await gotoView('nav-tab-alarms');
     await scan('alarms');
+    // 展开首条告警：处置清单、下载入口等只在 is-open 时才渲染进 DOM。
+    await page.evaluate(() => document.querySelector('article.alarm-card button')?.click());
+    await new Promise((r) => setTimeout(r, 600));
+    await scan('alarm-detail');
     await gotoView('nav-tab-records');
     await scan('records');
     await openAdminTab('点位');

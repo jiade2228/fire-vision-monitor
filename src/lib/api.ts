@@ -670,12 +670,29 @@ export const api = {
     request<{ ok: boolean }>(`/api/cameras/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
-  alarms: (limit = 300) =>
-    request<{ alarms: Alarm[] }>(
-      `/api/alarms?limit=${encodeURIComponent(limit)}`,
+  /**
+   * 告警列表（分页 + 时间范围）。
+   *
+   * D-03：原先固定只取前 300 条，服务端上限 1000，更早的历史告警在界面上不可达。
+   * 现在带 offset 与 from/to，响应同时返回 total 与 hasMore 供「加载更多」使用。
+   *
+   * @param limit 本页条数。
+   * @param options offset 起始偏移；from/to 为 YYYY-MM-DD（按上海时区整日解释）。
+   */
+  alarms: (
+    limit = 300,
+    options: { offset?: number; from?: string; to?: string } = {},
+  ) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (options.offset) params.set('offset', String(options.offset));
+    if (options.from) params.set('from', options.from);
+    if (options.to) params.set('to', options.to);
+    return request<{ alarms: Alarm[]; total: number; hasMore: boolean }>(
+      `/api/alarms?${params.toString()}`,
       {},
       ['alarms'],
-    ),
+    );
+  },
   alarmStats: (days = 30) =>
     request<AlarmStats>(`/api/alarms/stats?days=${encodeURIComponent(days)}`),
   falseHotspots: (days = 7) =>

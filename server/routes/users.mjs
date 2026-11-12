@@ -36,6 +36,7 @@ export function registerUserRoutes(app, deps) {
     passwordHash,
     validUsername,
     validatePassword,
+    passwordIssue,
     requireAuth,
     requireCapability,
     normalizeText,
@@ -69,8 +70,9 @@ export function registerUserRoutes(app, deps) {
       const error = conflict('用户名已存在');
       return res.status(error.status).json(error.toBody());
     }
-    if (!validatePassword(req.body.password)) {
-      const error = badRequest('密码至少需要 8 位');
+    const createPasswordProblem = passwordIssue(req.body.password);
+    if (createPasswordProblem) {
+      const error = badRequest(createPasswordProblem);
       return res.status(error.status).json(error.toBody());
     }
     let user;
@@ -130,8 +132,9 @@ export function registerUserRoutes(app, deps) {
     let newSalt;
     let newHash;
     if (req.body.password !== undefined) {
-      if (!validatePassword(req.body.password)) {
-        const error = badRequest('密码至少需要 8 位');
+      const updatePasswordProblem = passwordIssue(req.body.password);
+      if (updatePasswordProblem) {
+        const error = badRequest(updatePasswordProblem);
         return res.status(error.status).json(error.toBody());
       }
       newSalt = crypto.randomBytes(16).toString('hex');

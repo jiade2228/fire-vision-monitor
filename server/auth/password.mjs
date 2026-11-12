@@ -106,14 +106,30 @@ export function validUsername(value) {
  * @returns {boolean}
  */
 export function validatePassword(value) {
-  if (typeof value !== 'string') return false;
-  if (value.length < PASSWORD_MIN_LENGTH || value.length > PASSWORD_MAX_LENGTH) {
-    return false;
+  return passwordIssue(value) === null;
+}
+
+/**
+ * 返回密码不合规的**具体原因**，合规时返回 null。
+ *
+ * 改造前所有失败都提示「密码至少需要 8 位」：一个 129 位的密码、一串空格、
+ * 或 aaaaaaaa 都会得到同一句话，用户按提示改也改不对。这里按实际规则拆分。
+ *
+ * @param {unknown} value 明文密码。
+ * @returns {string|null} 中文提示。
+ */
+export function passwordIssue(value) {
+  if (typeof value !== 'string') return '密码格式不正确';
+  if (value.length < PASSWORD_MIN_LENGTH) {
+    return `密码至少需要 ${PASSWORD_MIN_LENGTH} 位`;
+  }
+  if (value.length > PASSWORD_MAX_LENGTH) {
+    return `密码最多 ${PASSWORD_MAX_LENGTH} 位（当前 ${value.length} 位）`;
   }
   // 纯空白或单一字符重复的组合在 8 位以上仍属弱口令，直接拒绝。
-  if (/^\s+$/.test(value)) return false;
-  if (/^(.)\1+$/.test(value)) return false;
-  return true;
+  if (/^\s+$/.test(value)) return '密码不能全部是空格';
+  if (/^(.)\1+$/.test(value)) return '密码不能是同一个字符重复';
+  return null;
 }
 
 /**

@@ -13,6 +13,7 @@ import {
   isCurrentPasswordHash,
   parsePasswordHash,
   passwordHash,
+  passwordIssue,
   validatePassword,
   verifyPassword,
   validUsername,
@@ -110,6 +111,20 @@ test('用户不存在时也执行等价 KDF（时序侧信道防护）', async (
   assert.equal(await verifyPassword('anything', undefined), false);
   assert.equal(await verifyPassword('anything', {}), false);
   assert.equal(await verifyPassword('anything', { salt: '', passwordHash: '' }), false);
+});
+
+test('密码提示按实际失败原因区分（D-10）', () => {
+  // 改造前所有失败都提示「密码至少需要 8 位」，超过 8 位仍被拒时会误导用户。
+  assert.match(passwordIssue('1234567') ?? '', /至少需要 8 位/);
+  assert.match(passwordIssue('a'.repeat(129)) ?? '', /最多 128 位/);
+  assert.match(passwordIssue('        ') ?? '', /空格/);
+  assert.match(passwordIssue('aaaaaaaa') ?? '', /同一个字符重复/);
+  assert.equal(passwordIssue(null), '密码格式不正确');
+  assert.equal(passwordIssue('GoodPass#2026'), null, '合规密码不应返回提示');
+  // 布尔入口与原因入口必须保持一致，避免两套规则漂移。
+  for (const sample of ['1234567', 'a'.repeat(129), '        ', 'aaaaaaaa', 'GoodPass#2026']) {
+    assert.equal(validatePassword(sample), passwordIssue(sample) === null, `规则不一致：${sample}`);
+  }
 });
 
 test('密码策略：长度下限保持 8 位（兼容既有契约），拒绝明显弱口令', () => {
