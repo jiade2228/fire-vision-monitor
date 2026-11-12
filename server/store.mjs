@@ -394,12 +394,21 @@ export function backupCorruptFiles(dataDir) {
     if (saved === current) return false;
   }
 
+  // 备份名带毫秒时间戳；同一毫秒内再次损坏时追加序号，避免覆盖上一份现场。
+  // 守护重启循环会在极短时间内反复触发损坏（Linux 上尤其明显），若直接覆盖，
+  // 运维就看不到历史损坏现场了。
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  let suffix = stamp;
+  let counter = 1;
+  while (fs.existsSync(path.join(dataDir, `app.db.corrupt-${suffix}`))) {
+    suffix = `${stamp}-${counter}`;
+    counter += 1;
+  }
   for (const file of CORRUPT_BACKUP_FILES) {
     const source = path.join(dataDir, file);
     if (fs.existsSync(source)) {
       try {
-        fs.copyFileSync(source, path.join(dataDir, `${file}.corrupt-${stamp}`));
+        fs.copyFileSync(source, path.join(dataDir, `${file}.corrupt-${suffix}`));
       } catch {
         // 备份失败也不能掩盖原始错误。
       }

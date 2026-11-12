@@ -173,6 +173,24 @@ test('D-03：删除点位时能列出该点位告警引用的媒体文件', asyn
   );
 });
 
+test('损坏备份：同一毫秒内连续损坏不互相覆盖（CI Ubuntu 暴露）', async (t) => {
+  const { backupCorruptFiles } = await import('./store.mjs');
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fire-corrupt-'));
+  t.after(async () => {
+    await fs.rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+
+  await fs.writeFile(path.join(dataDir, 'app.db'), 'not a sqlite database');
+  assert.equal(backupCorruptFiles(dataDir), true);
+
+  // 立刻再次损坏（Linux 上极可能落在同一毫秒）：内容不同，应生成第二份现场而非覆盖。
+  await fs.writeFile(path.join(dataDir, 'app.db'), 'another broken database');
+  assert.equal(backupCorruptFiles(dataDir), true);
+
+  const backups = (await fs.readdir(dataDir)).filter((file) => file.startsWith('app.db.corrupt-'));
+  assert.equal(backups.length, 2, `应保留两份损坏现场，实际 ${backups.length}：${backups.join(', ')}`);
+});
+
 test('D-07：布局来源在 boot 二次解析后保持一致', async (t) => {
   const { resolveLayout, LAYOUT_REASON_ENV } = await import('./app-paths.mjs');
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fire-layout-'));
