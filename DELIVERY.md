@@ -34,7 +34,7 @@ npm run e2e                     # 无 Chrome 时自动跳过
 node scripts/contrast-scan.mjs  # 浅色主题对比度，预期 0 处不达标
 ```
 
-本机复验基线（v1.2.6）：
+复验基线（v1.2.6）：
 
 | 项 | 结果 |
 |---|---|

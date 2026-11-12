@@ -126,7 +126,7 @@ CREATE INDEX idx_recording_cam_start ON recording_segments(camera_id, started_at
 - [ ] 断电恢复：kill -9 后重启，对账补录正确、TS 段可播
 - [ ] 水位淘汰：制造超配额，验证保护段豁免与 IO 平滑
 - [ ] 时间戳连续性：跨 NTP 校时/夏令时无跳变坑（段名用 UTC 或单调时钟，展示层转本地时区）
-- [ ] Windows 现场路径（项目当前跑在 Windows）：文件名合法性与 fsync 行为
+- [ ] Windows 路径：文件名合法性与 fsync 行为
 - [ ] 按需转码并发上限与 90s 回收在时间线拖拽场景下的体验
 
 ## 9. 实施切分（全部完成）

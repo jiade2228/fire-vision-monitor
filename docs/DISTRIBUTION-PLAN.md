@@ -1,7 +1,7 @@
 # 部署流程评估与发行版打包方案
 
 > 状态：**P0 + P1 + P2 已实施**（便携包可用、Windows 安装包已编译通过），P3–P4 待实施 · 基线：v1.2.0 · 2026-11-12
-> 本文评估当前部署方式的复杂度，并给出可分发发行版的设计；文中"体积/耗时"均为本机实测或明确标注的估算，未实施项已注明。
+> 本文评估当前部署方式的复杂度，并给出可分发发行版的设计；文中"体积/耗时"均为实测或明确标注的估算，未实施项已注明。
 
 ---
 
@@ -258,7 +258,7 @@ fire-vision/                     # 安装根目录
 - **macOS**：pkgbuild payload 组装 + postinstall 写 LaunchDaemon（`KeepAlive SuccessfulExit=false`、
   `SoftResourceLimits 4096`、PATH 含 Homebrew）。plist 经 XML 解析器校验合法。
 
-**未验证项**：Linux 的 nfpm 打包与真机安装（本机无 nfpm/Linux）、macOS 的 pkgbuild（本机非 macOS）、
+**未验证项**：Linux 的 nfpm 打包与真机安装、macOS 的 pkgbuild、
 Windows 安装包的完整安装/卸载流程（需管理员权限，避免污染开发机）。
 
 #### 原计划（保留供追溯）
@@ -343,7 +343,7 @@ Windows 安装包的完整安装/卸载流程（需管理员权限，避免污�
 | macOS 签名与公证 | Apple Developer Program（99 美元/年）、Developer ID Application 证书 | `codesign --deep --options runtime --sign "Developer ID Application: ..." <app>` → `xcrun notarytool submit` → `xcrun stapler staple` |
 | Linux 实际打包 | `nfpm`（`go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest`）+ Linux 构建机 | `npm run package:linux`（脚本会检测 nfpm） |
 | macOS 实际打包 | macOS + `xcode-select --install` | `npm run package:macos`（脚本会生成 pkgbuild 命令） |
-| 多架构（arm64） | 对应平台的 Node 运行时；`portable.mjs` 只允许本机架构 | 在目标架构机器上执行 `--arch arm64` |
+| 多架构（arm64） | 对应平台的 Node 运行时；`portable.mjs` 只允许宿主架构 | 在目标架构机器上执行 `--arch arm64` |
 | 自动更新 | 一个可公网访问的 `latest.json` 托管位置 | 当前只做了版本可见性，未做下载安装 |
 
 ### 10.3 接手时不要重复踩的坑

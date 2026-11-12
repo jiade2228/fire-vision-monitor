@@ -135,9 +135,9 @@ Linux（`npm run package:linux`，生成 deb/rpm 工程 + systemd unit）与 mac
 
 前置要求：**Node >= 22.5**（内置 `node:sqlite`）、npm；FFmpeg/ffprobe 缺失不阻断部署，但对应的转码/录像/测流能力不可用（脚本会明确告警）。
 
-### 4.3 裸机 + 守护（当前现场在用）
+### 4.3 裸机 + 守护（可选）
 
-`scripts/fire-watchdog.ps1` 每 30 秒健康检查 `/healthz`，失败自动重启实例；`scripts/start-fire-watchdog.cmd` 已可放入用户启动文件夹实现登录自启（本项目 Windows 机器已配置）。Linux 可用 systemd 包装同样命令：
+`scripts/fire-watchdog.ps1` 每 30 秒健康检查 `/healthz`，失败自动重启实例；`scripts/start-fire-watchdog.cmd` 可放入用户启动文件夹实现登录自启。Linux 可用 systemd 包装同样命令：
 
 ```ini
 [Unit]
@@ -164,7 +164,7 @@ docker compose up -d     # 构建时自动跑 npm test，数据落命名卷 fire
 
 镜像内已含 FFmpeg；健康检查、只读根文件系统、`no-new-privileges`、资源上限均已配置。
 
-> 状态说明：Docker 配置由 CI 在 Ubuntu 上验证过同版本代码的测试与构建，但 **`docker compose up` 全链路尚未在容器内实测**（本机无 Docker 环境）。愿意测试的同学请反馈：构建是否成功、容器启动后 `/healthz` 是否为 `ok`、重启容器后数据是否保留在 `fire-data` 卷中。
+> 状态说明：Docker 配置由 CI 在 Ubuntu 上验证过同版本代码的测试与构建，但 **`docker compose up` 全链路尚未在容器内实测**。欢迎部署后反馈：构建是否成功、容器启动后 `/healthz` 是否为 `ok`、重启容器后数据是否保留在 `fire-data` 卷中。
 
 ### 4.5 公网访问
 

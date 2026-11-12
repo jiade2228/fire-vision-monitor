@@ -71,7 +71,7 @@ Exit codes: `0` success, `1` preflight, `2` backup, `3` install/build/test, `4` 
 
 Requirements: Node ≥ 22.5 and npm. FFmpeg/ffprobe are recommended; without them RTSP transcoding, recording and snapshots are unavailable, while HLS sources still play.
 
-### 4.1 Bare metal + watchdog (current on-site setup)
+### 4.1 Bare metal + watchdog (optional)
 
 `scripts/fire-watchdog.ps1` probes `/healthz` every 30 seconds and restarts the instance when unhealthy; after 5 consecutive start failures it backs off for 10 minutes and writes `data/startup-failed.marker`. `scripts/start-fire-watchdog.cmd` can be placed in the startup folder. On Linux, wrap the same command with systemd:
 
