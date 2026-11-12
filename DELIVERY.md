@@ -45,7 +45,7 @@ node scripts/contrast-scan.mjs  # 浅色主题对比度，预期 0 处不达标
 | 数据迁移 | 存量 V10 库零丢失；全新库自动建表并补种内置模板 |
 | CI（Ubuntu 22 / Node 22） | 单元测试、类型检查与构建、E2E 冒烟 全部通过 |
 | 跨时区 | `TZ=UTC npm test` 与默认时区均为 332/332 |
-| 验收整改包 | `docs/acceptance/v1.2.5/report.md`（JSON 驱动；Linux 复验项见 `manifest.json`）。该目录按“验收基线版本”命名，保留原名不改，后续版本沿用同一索引 |
+| 验收证据 | 不随仓库分发（截图、日志、取证脚本本地留存）；对外以 Release 产物 + 本文档基线为准 |
 
 ---
 

@@ -22,6 +22,13 @@ test-results/
 .tmp-*/
 .workbuddy/
 
+# 验收/测试报告类产物：只本地留存，不入库
+docs/acceptance/
+scripts/acceptance/
+acceptance-*/
+docs/acceptance-*/
+*.docx
+
 # 系统与编辑器
 .DS_Store
 Thumbs.db

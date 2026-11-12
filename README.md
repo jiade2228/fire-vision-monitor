@@ -311,8 +311,7 @@ src/               前端（React 19 + TS + Vite 7）
 scripts/           部署与运维：deploy.ps1 / deploy.sh / db-backup.mjs /
                    fire-watchdog.ps1 / launchd/ / e2e-smoke.mjs /
                    contrast-scan.mjs / detect-file.mjs
-docs/              使用与设计文档（macOS 适配、GitHub 推送、录像设计、评审清单、
-                   acceptance/v1.2.5 验收整改包与证据索引）
+docs/              使用与设计文档（macOS 适配、GitHub 推送、录像设计、评审清单）
 test-videos/       测试视频（Wikimedia Commons CC 授权，不入库）
 data/              运行数据（不入库）：SQLite / 凭据 / 备份 / 媒体
   recordings/      告警短视频 mp4（受 MEDIA_MAX_BYTES 水位管理）
