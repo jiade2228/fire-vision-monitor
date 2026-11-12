@@ -312,4 +312,26 @@ test('site admin manages only assigned sites and cannot touch global settings', 
     403,
   );
   assert.equal((await request('/api/metrics', { cookie: siteCookie })).status, 403);
+
+  // B3：跨站告警按“不存在”处理，站点管理员不能读取事件或改状态。
+  const alarmB = await request('/api/alarms', {
+    method: 'POST',
+    cookie: adminCookie,
+    body: { cameraId: cameraB.id, level: 'fire', confidence: 90 },
+  });
+  assert.equal(alarmB.status, 201, '管理员应能在 B 区点位创建告警');
+  assert.equal(
+    (await request(`/api/alarms/${alarmB.body.alarm.id}/events`, { cookie: siteCookie })).status,
+    404,
+    '跨站读取告警事件应按不存在处理',
+  );
+  assert.equal(
+    (await request(`/api/alarms/${alarmB.body.alarm.id}`, {
+      method: 'PATCH',
+      cookie: siteCookie,
+      body: { status: 'confirmed' },
+    })).status,
+    404,
+    '跨站修改告警应按不存在处理',
+  );
 });

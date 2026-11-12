@@ -322,6 +322,21 @@ test('FFmpeg 缺失时创建 RTSP 点位返回预检警告', async (t) => {
     assert.equal(info.body.ffmpegAvailable, false, '无效 FFMPEG_PATH 应判定为不可用');
   });
 
+  await t.test('N-01：非法 status/level 返回 400 并列出合法值', async () => {
+    for (const url of [
+      '/api/alarms?status=bogus',
+      '/api/alarms?level=bogus',
+      '/api/alarms?level=Fire',
+    ]) {
+      const response = await request2(url, { cookie });
+      assert.equal(response.status, 400, `${url} 应返回 400`);
+      assert.ok(Array.isArray(response.body.allowed), `${url} 应返回 allowed 列表`);
+      assert.ok(response.body.allowed.length > 0, `${url} 的 allowed 列表不应为空`);
+    }
+    const legal = await request2('/api/alarms?status=pending&level=all', { cookie });
+    assert.equal(legal.status, 200, '合法筛选仍应正常返回');
+  });
+
   // 说明：这里不用嵌套 t.test。实测（Node 22 / node:test）外层 test 内嵌套
   // await t.test() 且父测试先完成多个请求时会出现调度挂起（父测试超时被
   // cancelled、子测试从不调度），因此全部改为顺序断言。

@@ -28,23 +28,24 @@
 
 ```bash
 npm ci
-npm test                        # 预期 289/289
+npm test                        # 预期 329/329
 npm run build                   # tsc --noEmit + vite build
 npm run e2e                     # 无 Chrome 时自动跳过
 node scripts/contrast-scan.mjs  # 浅色主题对比度，预期 0 处不达标
 ```
 
-本机复验基线（v1.2.5）：
+本机复验基线（v1.2.6）：
 
 | 项 | 结果 |
 |---|---|
-| 单元/集成测试 | **289 / 289 通过** |
+| 单元/集成测试 | **329 / 329 通过** |
 | 构建 | 通过（79 modules） |
 | 端到端 | 全部通过（含未登录 401、错误密码不泄露账号存在性、SSE 推送、告警确认、录像对账与回放） |
 | 对比度扫描 | 10 个场景 0 处不达标 |
 | 数据迁移 | 存量 V10 库零丢失；全新库自动建表并补种内置模板 |
 | CI（Ubuntu 22 / Node 22） | 单元测试、类型检查与构建、E2E 冒烟 全部通过 |
-| 跨时区 | `TZ=UTC npm test` 与默认时区均为 327/327 |
+| 跨时区 | `TZ=UTC npm test` 与默认时区均为 329/329 |
+| 验收整改包 | `docs/acceptance/v1.2.5/report.md`（JSON 驱动；Linux 复验项见 `manifest.json`） |
 
 ---
 

@@ -13,6 +13,8 @@ test-videos/
 *.sqlite
 
 # 测试、诊断与构建中间产物
+__pycache__/
+*.pyc
 coverage/
 playwright-report/
 test-results/

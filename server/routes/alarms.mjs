@@ -82,12 +82,24 @@ export function registerAlarmRoutes(app, deps) {
     const offset = Math.max(Number(req.query.offset) || 0, 0);
     // D-02：状态与等级筛选下推到服务端。此前只在界面本地过滤已加载的一页，
     // 超过一页后标签会漏筛、计数偏少，且与页面总数口径矛盾。
-    const status = ALARM_STATUS_FILTERS.has(String(req.query.status ?? ''))
-      ? String(req.query.status)
-      : null;
-    const level = ALARM_LEVEL_FILTERS.has(String(req.query.level ?? ''))
-      ? String(req.query.level)
-      : null;
+    // N-01：非法枚举不再静默回退全量，直接 400 并列出合法值，避免调用方
+    // 把“拼错参数”误判成“筛选后就是全部数据”。
+    const rawStatus = req.query.status;
+    if (rawStatus !== undefined && rawStatus !== '' && !ALARM_STATUS_FILTERS.has(String(rawStatus))) {
+      return res.status(400).json({
+        error: '告警状态筛选无效',
+        allowed: [...ALARM_STATUS_FILTERS],
+      });
+    }
+    const rawLevel = req.query.level;
+    if (rawLevel !== undefined && rawLevel !== '' && !ALARM_LEVEL_FILTERS.has(String(rawLevel))) {
+      return res.status(400).json({
+        error: '告警等级筛选无效',
+        allowed: [...ALARM_LEVEL_FILTERS],
+      });
+    }
+    const status = rawStatus === undefined || rawStatus === '' ? null : String(rawStatus);
+    const level = rawLevel === undefined || rawLevel === '' ? null : String(rawLevel);
     const keyword = typeof req.query.q === 'string' ? req.query.q : null;
     const alarms = store.listAlarms(req.query.limit, {
       allowedSiteIds,
