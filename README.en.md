@@ -271,5 +271,6 @@ A: By design — demos are not persisted (leftover cameras are cleaned at startu
 | [CONTRIBUTING.md](./CONTRIBUTING.md) | Development and review conventions |
 | [docs/MACOS-COMPAT.md](./docs/MACOS-COMPAT.md) | macOS scope, versions, installation, launchd |
 | [docs/GITHUB.md](./docs/GITHUB.md) | Publishing to GitHub step by step |
+| [docs/DISTRIBUTION-PLAN.md](./docs/DISTRIBUTION-PLAN.md) | Deployment assessment and distribution packaging plan |
 | [docs/continuous-recording-design.md](./docs/continuous-recording-design.md) | Continuous recording design |
 | [docs/REVIEW-CHECKLIST.md](./docs/REVIEW-CHECKLIST.md) | Review checklist (anti-regression) |

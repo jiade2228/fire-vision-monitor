@@ -292,6 +292,7 @@ A：外网不能主动入内网。用边缘网关（现场主动外连）或给�
 | [CONTRIBUTING.md](./CONTRIBUTING.md) | 开发与评审约定 |
 | [docs/MACOS-COMPAT.md](./docs/MACOS-COMPAT.md) | macOS 适配范围、版本要求、安装与 launchd |
 | [docs/GITHUB.md](./docs/GITHUB.md) | 推送到 GitHub 的完整步骤 |
+| [docs/DISTRIBUTION-PLAN.md](./docs/DISTRIBUTION-PLAN.md) | 部署流程评估与发行版打包方案 |
 | [docs/continuous-recording-design.md](./docs/continuous-recording-design.md) | 持续录像设计说明 |
 | [docs/REVIEW-CHECKLIST.md](./docs/REVIEW-CHECKLIST.md) | 评审清单（防回归） |
 
