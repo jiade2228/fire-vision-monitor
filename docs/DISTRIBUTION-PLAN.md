@@ -318,6 +318,54 @@ Windows 安装包的完整安装/卸载流程（需管理员权限，避免污�
 
 ---
 
+---
+
+## 10. 移交说明（接手需知）
+
+**本项目在 P2 结束处移交。** P3（签名/公证）与 P4（多架构/自动更新）未实施，原因是需要证书采购与对应平台的构建机，属于组织决策而非技术阻塞。以下是接手所需的全部信息。
+
+### 10.1 已交付且可直接使用
+
+| 产物 | 生成命令 | 验证状态 |
+|---|---|---|
+| 便携包（zip / 目录） | `npm run build:portable:zip` | 解压后端到端验证通过 |
+| Windows 安装包 | `npm run package:win` | **已实际编译**（NSIS 3.13），22.4 MB |
+| Linux 安装工程 | `npm run package:linux` | 工程渲染通过，未打包 |
+| macOS 安装工程 | `npm run package:macos` | 工程渲染通过，未打包 |
+
+构建产物输出到 `dist-packages/`（已 gitignore，可随时删除重建）。
+
+### 10.2 未完成项与前提条件
+
+| 项 | 需要什么 | 入口 |
+|---|---|---|
+| Windows 代码签名 | Authenticode 证书（OV 或 EV）。EV 证书可立即建立 SmartScreen 信誉 | `installer.nsi.tpl` 编译后对 exe 执行 `signtool sign /fd sha256 /tr <时间戳URL> /td sha256 /f cert.pfx /p <密码> <exe>` |
+| macOS 签名与公证 | Apple Developer Program（99 美元/年）、Developer ID Application 证书 | `codesign --deep --options runtime --sign "Developer ID Application: ..." <app>` → `xcrun notarytool submit` → `xcrun stapler staple` |
+| Linux 实际打包 | `nfpm`（`go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest`）+ Linux 构建机 | `npm run package:linux`（脚本会检测 nfpm） |
+| macOS 实际打包 | macOS + `xcode-select --install` | `npm run package:macos`（脚本会生成 pkgbuild 命令） |
+| 多架构（arm64） | 对应平台的 Node 运行时；`portable.mjs` 只允许本机架构 | 在目标架构机器上执行 `--arch arm64` |
+| 自动更新 | 一个可公网访问的 `latest.json` 托管位置 | 当前只做了版本可见性，未做下载安装 |
+
+### 10.3 接手时不要重复踩的坑
+
+1. **FFmpeg 体积**：Gyan "full" 构建单个可执行 217 MB，`ffmpeg`+`ffprobe` 会让包到 **523 MB**。分发必须用 essentials/精简构建（各 30–40 MB），用 `--ffmpeg-dir` 指定。
+2. **NSIS 脚本必须带 UTF-8 BOM**，否则中文乱码；但 shell 脚本与 XML **不能**带 BOM（会破坏 shebang / 声明）。生成逻辑已处理，手改时注意。
+3. **`portable.mjs` 拒绝跨平台打包**（需要目标平台的 Node 二进制），Linux/macOS 产物必须在对应系统构建。
+4. **不要用 `tar -a -c -f x.zip`**：Git Bash 的 GNU tar 会生成 tar 归档却用 `.zip` 扩展名，用户解压失败。项目已用自带 ZIP 实现（`scripts/package/zip.mjs`）。
+5. **Windows 安装包未签名时会被 SmartScreen 拦截**，这是预期行为，不是安装包损坏。
+6. **数据目录不能放 Program Files**：安装器已固定到 `%LOCALAPPDATA%\FireVision`，改动前先看 `server/app-paths.mjs` 的可写回退逻辑。
+
+### 10.4 分发前的自检
+
+- [ ] `npm test`（304 条）与 `TZ=UTC npm test` 均通过
+- [ ] `npm run build` 与 `npm run e2e` 通过
+- [ ] 便携包在**未安装 Node/FFmpeg** 的干净机器上解压可用
+- [ ] 安装包在测试机完成「安装 → 浏览器创建管理员 → 卸载」全流程
+- [ ] 卸载后数据目录仍在（确认没有误删用户数据）
+- [ ] 若已签名：`Get-AuthenticodeSignature` 显示 `Valid`；macOS 上 `spctl -a -vv` 通过
+
+---
+
 ## English summary
 
 **Current state**: deployment is source-only — 9 steps, 4 of which need extra downloads or admin rights (Node ≥ 22.5, FFmpeg, `npm ci`, build, service/autostart, firewall). Targeted users are on-site safety staff, not developers.
@@ -330,4 +378,4 @@ Windows 安装包的完整安装/卸载流程（需管理员权限，避免污�
 
 **Expected output**: ~50–70 MB installers per platform, portable zips, `.deb`/`.rpm`/AppImage, signed `.dmg`, multi-arch container image, `latest.json` + checksums, and per-platform install docs.
 
-**Status**: P0, P1 and P2 are implemented in v1.2.0. `npm run build:portable:zip` produces a portable zip (bundled Node, optional FFmpeg, data inside the bundle); `npm run package:win` produces an NSIS installer (compiled and verified at 22.4 MB, unsigned); Linux and macOS installer projects are generated (systemd/nfpm and pkgbuild). P3 (code signing, macOS notarization) and P4 (multi-arch, auto-update) remain pending.
+**Status**: P0, P1 and P2 are implemented in v1.2.0. `npm run build:portable:zip` produces a portable zip (bundled Node, optional FFmpeg, data inside the bundle); `npm run package:win` produces an NSIS installer (compiled and verified at 22.4 MB, unsigned); Linux and macOS installer projects are generated (systemd/nfpm and pkgbuild). P3 (code signing, macOS notarization) and P4 (multi-arch, auto-update) are **handed over** — see §10 for prerequisites, entry points and pitfalls; they were not implemented because they require certificate purchase and per-platform build machines.
