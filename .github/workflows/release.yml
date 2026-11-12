@@ -116,14 +116,16 @@ jobs:
           TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.upload_tag }}
         shell: pwsh
         run: |
-          gh release view "$TAG" --repo "$env:GITHUB_REPOSITORY" 2>$null
+          # 注意：env 块注入的是 $env:TAG；pwsh 里 "$TAG" 是未定义的 PS 变量（空字符串），
+          # 会导致 gh 报 "release not found"（v1.2.4 首次构建实际踩到）。
+          gh release view "$env:TAG" --repo "$env:GITHUB_REPOSITORY" 2>$null
           if ($LASTEXITCODE -ne 0) {
-            gh release create "$TAG" --repo "$env:GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+            gh release create "$env:TAG" --repo "$env:GITHUB_REPOSITORY" --title "$env:TAG" --generate-notes
           }
           $files = Get-ChildItem dist-packages -File |
             Where-Object { $_.Name -match '^fire-vision-[\d.]+-win-x64(\.zip|-setup\.exe)$' } |
             ForEach-Object { $_.FullName }
-          gh release upload "$TAG" $files --repo "$env:GITHUB_REPOSITORY" --clobber
+          gh release upload "$env:TAG" $files --repo "$env:GITHUB_REPOSITORY" --clobber
 
       - name: 上传构建产物（演练用）
         if: github.event_name == 'workflow_dispatch' && inputs.upload_tag == ''
