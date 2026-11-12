@@ -1,7 +1,7 @@
 # 交付与运维说明
 
 > 语言：**简体中文** · [English summary](#english-summary)
-> 适用版本：**v1.2.5** · 最近更新：2026-11-12
+> 适用版本：**v1.2.7** · 最近更新：2026-11-13
 
 本文件面向部署与运维人员，说明交付物、验收基线、已知限制与升级回滚方式。
 日常使用（功能、配置、接口）请看 [README.md](./README.md)。
@@ -28,24 +28,24 @@
 
 ```bash
 npm ci
-npm test                        # 预期 329/329
+npm test                        # 预期 332/332
 npm run build                   # tsc --noEmit + vite build
 npm run e2e                     # 无 Chrome 时自动跳过
 node scripts/contrast-scan.mjs  # 浅色主题对比度，预期 0 处不达标
 ```
 
-复验基线（v1.2.6）：
+复验基线（v1.2.7）：
 
 | 项 | 结果 |
 |---|---|
-| 单元/集成测试 | **329 / 329 通过** |
+| 单元/集成测试 | **332 / 332 通过** |
 | 构建 | 通过（79 modules） |
 | 端到端 | 全部通过（含未登录 401、错误密码不泄露账号存在性、SSE 推送、告警确认、录像对账与回放） |
 | 对比度扫描 | 10 个场景 0 处不达标 |
 | 数据迁移 | 存量 V10 库零丢失；全新库自动建表并补种内置模板 |
 | CI（Ubuntu 22 / Node 22） | 单元测试、类型检查与构建、E2E 冒烟 全部通过 |
-| 跨时区 | `TZ=UTC npm test` 与默认时区均为 329/329 |
-| 验收整改包 | `docs/acceptance/v1.2.5/report.md`（JSON 驱动；Linux 复验项见 `manifest.json`） |
+| 跨时区 | `TZ=UTC npm test` 与默认时区均为 332/332 |
+| 验收整改包 | `docs/acceptance/v1.2.5/report.md`（JSON 驱动；Linux 复验项见 `manifest.json`）。该目录按“验收基线版本”命名，保留原名不改，后续版本沿用同一索引 |
 
 ---
 
