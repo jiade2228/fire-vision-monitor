@@ -1,0 +1,77 @@
+name: Attach Debug APK to Release
+
+# 只把调试版 APK 作为资产追加到「已存在」的 Release：
+# - 不新建 tag、不新建 Release、不改 Release 说明；
+# - 鉴权只用仓库内置 GITHUB_TOKEN（permissions: contents: write），不引入任何 secret。
+# 触发方式：
+#   1) Actions 页面手动 Run workflow（可填目标 tag，默认 v1.2.6）；
+#   2) 修改本文件并推送时自检一次（便于无 token 环境下验证）。
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '目标 Release tag（必须已存在，不会新建）'
+        required: true
+        default: 'v1.2.6'
+  push:
+    paths:
+      - '.github/workflows/android-release-asset.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  attach-apk:
+    name: 构建并追加 debug APK
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || 'v1.2.6' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 同步壳页面与插件到 Android 工程
+        run: npx cap sync android
+
+      - name: 构建 debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: 确认目标 Release 已存在（不新建）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "目标 tag：$TAG"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft --jq '"release=\(.tagName) draft=\(.isDraft)"'
+
+      - name: 追加 APK 资产
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          ASSET="flamevision-${VERSION}-debug.apk"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "$ASSET"
+          ls -l "$ASSET"
+          gh release upload "$TAG" "$ASSET" --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: 回显 Release 资产清单
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[] | "\(.name)\t\(.size) bytes\t\(.url)"'
