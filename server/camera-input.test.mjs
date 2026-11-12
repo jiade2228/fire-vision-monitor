@@ -195,12 +195,14 @@ test('点位校验、告警分页与文件日志', async (t) => {
     assert.equal(outside.status, 200);
     assert.equal(outside.body.total, 0, '历史区间不应命中今天的告警');
 
-    const today = new Date();
-    const stamp = [
-      today.getFullYear(),
-      String(today.getMonth() + 1).padStart(2, '0'),
-      String(today.getDate()).padStart(2, '0'),
-    ].join('-');
+    // 服务端按业务时区 Asia/Shanghai 解释 from/to，日期口径必须同源；
+    // 用运行机本地时区取日期会在 UTC 16:00 之后（上海已跨日）误判为“昨天”。
+    const stamp = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
     const inside = await request(`/api/alarms?from=${stamp}&to=${stamp}`, { cookie });
     assert.equal(inside.status, 200);
     assert.ok(inside.body.total >= 3, '当天区间应命中刚创建的告警');
