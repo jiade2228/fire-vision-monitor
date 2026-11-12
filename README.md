@@ -162,6 +162,8 @@ docker compose up -d     # 构建时自动跑 npm test，数据落命名卷 fire
 
 镜像内已含 FFmpeg；健康检查、只读根文件系统、`no-new-privileges`、资源上限均已配置。
 
+> 状态说明：Docker 配置由 CI 在 Ubuntu 上验证过同版本代码的测试与构建，但 **`docker compose up` 全链路尚未在容器内实测**（本机无 Docker 环境）。愿意测试的同学请反馈：构建是否成功、容器启动后 `/healthz` 是否为 `ok`、重启容器后数据是否保留在 `fire-data` 卷中。
+
 ### 4.5 公网访问
 
 - 现场有公网 IP：HTTPS 反向代理（Nginx / Caddy）到 4173，务必开启 TLS
