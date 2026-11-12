@@ -1,0 +1,136 @@
+name: Release
+
+# 打 tag（v*）自动构建三平台产物并上传到该 tag 的 Release：
+#   - Linux 便携包 zip + deb + rpm（ubuntu runner）
+#   - Windows 便携包 zip + NSIS 安装包（windows runner）
+# 也可在 Actions 页面手动触发（workflow_dispatch）用于演练，
+# 手动触发时不会创建/上传 Release，只验证构建步骤。
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      upload_tag:
+        description: '把构建产物上传到该 tag 的 Release（留空则只演练构建，产物放 artifacts）'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  # 固定 nfpm 版本：保证产物可复现，避免 latest 变动引入意外行为。
+  NFPM_VERSION: '2.41.0'
+
+jobs:
+  linux:
+    name: Linux（zip / deb / rpm）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 单元与接口测试
+        run: npm test
+
+      - name: 构建前端产物
+        run: npm run build
+
+      - name: 下载 nfpm
+        run: |
+          mkdir -p tools
+          curl -sfL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" -o /tmp/nfpm.tgz
+          tar -xzf /tmp/nfpm.tgz -C tools nfpm
+          chmod +x tools/nfpm
+          tools/nfpm --version
+
+      - name: 构建 Linux 便携包（目录 + zip）
+        run: node scripts/package/portable.mjs --out dist-packages --archive
+
+      - name: 打包 deb / rpm
+        run: node scripts/package/installer.mjs --target linux --skip-bundle --out dist-packages
+
+      - name: 上传到 Release
+        if: github.event_name == 'push' || inputs.upload_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.upload_tag }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+                 --title "$TAG" --generate-notes
+          gh release upload "$TAG" \
+            dist-packages/fire-vision-*-linux-x64.zip \
+            dist-packages/fire-vision_*_x64.deb \
+            dist-packages/fire-vision_*_x64.rpm \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: 上传构建产物（演练用）
+        if: github.event_name == 'workflow_dispatch' && inputs.upload_tag == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            dist-packages/fire-vision-*-linux-x64.zip
+            dist-packages/fire-vision_*_x64.deb
+            dist-packages/fire-vision_*_x64.rpm
+          retention-days: 7
+
+  windows:
+    name: Windows（zip / 安装包）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建前端产物
+        run: npm run build
+
+      - name: 安装 NSIS
+        shell: pwsh
+        run: choco install nsis -y --no-progress
+
+      - name: 构建 Windows 便携包（目录 + zip）
+        run: node scripts/package/portable.mjs --out dist-packages --archive
+
+      - name: 编译安装包
+        run: node scripts/package/installer.mjs --target win --skip-bundle --out dist-packages
+
+      - name: 上传到 Release
+        if: github.event_name == 'push' || inputs.upload_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.upload_tag }}
+        shell: pwsh
+        run: |
+          gh release view "$TAG" --repo "$env:GITHUB_REPOSITORY" 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "$TAG" --repo "$env:GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+          }
+          $files = Get-ChildItem dist-packages -File |
+            Where-Object { $_.Name -match '^fire-vision-[\d.]+-win-x64(\.zip|-setup\.exe)$' } |
+            ForEach-Object { $_.FullName }
+          gh release upload "$TAG" $files --repo "$env:GITHUB_REPOSITORY" --clobber
+
+      - name: 上传构建产物（演练用）
+        if: github.event_name == 'workflow_dispatch' && inputs.upload_tag == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-packages
+          path: |
+            dist-packages/fire-vision-*-win-x64.zip
+            dist-packages/fire-vision-*-win-x64-setup.exe
+          retention-days: 7

@@ -1,0 +1,23 @@
+# 行尾规范
+# 脚本类文件必须在所有平台检出为 LF：否则 Linux 上 postinstall.sh / start.sh
+# 会因 \r 报 "bad interpreter: /bin/sh^M"。批处理与 PowerShell 保持 CRLF。
+* text=auto
+*.sh text eol=lf
+*.mjs text eol=lf
+*.tpl text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.css text eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+# 发行产物不入库，显式标记二进制以防万一
+*.exe binary
+*.zip binary
+*.deb binary
+*.rpm binary
+*.png binary
