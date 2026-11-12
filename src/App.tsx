@@ -79,6 +79,9 @@ export default function App() {
     loadMore: loadMoreAlarms,
     range: alarmRange,
     applyRange: applyAlarmRange,
+    filters: alarmFilters,
+    applyFilters: applyAlarmFilters,
+    statusCounts: alarmStatusCounts,
   } = useAlarms();
   const [view, setView] = useState<ViewKey>('monitor');
   const [sources, setSources] = useState<Record<string, CameraSource>>({});
@@ -882,6 +885,9 @@ export default function App() {
               onLoadMore={loadMoreAlarms}
               range={alarmRange}
               onRangeChange={applyAlarmRange}
+              filters={alarmFilters}
+              onFiltersChange={applyAlarmFilters}
+              statusCounts={alarmStatusCounts}
             />
           )}
 

@@ -386,7 +386,10 @@ function validateCameraInput(body) {
       ? 'none'
       : body.protocol;
   if (!CAMERA_PROTOCOLS.includes(rawProtocol)) {
-    return { error: `不支持的协议类型：${String(rawProtocol).slice(0, 32)}` };
+    // D-04：提示里列出合法取值，调用方无需再查文档或前端源码。
+    return {
+      error: `不支持的协议类型：${String(rawProtocol).slice(0, 32)}（可选值：${CAMERA_PROTOCOLS.join('、')}）`,
+    };
   }
   const protocol = rawProtocol;
   const sourceUrl = typeof body.sourceUrl === 'string' ? body.sourceUrl.trim() : '';
@@ -1754,11 +1757,21 @@ async function main() {
         diskFreeBytes = null;
       }
       const diskOk = diskFreeBytes === null || diskFreeBytes > 50 * 1024 * 1024;
-      const ok = databaseOk && streamManager.ffmpegAvailable && diskOk;
+      // D-05：FFmpeg 缺失属于**能力降级**，不再判定为「不健康」。
+      // 原实现把 ffmpeg 计入 ok，导致：无 FFmpeg 的机器上 /healthz 返回 503，
+      // 连带后果是 ① 守护脚本认定实例不健康而反复重启；② 部署脚本判定部署失败；
+      // ③ 容器编排与外部探针把可用实例摘流量。能力是否可用由界面提示条表达。
+      const ffmpegOk = streamManager.ffmpegAvailable;
+      const degradedReasons = [];
+      if (!ffmpegOk) degradedReasons.push('ffmpeg');
+      if (!ffprobeOk) degradedReasons.push('ffprobe');
+      const ok = databaseOk && diskOk;
       res.status(ok ? 200 : 503).json({
         ok,
+        degraded: degradedReasons.length > 0,
+        degradedReasons,
         database: databaseOk,
-        ffmpeg: streamManager.ffmpegAvailable,
+        ffmpeg: ffmpegOk,
         ffprobe: ffprobeOk,
         diskOk,
         diskFreeBytes,

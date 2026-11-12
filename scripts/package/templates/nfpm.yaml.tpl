@@ -18,6 +18,15 @@ contents:
   # 程序（只读）
   - src: {{BUNDLE_DIR}}/program
     dst: /opt/fire-vision/program
+    type: dir
+    file_info:
+      mode: 0644
+  # 内置 Node 运行时必须可执行：与 D-01 同源，nfpm 对目录内文件默认 0644，
+  # 不单独指定会导致安装后 /opt/fire-vision/program/node 无法执行。
+  - src: {{BUNDLE_DIR}}/program/node
+    dst: /opt/fire-vision/program/node
+    file_info:
+      mode: 0755
   # 启动器与说明
   - src: {{BUNDLE_DIR}}/start.sh
     dst: /opt/fire-vision/start.sh

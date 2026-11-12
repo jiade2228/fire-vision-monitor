@@ -143,6 +143,11 @@ test('点位校验、告警分页与文件日志', async (t) => {
     const response = await createCamera({ name: '非法协议点位', protocol: 'ftp-like' });
     assert.equal(response.status, 400);
     assert.match(String(response.body?.error ?? ''), /协议/);
+    // D-04：错误提示应列出合法取值，调用方无需再查文档或前端源码。
+    const message = String(response.body?.error ?? '');
+    for (const protocol of ['none', 'hls', 'http', 'rtsp', 'edge']) {
+      assert.ok(message.includes(protocol), `提示应包含合法协议 ${protocol}：${message}`);
+    }
   });
 
   await t.test('未传协议仍视为 none（兼容既有客户端）', async () => {
@@ -298,6 +303,18 @@ test('FFmpeg 缺失时创建 RTSP 点位返回预检警告', async (t) => {
   });
   assert.equal(setup.status, 201, '初始化应成功');
   const cookie = setup.cookie;
+
+  await t.test('healthz 缺 FFmpeg 时仍为 200 且标记 degraded（D-05）', async () => {
+    const health = await request2('/healthz', {});
+    assert.equal(health.status, 200, '核心可用时不应判为不健康（否则守护会反复重启）');
+    assert.equal(health.body.ok, true, '数据库与磁盘正常时 ok 应为 true');
+    assert.equal(health.body.degraded, true, '应标记为能力降级');
+    assert.ok(
+      (health.body.degradedReasons ?? []).includes('ffmpeg'),
+      'degradedReasons 应指出缺少 ffmpeg',
+    );
+    assert.equal(health.body.ffmpeg, false, '仍需如实报告 ffmpeg 不可用');
+  });
 
   await t.test('/api/system 如实报告 ffmpeg 不可用', async () => {
     const info = await request2('/api/system', { cookie });

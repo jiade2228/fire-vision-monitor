@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError } from '../lib/api';
 import type { AlarmCreateInput, AlarmPatchInput } from '../lib/api';
 import { connectSse } from '../lib/sse';
-import type { Alarm } from '../types';
+import type { Alarm, AlarmLevel } from '../types';
 
 const clampPercent = (value: number): number =>
   Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0;
@@ -117,6 +117,24 @@ function withinRange(createdAt: number, from: string, to: string): boolean {
 
 export type AlarmRange = { from: string; to: string };
 
+/** 告警筛选状态（D-02）：状态标签、等级与关键词，全部下推服务端。 */
+export type AlarmStatusFilter = 'all' | 'pending' | 'active' | 'closed';
+export type AlarmLevelFilter = 'all' | AlarmLevel;
+
+export type AlarmFilters = {
+  status: AlarmStatusFilter;
+  level: AlarmLevelFilter;
+  keyword: string;
+};
+
+/** 界面状态标签 → 服务端 status 参数（界面「处置中」对应服务端 confirmed）。 */
+const STATUS_TO_API: Record<AlarmStatusFilter, string | undefined> = {
+  all: undefined,
+  pending: 'pending',
+  active: 'confirmed',
+  closed: 'closed',
+};
+
 export function useAlarms() {
   const [alarms, setAlarms] = useState<Alarm[]>([]);
   const [loading, setLoading] = useState(true);
@@ -128,6 +146,15 @@ export function useAlarms() {
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [range, setRange] = useState<AlarmRange>({ from: '', to: '' });
+  // 筛选状态（D-02）：下推服务端，避免只过滤已加载的一页。
+  const [filters, setFilters] = useState<AlarmFilters>({ status: 'all', level: 'all', keyword: '' });
+  // 全量分组计数：标签上的数字来自服务端，不是已加载页的本地统计。
+  const [statusCounts, setStatusCounts] = useState({
+    all: 0,
+    pending: 0,
+    confirmed: 0,
+    closed: 0,
+  });
   const fetching = useRef(false);
   const mounted = useRef(true);
   const lastRefreshRef = useRef(0);
@@ -137,6 +164,8 @@ export function useAlarms() {
   const generation = useRef(0);
   const rangeRef = useRef<AlarmRange>(range);
   rangeRef.current = range;
+  const filtersRef = useRef<AlarmFilters>(filters);
+  filtersRef.current = filters;
 
   const refresh = useCallback(async () => {
     if (fetching.current) return;
@@ -144,10 +173,14 @@ export function useAlarms() {
     const run = ++generation.current;
     try {
       const { from, to } = rangeRef.current;
+      const { status, level, keyword } = filtersRef.current;
       const limit = Math.min(Math.max(loadedRef.current, PAGE_SIZE), 1000);
       const result = await api.alarms(limit, {
         from: from || undefined,
         to: to || undefined,
+        status: STATUS_TO_API[status],
+        level: level === 'all' ? undefined : level,
+        q: keyword.trim() || undefined,
       });
       if (mounted.current && generation.current === run) {
         const sorted = sortAlarms(result.alarms.map(normalizeAlarm));
@@ -157,6 +190,17 @@ export function useAlarms() {
         loadedRef.current = Math.max(sorted.length, PAGE_SIZE);
         setTotal(Number(result.total ?? sorted.length));
         setHasMore(Boolean(result.hasMore));
+        const counts = result.statusCounts;
+        if (counts) {
+          setStatusCounts((prev) =>
+            prev.all === counts.all &&
+            prev.pending === counts.pending &&
+            prev.confirmed === counts.confirmed &&
+            prev.closed === counts.closed
+              ? prev
+              : counts,
+          );
+        }
         setError('');
         lastRefreshRef.current = Date.now();
       }
@@ -185,10 +229,14 @@ export function useAlarms() {
     setLoadingMore(true);
     try {
       const { from, to } = rangeRef.current;
+      const { status, level, keyword } = filtersRef.current;
       const result = await api.alarms(PAGE_SIZE, {
         offset: loadedRef.current,
         from: from || undefined,
         to: to || undefined,
+        status: STATUS_TO_API[status],
+        level: level === 'all' ? undefined : level,
+        q: keyword.trim() || undefined,
       });
       if (mounted.current) {
         const page = result.alarms.map(normalizeAlarm);
@@ -212,6 +260,28 @@ export function useAlarms() {
       if (mounted.current) setLoadingMore(false);
     }
   }, [loadingMore]);
+
+  /**
+   * 应用筛选（状态标签 / 等级 / 关键词）：重置分页并重新拉取第一页。
+   *
+   * D-02：筛选条件必须下推服务端，否则只会过滤已加载的一页，
+   * 超过一页后标签计数与结果都会偏少。
+   */
+  const applyFilters = useCallback(
+    (next: Partial<AlarmFilters>) => {
+      const merged = { ...filtersRef.current, ...next };
+      filtersRef.current = merged;
+      setFilters(merged);
+      loadedRef.current = PAGE_SIZE;
+      generation.current += 1;
+      fetching.current = false;
+      setAlarms([]);
+      setHasMore(false);
+      setLoading(true);
+      void refresh();
+    },
+    [refresh],
+  );
 
   /** 应用时间筛选：重置分页并重新拉取第一页。 */
   const applyRange = useCallback(
@@ -238,6 +308,12 @@ export function useAlarms() {
     const mergeAlarm = (alarm: Alarm) => {
       const { from, to } = rangeRef.current;
       if (!withinRange(alarm.createdAt, from, to)) return;
+      // D-02：当前筛选不匹配的告警不插入列表（服务端已过滤，这里保持一致）。
+      const { status, level } = filtersRef.current;
+      if (status === 'pending' && alarm.status !== 'pending') return;
+      if (status === 'active' && alarm.status !== 'confirmed') return;
+      if (status === 'closed' && alarm.status !== 'false' && alarm.status !== 'archived') return;
+      if (level !== 'all' && alarm.level !== level) return;
       setAlarms((prev) => upsertAlarm(prev, alarm));
     };
     const onEvent = (type: string, data: string) => {
@@ -328,5 +404,9 @@ export function useAlarms() {
     loadMore,
     range,
     applyRange,
+    // D-02：筛选（状态/等级/关键词）下推服务端 + 全量分组计数
+    filters,
+    applyFilters,
+    statusCounts,
   };
 }

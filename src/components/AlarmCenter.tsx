@@ -1,10 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Alarm, AlarmFilter, AlarmHandlers, AlarmLevel } from '../types';
 import { downloadAlarmsCsv } from '../lib/export';
 import { LEVEL_META } from '../lib/detection';
 import AlarmCard from './AlarmCard';
 import AlarmClipTimeline from './AlarmClipTimeline';
-import type { AlarmRange } from '../hooks/useAlarms';
+import type { AlarmFilters, AlarmRange } from '../hooks/useAlarms';
 
 interface Props {
   alarms: Alarm[];
@@ -20,6 +20,11 @@ interface Props {
   /** 时间范围筛选（YYYY-MM-DD，空字符串表示不限）。 */
   range?: AlarmRange;
   onRangeChange?: (next: AlarmRange) => void;
+  /** 状态/等级/关键词筛选（D-02：服务端过滤）。 */
+  filters?: AlarmFilters;
+  onFiltersChange?: (next: Partial<AlarmFilters>) => void;
+  /** 全量分组计数（服务端统计，避免与已加载页口径矛盾）。 */
+  statusCounts?: { all: number; pending: number; confirmed: number; closed: number };
 }
 
 type LevelFilter = 'all' | AlarmLevel;
@@ -43,54 +48,65 @@ export default function AlarmCenter({
   onLoadMore,
   range,
   onRangeChange,
+  filters,
+  onFiltersChange,
+  statusCounts,
 }: Props) {
-  const [filter, setFilter] = useState<AlarmFilter>('all');
-  const [levelFilter, setLevelFilter] = useState<LevelFilter>('all');
+  // D-02：状态/等级/关键词筛选由服务端执行（props 受控），
+  // 这里只保留排序与搜索框的输入态（输入需即时回显，故本地保存后再防抖上报）。
+  const filter = filters?.status ?? 'all';
+  const levelFilter = filters?.level ?? 'all';
   const [sortOrder, setSortOrder] = useState<SortOrder>('newest');
-  const [query, setQuery] = useState('');
+  const [queryInput, setQueryInput] = useState(filters?.keyword ?? '');
   const [mode, setMode] = useState<'list' | 'replay'>('list');
 
-  const counts = useMemo(
-    () => ({
+  // 标签计数优先用服务端全量统计；无服务端数据时回退到本地统计（兼容旧调用方）。
+  const counts = useMemo(() => {
+    if (statusCounts) {
+      return {
+        all: statusCounts.all,
+        pending: statusCounts.pending,
+        active: statusCounts.confirmed,
+        closed: statusCounts.closed,
+      };
+    }
+    return {
       all: alarms.length,
       pending: alarms.filter((a) => a.status === 'pending').length,
       active: alarms.filter((a) => a.status === 'confirmed').length,
       closed: alarms.filter((a) => a.status === 'false' || a.status === 'archived').length,
-    }),
-    [alarms],
+    };
+  }, [alarms, statusCounts]);
+
+  // 列表已由服务端按筛选条件过滤，这里只负责排序。
+  const list = useMemo(
+    () =>
+      [...alarms].sort((a, b) =>
+        sortOrder === 'newest' ? b.createdAt - a.createdAt : a.createdAt - b.createdAt,
+      ),
+    [alarms, sortOrder],
   );
 
-  const list = useMemo(() => {
-    const keyword = query.trim().toLocaleLowerCase();
-    return alarms
-      .filter((alarm) => {
-        if (filter === 'pending' && alarm.status !== 'pending') return false;
-        if (filter === 'active' && alarm.status !== 'confirmed') return false;
-        if (filter === 'closed' && alarm.status !== 'false' && alarm.status !== 'archived') {
-          return false;
-        }
-        if (levelFilter !== 'all' && alarm.level !== levelFilter) return false;
-        if (!keyword) return true;
-        return [
-          alarm.id,
-          alarm.cameraId,
-          alarm.cameraName,
-          alarm.zone,
-          alarm.note,
-        ].some((value) => (value ?? '').toLocaleLowerCase().includes(keyword));
-      })
-      .sort((a, b) =>
-        sortOrder === 'newest' ? b.createdAt - a.createdAt : a.createdAt - b.createdAt,
-      );
-  }, [alarms, filter, levelFilter, query, sortOrder]);
+  // 关键词防抖上报：避免每次按键都打一次接口。
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const current = filters?.keyword ?? '';
+      if (queryInput.trim() !== current.trim()) {
+        onFiltersChange?.({ keyword: queryInput });
+      }
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [queryInput, filters?.keyword, onFiltersChange]);
 
   const hasActiveFilter =
-    filter !== 'all' || levelFilter !== 'all' || query.trim() !== '' || sortOrder !== 'newest';
+    filter !== 'all' ||
+    levelFilter !== 'all' ||
+    (filters?.keyword ?? '').trim() !== '' ||
+    sortOrder !== 'newest';
 
   const resetFilters = () => {
-    setFilter('all');
-    setLevelFilter('all');
-    setQuery('');
+    onFiltersChange?.({ status: 'all', level: 'all', keyword: '' });
+    setQueryInput('');
     setSortOrder('newest');
   };
 
@@ -124,7 +140,7 @@ export default function AlarmCenter({
               type="button"
               aria-pressed={filter === item.key}
               className={`chip ${filter === item.key ? 'is-active' : ''}`}
-              onClick={() => setFilter(item.key)}
+              onClick={() => onFiltersChange?.({ status: item.key })}
             >
               {item.label}
               <span className="chip-count">{counts[item.key]}</span>
@@ -142,17 +158,20 @@ export default function AlarmCenter({
           <span className="search-icon" aria-hidden="true">⌕</span>
           <input
             type="search"
-            value={query}
+            value={queryInput}
             aria-label="搜索告警"
             placeholder="搜索编号、通道、区域或备注"
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => setQueryInput(event.target.value)}
           />
-          {query && (
+          {queryInput && (
             <button
               type="button"
               className="search-clear"
               aria-label="清空搜索"
-              onClick={() => setQuery('')}
+              onClick={() => {
+                setQueryInput('');
+                onFiltersChange?.({ keyword: '' });
+              }}
             >
               ×
             </button>
@@ -164,7 +183,9 @@ export default function AlarmCenter({
           <select
             value={levelFilter}
             aria-label="按识别类型筛选"
-            onChange={(event) => setLevelFilter(event.target.value as LevelFilter)}
+            onChange={(event) =>
+              onFiltersChange?.({ level: event.target.value as LevelFilter })
+            }
           >
             <option value="all">全部类型</option>
             {(Object.keys(LEVEL_META) as AlarmLevel[]).map((level) => (
@@ -191,6 +212,7 @@ export default function AlarmCenter({
           <span>起始</span>
           <input
             type="date"
+            lang="zh-CN"
             value={range?.from ?? ''}
             aria-label="告警起始日期"
             onChange={(event) =>
@@ -203,6 +225,7 @@ export default function AlarmCenter({
           <span>截止</span>
           <input
             type="date"
+            lang="zh-CN"
             value={range?.to ?? ''}
             aria-label="告警截止日期"
             min={range?.from || undefined}

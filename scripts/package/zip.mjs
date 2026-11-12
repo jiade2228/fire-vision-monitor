@@ -66,6 +66,31 @@ function listFiles(root, prefix = '') {
 }
 
 /**
+ * 决定写入 ZIP 的 Unix 权限位。
+ *
+ * 背景（云端验收 D-01，P1）：ZIP 的「外部属性」字段保存 Unix 权限位，
+ * `unzip` 依据它恢复文件权限。若该字段为 0（FAT 语义），解压出来一律
+ * 0644，Linux 上的 `./start.sh` 直接 Permission denied —— 按官方文档
+ * 首次部署就起不来。本实现此前正是写 0，导致该缺陷。
+ *
+ * 规则：
+ * - 有执行位则原样保留（Linux 上打包时 stat 得到真实权限）；
+ * - Windows 上 stat 不含执行位，按约定给 `.sh` 与内置 node 补 0755
+ *   （同一份产物可能被跨平台使用）；
+ * - 其余为普通文件 0644。
+ *
+ * @param {string} rel 包内相对路径。
+ * @param {number} statMode fs.statSync 返回的 mode。
+ * @returns {number} Unix 权限位（不含文件类型位）。
+ */
+export function resolveFileMode(rel, statMode) {
+  const mode = statMode & 0o7777;
+  if (mode & 0o0111) return mode;
+  if (rel.endsWith('.sh') || /(^|\/)node(\.exe)?$/.test(rel)) return 0o755;
+  return 0o644;
+}
+
+/**
  * 把目录打包成 ZIP。
  *
  * @param {object} options
@@ -97,6 +122,8 @@ export function zipDirectory({ sourceDir, outFile, rootName, level = 6 }) {
     const useDeflate = level > 0 && compressed.length < data.length;
     const payload = useDeflate ? compressed : data;
     const method = useDeflate ? 8 : 0;
+    // Unix 权限位：写进外部属性，unzip 才会恢复可执行位（D-01）。
+    const fileMode = resolveFileMode(rel, fs.statSync(absolute).mode);
 
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0); // 本地文件头签名
@@ -115,7 +142,9 @@ export function zipDirectory({ sourceDir, outFile, rootName, level = 6 }) {
 
     const central = Buffer.alloc(46);
     central.writeUInt32LE(0x02014b50, 0); // 中央目录签名
-    central.writeUInt16LE(20, 4); // 创建版本
+    // 「创建版本」高字节 = 3 表示 Unix：unzip 只有在 Unix 语义下才读取
+    // 外部属性里的权限位，低字节为 zip 规范版本 2.0。
+    central.writeUInt16LE((3 << 8) | 20, 4);
     central.writeUInt16LE(20, 6); // 解压所需版本
     central.writeUInt16LE(0x0800, 8);
     central.writeUInt16LE(method, 10);
@@ -129,7 +158,7 @@ export function zipDirectory({ sourceDir, outFile, rootName, level = 6 }) {
     central.writeUInt16LE(0, 32); // comment
     central.writeUInt16LE(0, 34); // disk start
     central.writeUInt16LE(0, 36); // internal attr
-    central.writeUInt32LE(0, 38); // external attr
+    central.writeUInt32LE((fileMode << 16) >>> 0, 38); // 外部属性：Unix 权限位
     central.writeUInt32LE(offset, 42); // 本地头偏移
 
     centralChunks.push(central, nameBuf);

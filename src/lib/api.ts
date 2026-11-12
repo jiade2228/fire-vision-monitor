@@ -692,13 +692,32 @@ export const api = {
    */
   alarms: (
     limit = 300,
-    options: { offset?: number; from?: string; to?: string } = {},
+    options: {
+      offset?: number;
+      from?: string;
+      to?: string;
+      /** 状态筛选：pending / confirmed / closed（服务端过滤，非本地）。 */
+      status?: string;
+      /** 等级筛选：fire / smoke / camera_abnormal。 */
+      level?: string;
+      /** 关键词搜索（服务端过滤）。 */
+      q?: string;
+    } = {},
   ) => {
     const params = new URLSearchParams({ limit: String(limit) });
     if (options.offset) params.set('offset', String(options.offset));
     if (options.from) params.set('from', options.from);
     if (options.to) params.set('to', options.to);
-    return request<{ alarms: Alarm[]; total: number; hasMore: boolean }>(
+    if (options.status) params.set('status', options.status);
+    if (options.level && options.level !== 'all') params.set('level', options.level);
+    if (options.q) params.set('q', options.q);
+    return request<{
+      alarms: Alarm[];
+      total: number;
+      hasMore: boolean;
+      /** 全量分组计数（不受 status 标签自身影响）。 */
+      statusCounts?: { all: number; pending: number; confirmed: number; closed: number };
+    }>(
       `/api/alarms?${params.toString()}`,
       {},
       ['alarms'],

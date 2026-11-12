@@ -23,7 +23,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertNodeVersion, checkLongPathRisk } from './runtime-check.mjs';
 import { applyResolvedBinaries, readFileDescriptorLimit } from './binary-locate.mjs';
-import { resolveLayout } from './app-paths.mjs';
+import { resolveLayout, LAYOUT_REASON_ENV } from './app-paths.mjs';
 import { loadEnvFile } from './env-file.mjs';
 
 const argv = process.argv;
@@ -66,6 +66,8 @@ try {
   const layout = resolveLayout({ projectRoot: programRoot, argv, env: process.env });
   // 统一由这里决定数据目录，index.mjs 与长路径检查共用同一结果。
   process.env.DATA_DIR = layout.dataDir;
+  // D-07：把首次解析出的来源一并传下去，index.mjs 不再二次判定成「环境变量」。
+  process.env[LAYOUT_REASON_ENV] = layout.reason;
 
   let appVersion = 'unknown';
   try {

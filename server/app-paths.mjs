@@ -20,6 +20,16 @@ import path from 'node:path';
 export const LAYOUT_MARKER = '.fire-vision-layout.json';
 
 /**
+ * 布局来源的权威结果传递键（D-07）。
+ *
+ * 背景：boot.mjs 先解析布局并把 DATA_DIR 写进环境变量，index.mjs 随后
+ * 二次解析时看到 env.DATA_DIR 已存在，就把来源判成「环境变量 DATA_DIR」——
+ * 与 boot 记录的「便携包内置数据目录」自相矛盾，排障时容易找错位置。
+ * 由 boot 把首次解析出的来源写入本键，后续解析以它为准。
+ */
+export const LAYOUT_REASON_ENV = 'FIRE_VISION_LAYOUT_REASON';
+
+/**
  * 读取布局标记。
  *
  * @param {string} installRoot 安装根目录。
@@ -137,7 +147,10 @@ export function resolveLayout({
       programRoot,
       dataDir: path.resolve(explicit),
       fallback: false,
-      reason: argValue('--data-dir') ? '命令行 --data-dir' : '环境变量 DATA_DIR',
+      // D-07：boot 已解析过时沿用其结论，避免两条启动日志互相矛盾。
+      reason:
+        env[LAYOUT_REASON_ENV] ??
+        (argValue('--data-dir') ? '命令行 --data-dir' : '环境变量 DATA_DIR'),
     };
   }
 

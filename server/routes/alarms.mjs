@@ -17,6 +17,11 @@ import { SHANGHAI_OFFSET_MS } from '../time.mjs';
  * @param {import('express').Express} app
  * @param {import('./deps.mjs').RouteDeps} deps
  */
+/** 允许的状态筛选值（对应界面标签）。 */
+const ALARM_STATUS_FILTERS = new Set(['pending', 'confirmed', 'closed']);
+/** 允许的等级筛选值（all 表示不限）。 */
+const ALARM_LEVEL_FILTERS = new Set(['all', 'fire', 'smoke', 'camera_abnormal']);
+
 export function registerAlarmRoutes(app, deps) {
   const {
     requireManager,
@@ -75,20 +80,36 @@ export function registerAlarmRoutes(app, deps) {
     const from = parseInstant(req.query.from);
     const to = parseInstant(req.query.to, { endOfDay: true });
     const offset = Math.max(Number(req.query.offset) || 0, 0);
+    // D-02：状态与等级筛选下推到服务端。此前只在界面本地过滤已加载的一页，
+    // 超过一页后标签会漏筛、计数偏少，且与页面总数口径矛盾。
+    const status = ALARM_STATUS_FILTERS.has(String(req.query.status ?? ''))
+      ? String(req.query.status)
+      : null;
+    const level = ALARM_LEVEL_FILTERS.has(String(req.query.level ?? ''))
+      ? String(req.query.level)
+      : null;
+    const keyword = typeof req.query.q === 'string' ? req.query.q : null;
     const alarms = store.listAlarms(req.query.limit, {
       allowedSiteIds,
       offset,
       from,
       to,
+      status,
+      level,
+      keyword,
     });
     // D-03：返回总数与是否还有下一页，界面据此显示「加载更多」与总条数。
-    const total = store.countAlarms({ allowedSiteIds, from, to });
+    const total = store.countAlarms({ allowedSiteIds, from, to, status, level, keyword });
+    // D-02：标签计数基于全量（站点 + 时间 + 等级），不受状态标签自身影响。
+    const statusCounts = store.countAlarmsByStatus({ allowedSiteIds, from, to, level, keyword });
     res.json({
       alarms,
       total,
       offset,
       hasMore: offset + alarms.length < total,
       range: { from, to },
+      statusCounts,
+      filters: { status, level, keyword },
     });
   });
 

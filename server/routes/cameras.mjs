@@ -414,7 +414,26 @@ export function registerCameraRoutes(app, deps) {
     ]) {
       await fsp.rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
-    res.json({ ok: true, cleanedSegments: removedSegments.deleted });
+    // D-03：历史告警按设计保留（处置留痕），但它们引用的抓拍与短视频
+    // 会成为无人引用的孤儿文件 —— 既占磁盘，又无法被「媒体水位淘汰」回收
+    // （水位策略按告警状态清理，不会处理已删点位的残留）。
+    const media = store.listAlarmMediaByCamera?.(camera.id) ?? { snapshots: [], clips: [] };
+    let cleanedMedia = 0;
+    for (const [files, dir] of [
+      [media.snapshots, path.join(dataDir, 'snapshots')],
+      [media.clips, path.join(dataDir, 'recordings')],
+    ]) {
+      for (const file of files) {
+        // 只取文件名再拼接，避免库内数据里的路径成分越出目录。
+        try {
+          await fsp.rm(path.join(dir, path.basename(file)), { force: true });
+          cleanedMedia += 1;
+        } catch {
+          // 文件缺失或被占用不阻断删除点位
+        }
+      }
+    }
+    res.json({ ok: true, cleanedSegments: removedSegments.deleted, cleanedMedia });
   });
 
   // 点位批量操作：启停检测 / 灵敏度 / 站点迁移 / 删除，逐条鉴权并在同一响应汇总结果。

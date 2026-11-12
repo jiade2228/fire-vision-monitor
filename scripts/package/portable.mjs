@@ -271,6 +271,12 @@ async function main() {
   const programDesc = bundledFfmpeg
     ? 'program/   程序（Node 运行时 + 应用 + FFmpeg），升级时整体替换'
     : 'program/   程序（Node 运行时 + 应用；本包不含 FFmpeg），升级时整体替换';
+  const unixHints = platform === 'win32'
+    ? []
+    : [
+        '  · 若提示「Permission denied」，执行一次：chmod +x start.sh program/node',
+        '    （个别环境的 umask 会让解压后的可执行位丢失）。',
+      ];
   const ffmpegHints = bundledFfmpeg
     ? []
     : [
@@ -295,6 +301,7 @@ async function main() {
       '  logs/      日志（logs/server.log；控制台同步输出）',
       '',
       '三、重要提醒',
+      ...unixHints,
       ...ffmpegHints,
       '  · data/ 与 config/ 请定期备份；迁移时整个目录一起拷贝。',
       '  · data/credentials.key 与 data/app.db 必须成对保存，否则已加密的渠道配置无法解密。',

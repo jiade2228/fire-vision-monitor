@@ -10,10 +10,11 @@ import { SHANGHAI_OFFSET_MS, toShanghaiParts } from '../../time.mjs';
  * 直接按告警自身的 site_id 过滤：删除点位后历史告警仍可见，也不再依赖 JOIN。
  * 时间范围用 created_at（毫秒时间戳）闭区间，供界面按日期筛选。
  *
- * @param {{allowedSiteIds?: string[]|null, from?: number|null, to?: number|null}} query
+ * @param {{allowedSiteIds?: string[]|null, from?: number|null, to?: number|null,
+ *          status?: string|null, level?: string|null, keyword?: string|null}} query
  * @returns {{where: string, params: unknown[]}}
  */
-function buildAlarmFilter({ allowedSiteIds = null, from = null, to = null } = {}) {
+function buildAlarmFilter({ allowedSiteIds = null, from = null, to = null, status = null, level = null, keyword = null } = {}) {
   const clauses = [];
   const params = [];
   if (allowedSiteIds) {
@@ -27,6 +28,27 @@ function buildAlarmFilter({ allowedSiteIds = null, from = null, to = null } = {}
   if (Number.isFinite(to)) {
     clauses.push('a.created_at <= ?');
     params.push(to);
+  }
+  // 状态与等级筛选下推到 SQL（D-02）：原先只在界面本地过滤已加载的一页，
+  // 超过一页后「处置中」等标签会漏筛，且标签计数与页面总数口径不一致。
+  if (status === 'pending' || status === 'confirmed') {
+    clauses.push('a.status = ?');
+    params.push(status);
+  } else if (status === 'closed') {
+    clauses.push(`a.status IN ('false', 'archived')`);
+  }
+  if (level && level !== 'all') {
+    clauses.push('a.level = ?');
+    params.push(level);
+  }
+  // 关键词搜索同样下推：否则搜索也只命中已加载的一页。
+  if (typeof keyword === 'string' && keyword.trim()) {
+    const escaped = keyword.trim().replace(/[\\%_]/g, (ch) => `\\${ch}`);
+    const like = `%${escaped}%`;
+    clauses.push(
+      `(a.id LIKE ? ESCAPE '\\' OR a.camera_id LIKE ? ESCAPE '\\' OR a.camera_name LIKE ? ESCAPE '\\' OR a.zone LIKE ? ESCAPE '\\' OR IFNULL(a.note, '') LIKE ? ESCAPE '\\')`,
+    );
+    params.push(like, like, like, like, like);
   }
   return { where: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', params };
 }
@@ -42,13 +64,13 @@ export const alarmMethods = {
  * @param {{allowedSiteIds?: string[]|null, offset?: number, from?: number|null, to?: number|null}} [query]
  * @returns {import('../../types.mjs').Alarm[]}
  */
-listAlarms(limit = 300, { allowedSiteIds = null, offset = 0, from = null, to = null } = {}) {
+listAlarms(limit = 300, { allowedSiteIds = null, offset = 0, from = null, to = null, status = null, level = null, keyword = null } = {}) {
     const safeLimit = Math.min(Math.max(Number(limit) || 200, 1), 1000);
     const safeOffset = Math.max(Number(offset) || 0, 0);
     if (allowedSiteIds !== null && allowedSiteIds.length === 0) {
       return [];
     }
-    const { where, params } = buildAlarmFilter({ allowedSiteIds, from, to });
+    const { where, params } = buildAlarmFilter({ allowedSiteIds, from, to, status, level, keyword });
     return this.db
       .prepare(
         `SELECT a.* FROM alarms a ${where} ORDER BY a.created_at DESC LIMIT ? OFFSET ?`,
@@ -57,18 +79,71 @@ listAlarms(limit = 300, { allowedSiteIds = null, offset = 0, from = null, to = n
       .map(alarmRowToObject);
   },
 
-/**
- * 统计满足条件的告警总数（与 listAlarms 使用同一套过滤条件）。
- * @param {{allowedSiteIds?: string[]|null, from?: number|null, to?: number|null}} [query]
+  /**
+   * 列出某点位全部告警引用的媒体文件名（D-03）。
+   *
+   * 删除点位时历史告警按设计保留（处置留痕），但它们引用的抓拍图与短视频
+   * 会变成无人引用的孤儿文件，占用磁盘且无法被「媒体水位淘汰」回收
+   * （水位策略只处理告警状态，不处理已删点位的残留）。
+   *
+   * @param {string} cameraId 点位 ID。
+   * @returns {{snapshots: string[], clips: string[]}}
+   */
+  listAlarmMediaByCamera(cameraId) {
+    const rows = this.db
+      .prepare('SELECT snapshot_file, clip_file FROM alarms WHERE camera_id = ?')
+      .all(cameraId);
+    const snapshots = new Set();
+    const clips = new Set();
+    for (const row of rows) {
+      if (row?.snapshot_file) snapshots.add(row.snapshot_file);
+      if (row?.clip_file) clips.add(row.clip_file);
+    }
+    return { snapshots: [...snapshots], clips: [...clips] };
+  },
+
+  /**
+   * 统计满足条件的告警总数（与 listAlarms 使用同一套过滤条件）。
+ * @param {{allowedSiteIds?: string[]|null, from?: number|null, to?: number|null,
+ *          status?: string|null, level?: string|null, keyword?: string|null}} [query]
  * @returns {number}
  */
-countAlarms({ allowedSiteIds = null, from = null, to = null } = {}) {
+countAlarms({ allowedSiteIds = null, from = null, to = null, status = null, level = null, keyword = null } = {}) {
     if (allowedSiteIds !== null && allowedSiteIds.length === 0) return 0;
-    const { where, params } = buildAlarmFilter({ allowedSiteIds, from, to });
+    const { where, params } = buildAlarmFilter({ allowedSiteIds, from, to, status, level, keyword });
     const row = this.db
       .prepare(`SELECT COUNT(*) AS c FROM alarms a ${where}`)
       .get(...params);
     return Number(row?.c ?? 0);
+  },
+  /**
+   * 按状态分组统计告警数量（D-02）。
+   *
+   * 界面标签上的「全部/待处置/处置中/已关闭」计数必须基于**全量**数据，
+   * 否则只统计已加载的一页会出现「标签 50 / 页面 64」这类口径矛盾。
+   * 这里按站点 + 时间范围 + 等级统计（不含状态过滤），一次查询返回四组计数。
+   *
+   * @param {{allowedSiteIds?: string[]|null, from?: number|null, to?: number|null,
+   *          level?: string|null, keyword?: string|null}} [query]
+   * @returns {{all: number, pending: number, confirmed: number, closed: number}}
+   */
+  countAlarmsByStatus({ allowedSiteIds = null, from = null, to = null, level = null, keyword = null } = {}) {
+    if (allowedSiteIds !== null && allowedSiteIds.length === 0) {
+      return { all: 0, pending: 0, confirmed: 0, closed: 0 };
+    }
+    const { where, params } = buildAlarmFilter({ allowedSiteIds, from, to, level, keyword });
+    const rows = this.db
+      .prepare(`SELECT a.status AS status, COUNT(*) AS c FROM alarms a ${where} GROUP BY a.status`)
+      .all(...params);
+    const counts = { all: 0, pending: 0, confirmed: 0, closed: 0 };
+    for (const row of rows) {
+      const value = Number(row?.c ?? 0);
+      counts.all += value;
+      if (row.status === 'pending') counts.pending += value;
+      else if (row.status === 'confirmed') counts.confirmed += value;
+      else if (row.status === 'false' || row.status === 'archived') counts.closed += value;
+    }
+    return counts;
   },
 /**
  * @param {string} id 告警 ID。
