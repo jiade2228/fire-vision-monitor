@@ -249,7 +249,11 @@ export function registerAuthRoutes(app, deps) {
       res,
       userId: req.user.id,
       // 记录会话 ID：登出后按 sid 精确关闭本连接，不影响该账号其它标签页。
-      sid: req.user.sid ?? readSessionToken(parseSessionCookie(req))?.sid ?? null,
+      // 必须走 readSession()：它内部调用 deps.readSessionToken 并吞掉解析异常。
+      // 这里曾直接写 readSessionToken(...)，但该函数只存在于 session.mjs 的闭包中，
+      // 本模块并未导入，导致 req.user.sid 缺失时（实际所有会话都缺失）抛
+      // ReferenceError，SSE 每次连接都在写出 ready 事件后断开。
+      sid: readSession(parseSessionCookie(req))?.sid ?? null,
       siteIds: allowedSiteIdsFor(req.user, store),
     };
     sseClients.add(client);
