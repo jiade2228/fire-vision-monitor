@@ -85,6 +85,9 @@ test('UTC 日目录、非法 ID 与 FFmpeg 分段参数', () => {
     segmentSeconds: 60,
   });
   assert.ok(args.includes('-rtsp_transport'));
+  // RTSP 输入不接受 -rw_timeout（会以退出码 1 报 Option rw_timeout not found）。
+  assert.ok(args.includes('-timeout'));
+  assert.ok(!args.includes('-rw_timeout'));
   assert.ok(args.includes('-strftime'));
   assert.ok(args.includes('-reset_timestamps'));
   assert.ok(args.includes('copy'));
@@ -97,6 +100,7 @@ test('UTC 日目录、非法 ID 与 FFmpeg 分段参数', () => {
     segmentSeconds: 30,
   });
   assert.ok(!httpArgs.includes('-rtsp_transport'));
+  assert.ok(httpArgs.includes('-rw_timeout'));
   assert.ok(httpArgs.includes('30'));
 });
 

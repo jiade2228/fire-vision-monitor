@@ -17,6 +17,7 @@ import { extractFrames } from './detection-engine.mjs';
 import { captureDirFor, utcDayStamp } from './recording-capture.mjs';
 import { sanitizeErrorText } from './sanitize.mjs';
 import { ffmpegBudget } from './ffmpeg-budget.mjs';
+import { inputTimeoutArgs } from './ffmpeg-input.mjs';
 
 /**
  * 构造「一路输入、两路输出」的 FFmpeg 参数（纯函数）。
@@ -41,8 +42,7 @@ export function buildTeeArgs({
     '-loglevel',
     'warning',
     '-nostdin',
-    '-rw_timeout',
-    '15000000',
+    ...inputTimeoutArgs({ isRtsp }),
     ...(isRtsp ? ['-rtsp_transport', 'tcp'] : []),
     '-i',
     source,

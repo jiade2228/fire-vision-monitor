@@ -19,6 +19,7 @@ import fsp from 'node:fs/promises';
 import { spawn as nodeSpawn, spawnSync } from 'node:child_process';
 import { isArmedNow } from './schedule.mjs';
 import { sanitizeErrorText } from './sanitize.mjs';
+import { inputTimeoutArgs } from './ffmpeg-input.mjs';
 import { ffmpegBudget } from './ffmpeg-budget.mjs';
 
 /** 点位 ID 必须是安全路径片段，杜绝目录穿越。 */
@@ -56,8 +57,7 @@ export function buildCaptureArgs({ source, isRtsp = false, outputPattern, segmen
     '-loglevel',
     'warning',
     '-nostdin',
-    '-rw_timeout',
-    '15000000',
+    ...inputTimeoutArgs({ isRtsp }),
   ];
   if (isRtsp) args.push('-rtsp_transport', 'tcp');
   args.push(

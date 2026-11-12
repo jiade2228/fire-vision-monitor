@@ -3,6 +3,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { sanitizeErrorText } from './sanitize.mjs';
 import { ffmpegBudget } from './ffmpeg-budget.mjs';
+import { inputTimeoutArgs } from './ffmpeg-input.mjs';
 
 export class StreamError extends Error {
   constructor(message, { code = 'STREAM_ERROR', status = 502, retryAfter = 0 } = {}) {
@@ -152,8 +153,7 @@ export class StreamManager {
       '-hide_banner',
       '-loglevel',
       'warning',
-      '-rw_timeout',
-      '15000000',
+      ...inputTimeoutArgs({ isRtsp }),
       ...(isRtsp ? ['-rtsp_transport', 'tcp'] : []),
       '-i',
       camera.sourceUrl,

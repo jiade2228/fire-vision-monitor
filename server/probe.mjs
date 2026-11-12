@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { stripUserinfo } from './sanitize.mjs';
+import { inputTimeoutArgs } from './ffmpeg-input.mjs';
 
 export function ffprobeAvailable(ffprobePath = process.env.FFPROBE_PATH || 'ffprobe') {
   const result = spawnSync(ffprobePath, ['-version'], {
@@ -35,8 +36,10 @@ export function probeStream({
     const args = [
       '-v',
       'error',
-      '-rw_timeout',
-      String(Math.max(timeoutMs - 1000, 1000) * 1000),
+      ...inputTimeoutArgs({
+        isRtsp: protocol === 'rtsp',
+        timeoutUs: Math.max(timeoutMs - 1000, 1000) * 1000,
+      }),
       ...(protocol === 'rtsp' ? ['-rtsp_transport', 'tcp'] : []),
       '-select_streams',
       'v:0',

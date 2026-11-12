@@ -140,7 +140,49 @@ async function buildWindows(bundleDir) {
 }
 
 // ---------------- Linux (deb/rpm via nfpm) ----------------
+
+/**
+ * 打包前确认便携包本身完整。
+ * v1.2.6 的 P0 教训：nfpm 配置写成 type: dir 时只会创建空目录，
+ * 产物看起来“打包成功”，装完却没有应用代码。先卡住输入，再校验输出。
+ */
+function assertBundleComplete(bundleDir) {
+  const required = [
+    'program/node',
+    'program/package.json',
+    'program/server/boot.mjs',
+    'program/dist/index.html',
+    'start.sh',
+  ];
+  const missing = required.filter((rel) => !fs.existsSync(path.join(bundleDir, rel)));
+  if (missing.length) {
+    throw new Error(`便携包不完整，缺少：${missing.join('、')}（请先重新构建 portable 包）`);
+  }
+}
+
+/**
+ * 打包后校验安装包内容。工具缺失时只告警不失败（Windows 本机通常没有 dpkg-deb/rpm）。
+ */
+function verifyLinuxPackage(file, format) {
+  const tool = format === 'deb' ? 'dpkg-deb' : 'rpm';
+  const args = format === 'deb' ? ['-c', file] : ['-qpl', file];
+  const result = spawnSync(tool, args, { encoding: 'utf8' });
+  if (result.error || result.status !== 0) {
+    log('warn', `未找到 ${tool}，跳过 ${format} 内容校验（请在 Linux 环境复核）`);
+    return;
+  }
+  const listing = String(result.stdout);
+  const missing = ['program/server/boot.mjs', 'program/dist/index.html', 'program/node'].filter(
+    (rel) => !listing.includes(rel),
+  );
+  if (missing.length) {
+    throw new Error(`${format} 缺少应用文件：${missing.join('、')}`);
+  }
+  log('ok', `${format} 内容校验通过（program/server、program/dist、program/node 均在包内）`);
+}
+
 async function buildLinux(bundleDir) {
+  assertBundleComplete(bundleDir);
   const nfpm = toolAvailable('nfpm', [path.join(repoRoot, 'tools', 'nfpm')]);
   const projectDir = path.join(outRoot, 'installer-linux');
   await fsp.rm(projectDir, { recursive: true, force: true });
@@ -193,6 +235,7 @@ async function buildLinux(bundleDir) {
       stdio: 'inherit',
     });
     if (result.status !== 0) throw new Error(`nfpm ${format} 失败（退出码 ${result.status}）`);
+    verifyLinuxPackage(out, format);
     log('ok', `${format}：${out}`);
   }
   return { ok: true, artifact: path.join(outRoot, `fire-vision_${version}_${arch}.deb`) };

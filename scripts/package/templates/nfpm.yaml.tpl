@@ -15,16 +15,15 @@ description: |
   RTSP/ONVIF 接入、7×24 检测、告警抓拍与短视频、多渠道通知、
   多站点隔离、持续录像与回放、审计与趋势看板。
 contents:
-  # 程序（只读）
+  # 程序（只读）：必须用 type: tree 递归打包整棵目录（node、server/、dist/、
+  # node_modules/、可选 ffmpeg）。
+  # 早期写成 type: dir + 单独一条 program/node，结果只创建了空目录，
+  # 安装包里仅剩 node 与 3 个文本文件（v1.2.6 P0：deb 12 条目 / rpm 7 条目）。
+  # tree 只能指定一个 mode，取 0755 以保证 program/node 可执行；
+  # 静态资源因此也带执行位，不影响运行。
   - src: {{BUNDLE_DIR}}/program
     dst: /opt/fire-vision/program
-    type: dir
-    file_info:
-      mode: 0644
-  # 内置 Node 运行时必须可执行：与 D-01 同源，nfpm 对目录内文件默认 0644，
-  # 不单独指定会导致安装后 /opt/fire-vision/program/node 无法执行。
-  - src: {{BUNDLE_DIR}}/program/node
-    dst: /opt/fire-vision/program/node
+    type: tree
     file_info:
       mode: 0755
   # 启动器与说明
