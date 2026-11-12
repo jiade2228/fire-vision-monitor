@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>FlameVision 服务器设置</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0f1319;
+        --card: #171d26;
+        --border: #2a3341;
+        --text: #e8edf5;
+        --muted: #93a0b4;
+        --accent: #ff5a3c;
+        --ok: #35c07a;
+        --err: #ff6b6b;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+      }
+      .card {
+        width: 100%;
+        max-width: 440px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 24px;
+      }
+      h1 { font-size: 18px; margin: 0 0 6px; }
+      .sub { color: var(--muted); font-size: 13px; line-height: 1.6; margin: 0 0 20px; }
+      label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+      input {
+        width: 100%;
+        padding: 12px 14px;
+        font-size: 15px;
+        color: var(--text);
+        background: #0f1319;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        outline: none;
+      }
+      input:focus { border-color: var(--accent); }
+      .row { display: flex; gap: 10px; margin-top: 16px; }
+      button {
+        flex: 1;
+        padding: 12px 14px;
+        font-size: 15px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--text);
+      }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+      button:disabled { opacity: 0.55; }
+      .hint { margin-top: 14px; font-size: 12px; line-height: 1.6; color: var(--muted); }
+      .status { margin-top: 12px; font-size: 13px; line-height: 1.6; min-height: 20px; }
+      .status.ok { color: var(--ok); }
+      .status.err { color: var(--err); }
+      .hidden { display: none !important; }
+      .spinner {
+        display: inline-block;
+        width: 12px; height: 12px;
+        margin-right: 6px;
+        border: 2px solid var(--muted);
+        border-top-color: transparent;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+        vertical-align: -1px;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>FlameVision 火情视频识别监控</h1>
+      <p class="sub">首次启动请填写服务器地址。地址只保存在本机，不会上传。</p>
+
+      <div id="connect-view" class="hidden">
+        <div class="status" id="connect-status"><span class="spinner"></span>正在连接…</div>
+        <div class="hint" id="connect-target"></div>
+        <div class="row">
+          <button id="cancel-btn">修改地址</button>
+        </div>
+      </div>
+
+      <form id="setup-view">
+        <label for="base-input">服务器地址</label>
+        <input
+          id="base-input"
+          type="text"
+          inputmode="url"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          placeholder="http://192.168.1.10:4173"
+        />
+        <div class="status" id="setup-status"></div>
+        <div class="row">
+          <button type="submit" class="primary" id="submit-btn">连接</button>
+        </div>
+        <div class="hint">
+          支持 http 与 https；端口默认 4173。局域网 http 明文仅调试包可用；自签 https 需先在系统里安装该 CA。
+        </div>
+      </form>
+    </main>
+
+    <script>
+      (function () {
+        var STORAGE_KEY = 'fv.server.base';
+        var PROBE_TIMEOUT_MS = 6000;
+
+        var setupView = document.getElementById('setup-view');
+        var connectView = document.getElementById('connect-view');
+        var input = document.getElementById('base-input');
+        var setupStatus = document.getElementById('setup-status');
+        var connectStatus = document.getElementById('connect-status');
+        var connectTarget = document.getElementById('connect-target');
+        var submitBtn = document.getElementById('submit-btn');
+        var cancelBtn = document.getElementById('cancel-btn');
+
+        var pendingController = null;
+        var pendingTimer = null;
+
+        function normalize(raw) {
+          var value = String(raw || '').trim();
+          if (!value) return '';
+          if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value)) value = 'http://' + value;
+          try {
+            var url = new URL(value);
+            if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+            return url.origin + url.pathname.replace(/\/+$/, '');
+          } catch (e) {
+            return '';
+          }
+        }
+
+        function setStatus(el, text, kind) {
+          el.className = 'status' + (kind ? ' ' + kind : '');
+          el.textContent = text;
+        }
+
+        function showSetup(message, kind) {
+          connectView.classList.add('hidden');
+          setupView.classList.remove('hidden');
+          setStatus(setupStatus, message || '', kind);
+        }
+
+        function showConnect(target) {
+          setupView.classList.add('hidden');
+          connectView.classList.remove('hidden');
+          connectTarget.textContent = target;
+          setStatus(connectStatus, '正在连接…', '');
+          connectStatus.innerHTML = '<span class="spinner"></span>正在连接…';
+        }
+
+        function abortPending() {
+          if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+          if (pendingController) { pendingController.abort(); pendingController = null; }
+        }
+
+        function probe(base) {
+          abortPending();
+          var controller = new AbortController();
+          pendingController = controller;
+          pendingTimer = setTimeout(function () { controller.abort(); }, PROBE_TIMEOUT_MS);
+          return fetch(base + '/healthz', { cache: 'no-store', signal: controller.signal })
+            .then(function (res) {
+              return res.json().catch(function () { return {}; }).then(function (body) {
+                return { ok: res.ok, status: res.status, body: body };
+              });
+            })
+            .finally(function () {
+              if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+              if (pendingController === controller) pendingController = null;
+            });
+        }
+
+        function connect(base, fromAuto) {
+          if (fromAuto) showConnect(base);
+          else setStatus(setupStatus, '正在连接…', '');
+          submitBtn.disabled = true;
+          probe(base)
+            .then(function (result) {
+              if (!result.ok) {
+                throw new Error('服务器返回 HTTP ' + result.status);
+              }
+              localStorage.setItem(STORAGE_KEY, base);
+              var degraded = result.body && result.body.degraded === true;
+              var text = degraded ? '已连接（能力降级）' : '已连接';
+              if (fromAuto) setStatus(connectStatus, text + '，正在进入…', 'ok');
+              else setStatus(setupStatus, text + '，正在进入…', 'ok');
+              location.replace(base + '/');
+            })
+            .catch(function (error) {
+              abortPending();
+              var reason = error && error.name === 'AbortError' ? '连接超时' : (error && error.message ? error.message : '无法连接');
+              if (fromAuto) showSetup('自动连接失败：' + reason + '。请确认地址后重试。', 'err');
+              else setStatus(setupStatus, reason + '，请检查地址与网络。', 'err');
+              submitBtn.disabled = false;
+            });
+        }
+
+        setupView.addEventListener('submit', function (event) {
+          event.preventDefault();
+          var base = normalize(input.value);
+          if (!base) {
+            setStatus(setupStatus, '地址格式不正确，示例：http://192.168.1.10:4173', 'err');
+            return;
+          }
+          input.value = base;
+          connect(base, false);
+        });
+
+        cancelBtn.addEventListener('click', function () {
+          abortPending();
+          submitBtn.disabled = false;
+          showSetup('', '');
+        });
+
+        var saved = localStorage.getItem(STORAGE_KEY);
+        var forceSetup = /(?:\?|&)setup=1(?:&|$)/.test(location.search);
+        if (saved && !forceSetup) {
+          var base = normalize(saved);
+          if (base) {
+            input.value = base;
+            connect(base, true);
+          } else {
+            localStorage.removeItem(STORAGE_KEY);
+            showSetup('', '');
+          }
+        } else {
+          input.value = saved ? normalize(saved) || '' : '';
+          showSetup('', '');
+        }
+      })();
+    </script>
+  </body>
+</html>

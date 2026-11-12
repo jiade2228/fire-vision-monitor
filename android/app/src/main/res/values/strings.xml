@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">FlameVision</string>
+    <string name="title_activity_main">FlameVision</string>
+    <string name="package_name">com.flamevision.monitor</string>
+    <string name="custom_url_scheme">com.flamevision.monitor</string>
+</resources>

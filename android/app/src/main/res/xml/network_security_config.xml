@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  网络安全配置（仅调试版使用）
+
+  1. cleartextTrafficPermitted="true"
+     允许 http:// 明文访问，用于局域网服务器（如 http://192.168.1.10:4173）。
+     正式版如需强制 https，把这里改成 false。
+
+  2. trust-anchors 中的 src="user"
+     信任用户自行安装的 CA 证书。Android 7.0（API 24）起，应用默认只信任系统 CA，
+     不信任用户安装的证书；自签 HTTPS 会直接报证书错误。这里显式放开用户 CA。
+
+  自签证书的使用步骤（设备侧）：
+  1) 拿到服务器自签证书（.crt/.pem，DER 或 PEM 均可）；
+  2) 在手机上「设置 → 安全 → 加密与凭据 → 安装证书 → CA 证书」导入；
+  3) 重新打开本应用，填写 https://<服务器地址>:<端口>。
+
+  替换说明：
+  - 只需信任某一张指定 CA 时，把 <certificates src="user" /> 换成
+    <certificates src="@raw/my_ca" />，并把证书文件放到
+    android/app/src/main/res/raw/my_ca.pem（文件名小写、无扩展名限制但建议 .pem）。
+  - 需要固定服务器域名时，可改用 <domain-config cleartextTrafficPermitted="false">
+    只对特定 domain 生效，其余保持默认。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
