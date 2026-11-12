@@ -61,6 +61,19 @@
 - [ ] 明确 0 的语义（关闭 vs 非法），用 `allowZero` 显式声明。
 - [ ] 需要整数的配置传 `integer: true`；默认保留小数（`ESCALATION_MINUTES=0.01` 是既有测试契约）。
 
+## 7. 测试不得依赖运行环境（时区 / 平台 / 路径）
+
+**曾经导致的缺陷**：`schedule.test.mjs` 用 `new Date(2026, 10, 2, 10, 0)` 构造输入，
+该构造函数按**本地时区**解释参数。开发机是 GMT+8，CI 是 UTC，同一断言结论相反——
+本地全绿、CI 失败。被测的 `isArmedNow` 本身是正确的（内部固定 +8），错的只是测试。
+
+- [ ] 涉及业务时间的测试，用 UTC 绝对时刻构造输入，不要用 `new Date(y, m, d, hh, mm)`。
+  本项目业务时区固定 Asia/Shanghai（+8），可用 `new Date(Date.UTC(y, m-1, d, hh-8, mm))`。
+- [ ] 跨平台路径断言不要用宿主的 `path.join` 拼对方平台的路径（Windows 上会得到反斜杠），
+  用被测代码同一套平台感知拼接。
+- [ ] 断言文件系统行为时注意大小写敏感差异（Linux 区分大小写，Windows/macOS 默认不区分）。
+- [ ] **本地验证要模拟 CI 时区**：`TZ=UTC npm test`。只跑默认时区会漏掉这类问题。
+
 ---
 
 ## 提交前最小验证
@@ -68,6 +81,7 @@
 ```bash
 npx tsc --noEmit
 npm test
+TZ=UTC npm test                 # 模拟 CI 时区，捕捉本地时区依赖
 node --test --test-concurrency=1 server/net-guard.test.mjs server/runtime-hardening.test.mjs
 git diff --check
 ```
