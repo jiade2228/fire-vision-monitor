@@ -20,7 +20,7 @@
 | 备份工具 | `scripts/db-backup.mjs`（`VACUUM INTO` 一致性备份 + 完整性校验） |
 | 守护方案 | Windows：`scripts/fire-watchdog.ps1`；Linux：systemd 示例（见 README §4.3）；macOS：`scripts/launchd/*.plist` |
 | 测试 | `server/*.test.mjs`（单元/集成）、`scripts/e2e-smoke.mjs`（E2E）、`scripts/contrast-scan.mjs`（浅色对比度） |
-| 文档 | 本文件、[README.md](./README.md)、[SECURITY.md](./SECURITY.md)、[CONTRIBUTING.md](./CONTRIBUTING.md)、[docs/MACOS-COMPAT.md](./docs/MACOS-COMPAT.md)、[docs/GITHUB.md](./docs/GITHUB.md)、[docs/DISTRIBUTION-PLAN.md](./docs/DISTRIBUTION-PLAN.md)、[docs/continuous-recording-design.md](./docs/continuous-recording-design.md)、[docs/REVIEW-CHECKLIST.md](./docs/REVIEW-CHECKLIST.md) |
+| 文档 | 本文件、[README.md](./README.md)、[SECURITY.md](./SECURITY.md)、[CONTRIBUTING.md](./CONTRIBUTING.md)、[docs/MACOS-COMPAT.md](./docs/MACOS-COMPAT.md)、[docs/DISTRIBUTION-PLAN.md](./docs/DISTRIBUTION-PLAN.md)、[docs/continuous-recording-design.md](./docs/continuous-recording-design.md)、[docs/REVIEW-CHECKLIST.md](./docs/REVIEW-CHECKLIST.md) |
 
 ---
 

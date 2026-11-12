@@ -2,7 +2,7 @@
 
 **简体中文** · [English](./README.en.md)
 
-> **部署与交付**：一键部署参数见下文 §4，交付物与验收基线见 [DELIVERY.md](./DELIVERY.md)，macOS 适配见 [docs/MACOS-COMPAT.md](./docs/MACOS-COMPAT.md)，GitHub 推送见 [docs/GITHUB.md](./docs/GITHUB.md)。
+> **部署与交付**：一键部署参数见下文 §4，交付物与验收基线见 [DELIVERY.md](./DELIVERY.md)，macOS 适配见 [docs/MACOS-COMPAT.md](./docs/MACOS-COMPAT.md)
 
 浏览器与服务器双栈的火焰 / 烟雾视频识别监控平台：接入现场摄像头（RTSP / ONVIF / 网络摄像头 / 边缘网关），7×24 自动识别火焰与烟雾，命中即告警、抓拍、录短视频，并按站点推送给企业微信 / 钉钉 / Webhook。支持多租户站点隔离、多角色账号、告警处置闭环、趋势看板与审计日志。
 
@@ -360,7 +360,6 @@ A：外网不能主动入内网。用边缘网关（现场主动外连）或给�
 | [SECURITY.md](./SECURITY.md) | 安全模型与加固说明 |
 | [CONTRIBUTING.md](./CONTRIBUTING.md) | 开发与评审约定 |
 | [docs/MACOS-COMPAT.md](./docs/MACOS-COMPAT.md) | macOS 适配范围、版本要求、安装与 launchd |
-| [docs/GITHUB.md](./docs/GITHUB.md) | 推送到 GitHub 的完整步骤 |
 | [docs/DISTRIBUTION-PLAN.md](./docs/DISTRIBUTION-PLAN.md) | 部署流程评估与发行版打包方案 |
 | [docs/continuous-recording-design.md](./docs/continuous-recording-design.md) | 持续录像设计说明 |
 | [docs/REVIEW-CHECKLIST.md](./docs/REVIEW-CHECKLIST.md) | 评审清单（防回归） |

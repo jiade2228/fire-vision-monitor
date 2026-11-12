@@ -2,7 +2,7 @@
 
 [简体中文](./README.md) · **English**
 
-> **Deployment & delivery**: one-command deploy parameters in §4, deliverables and acceptance baseline in [DELIVERY.md](./DELIVERY.md) (Chinese with English summary), macOS support in [docs/MACOS-COMPAT.md](./docs/MACOS-COMPAT.md), GitHub publishing in [docs/GITHUB.md](./docs/GITHUB.md).
+> **Deployment & delivery**: one-command deploy parameters in §4, deliverables and acceptance baseline in [DELIVERY.md](./DELIVERY.md) (Chinese with English summary), macOS support in [docs/MACOS-COMPAT.md](./docs/MACOS-COMPAT.md).
 
 A dual-stack (browser + server) fire and smoke detection platform. It ingests on-site cameras (RTSP / ONVIF / IP cameras / edge gateway), detects fire and smoke 24/7, and on a hit raises an alarm with a snapshot and a short clip, then pushes notifications to WeCom / DingTalk / generic webhooks per site. It supports multi-site isolation, multiple roles, a full alarm-handling workflow, trend dashboards and an audit log.
 
@@ -270,7 +270,6 @@ A: By design — demos are not persisted (leftover cameras are cleaned at startu
 | [SECURITY.md](./SECURITY.md) | Security model and hardening notes |
 | [CONTRIBUTING.md](./CONTRIBUTING.md) | Development and review conventions |
 | [docs/MACOS-COMPAT.md](./docs/MACOS-COMPAT.md) | macOS scope, versions, installation, launchd |
-| [docs/GITHUB.md](./docs/GITHUB.md) | Publishing to GitHub step by step |
 | [docs/DISTRIBUTION-PLAN.md](./docs/DISTRIBUTION-PLAN.md) | Deployment assessment and distribution packaging plan |
 | [docs/continuous-recording-design.md](./docs/continuous-recording-design.md) | Continuous recording design |
 | [docs/REVIEW-CHECKLIST.md](./docs/REVIEW-CHECKLIST.md) | Review checklist (anti-regression) |
