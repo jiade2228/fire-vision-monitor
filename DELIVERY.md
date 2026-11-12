@@ -1,7 +1,7 @@
 # 交付与运维说明
 
 > 语言：**简体中文** · [English summary](#english-summary)
-> 适用版本：**v1.1.4** · 最近更新：2026-11-12
+> 适用版本：**v1.2.0** · 最近更新：2026-11-12
 
 本文件面向部署与运维人员，说明交付物、验收基线、已知限制与升级回滚方式。
 日常使用（功能、配置、接口）请看 [README.md](./README.md)。
@@ -16,8 +16,9 @@
 | 前端 | `src/` + 构建产物 `dist/`（React 19 + TypeScript，Vite 构建） |
 | 启动入口 | `server/boot.mjs`（版本前置校验 + 环境自检，**唯一推荐入口**） |
 | 部署脚本 | `scripts/deploy.ps1`（Windows）、`scripts/deploy.sh`（Linux/macOS） |
+| 便携包构建 | `scripts/package/portable.mjs` + `zip.mjs`（自带运行时，`npm run build:portable:zip`） |
 | 备份工具 | `scripts/db-backup.mjs`（`VACUUM INTO` 一致性备份 + 完整性校验） |
-| 守护方案 | Windows：`scripts/fire-watchdog.ps1`；Linux：systemd 示例（见 README §4.1）；macOS：`scripts/launchd/*.plist` |
+| 守护方案 | Windows：`scripts/fire-watchdog.ps1`；Linux：systemd 示例（见 README §4.2）；macOS：`scripts/launchd/*.plist` |
 | 测试 | `server/*.test.mjs`（单元/集成）、`scripts/e2e-smoke.mjs`（E2E）、`scripts/contrast-scan.mjs`（浅色对比度） |
 | 文档 | 本文件、[README.md](./README.md)、[SECURITY.md](./SECURITY.md)、[CONTRIBUTING.md](./CONTRIBUTING.md)、[docs/MACOS-COMPAT.md](./docs/MACOS-COMPAT.md)、[docs/GITHUB.md](./docs/GITHUB.md)、[docs/DISTRIBUTION-PLAN.md](./docs/DISTRIBUTION-PLAN.md)、[docs/continuous-recording-design.md](./docs/continuous-recording-design.md)、[docs/REVIEW-CHECKLIST.md](./docs/REVIEW-CHECKLIST.md) |
 
@@ -33,7 +34,7 @@ npm run e2e                     # 无 Chrome 时自动跳过
 node scripts/contrast-scan.mjs  # 浅色主题对比度，预期 0 处不达标
 ```
 
-本机复验基线（v1.1.4）：
+本机复验基线（v1.2.0）：
 
 | 项 | 结果 |
 |---|---|
@@ -66,7 +67,7 @@ node scripts/contrast-scan.mjs  # 浅色主题对比度，预期 0 处不达标
 ### 3.1 守护与自启
 
 - **Windows**：`scripts/fire-watchdog.ps1` 每 30 秒探测 `/healthz`，异常自动重启；连续 5 次启动失败进入 10 分钟退避并写 `data/startup-failed.marker`（需人工介入）。`scripts/start-fire-watchdog.cmd` 可放入启动文件夹。
-- **Linux**：systemd 单元示例见 README §4.1（`ExecStart` 指向 `server/boot.mjs`）。
+- **Linux**：systemd 单元示例见 README §4.2（`ExecStart` 指向 `server/boot.mjs`）。
 - **macOS**：`scripts/launchd/com.flamevision.monitor.plist`，安装步骤见 [docs/MACOS-COMPAT.md](./docs/MACOS-COMPAT.md)。
 
 ---

@@ -62,6 +62,7 @@ import { probeSegmentDurations } from './recording-duration.mjs';
 import { SharedSourceHub } from './shared-source.mjs';
 import { detectFfmpegCapabilities } from './ffmpeg-capabilities.mjs';
 import { applyResolvedBinaries } from './binary-locate.mjs';
+import { resolveLayout } from './app-paths.mjs';
 import { assertOutboundUrl, blockedOutboundHost } from './net-guard.mjs';
 import { SHANGHAI_OFFSET_MS, toShanghaiParts } from './time.mjs';
 import { envBoolean, envNumber, normalizeClock, normalizePort } from './config.mjs';
@@ -71,9 +72,12 @@ const configWarn = (message) => log('warn', 'config_invalid', { message });
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const dataDir = process.env.DATA_DIR
-  ? path.resolve(process.env.DATA_DIR)
-  : path.join(projectRoot, 'data');
+// 目录布局：源码运行 → <项目根>/data（与改造前一致）；
+// 便携包/安装包 → 由 app-paths 按布局标记决定，并处理不可写时的回退。
+// boot.mjs 启动时已写入 DATA_DIR，这里重复解析是幂等的（保证直接以
+// index.mjs 启动的既有守护脚本也能正确工作）。
+const layout = resolveLayout({ projectRoot, argv: process.argv, env: process.env });
+const dataDir = layout.dataDir;
 const distDir = path.join(projectRoot, 'dist');
 // SPA 回退与 404 兜底共享保留前缀；回退额外排除精确路径 /healthz。
 const commonReservedPaths = ['/api/', '/streams/', '/demo/', '/proxy/'];
@@ -2062,6 +2066,9 @@ async function main() {
       log('info', 'server_started', {
         port,
         dataDir,
+        dataDirSource: layout.reason,
+        layoutMode: layout.mode,
+        node: process.versions.node,
         database: 'sqlite',
         ffmpeg: streamManager.ffmpegAvailable,
         ffprobe: ffprobeOk,

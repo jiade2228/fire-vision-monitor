@@ -1,6 +1,6 @@
 {
   "name": "fire-vision-monitor",
-  "version": "1.1.4",
+  "version": "1.2.0",
   "private": true,
   "description": "火焰/烟雾视频识别监控平台：RTSP/ONVIF 接入、7×24 检测、告警抓拍与短视频、多渠道通知、多站点隔离、审计与趋势看板",
   "license": "MIT",
@@ -26,7 +26,9 @@
     "nvr:probe": "node server/nvr-probe.mjs",
     "edge": "node server/edge-gateway.mjs",
     "start": "node server/boot.mjs --port 4173",
-    "preview": "node server/index.mjs --port 4173"
+    "preview": "node server/index.mjs --port 4173",
+    "build:portable": "node scripts/package/portable.mjs",
+    "build:portable:zip": "node scripts/package/portable.mjs --archive"
   },
   "engines": {
     "node": ">=22.5"

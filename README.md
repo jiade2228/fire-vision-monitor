@@ -54,7 +54,43 @@ npm run dev           # Vite 5173 + API 8787
 
 ## 4. 部署
 
-### 4.0 一键部署（推荐）
+### 4.0 便携包（免装 Node/FFmpeg，推荐现场使用）
+
+打包后自带 Node 运行时与 FFmpeg，目标机**无需安装任何依赖**：
+
+```bash
+npm run build:portable:zip        # 生成 dist-packages/fire-vision-<版本>-<平台>-<架构>.zip
+npm run build:portable            # 只生成目录，不压缩
+```
+
+常用参数（`node scripts/package/portable.mjs`）：
+
+| 参数 | 用途 |
+|---|---|
+| `--out <dir>` | 输出目录（默认 `dist-packages/`） |
+| `--no-ffmpeg` | 不含 FFmpeg（体积小，需目标机自备） |
+| `--ffmpeg-dir <dir>` | 指定 FFmpeg 目录（**建议用 essentials 精简构建**，见下） |
+| `--archive` | 同时生成 zip |
+| `--platform` / `--arch` | 交叉打包（需对应平台的 Node 二进制） |
+
+产物结构（**程序与数据分离**，升级只替换 `program/`）：
+
+```
+fire-vision-<版本>-<平台>-<架构>/
+├─ program/     Node 运行时 + FFmpeg + 应用代码（升级时整体替换）
+├─ config/      配置模板（复制 fire-vision.env.example 为 fire-vision.env）
+├─ data/        全部运行数据（升级不动）
+├─ logs/
+├─ start.cmd    Windows 双击启动
+├─ start.sh     Linux/macOS
+└─ README-QUICKSTART.txt
+```
+
+使用：解压 → 双击 `start.cmd`（或 `./start.sh`）→ 浏览器打开 `http://127.0.0.1:4173`。
+
+> ⚠️ **FFmpeg 体积**：Gyan "full" 构建单个可执行约 217 MB，`ffmpeg`+`ffprobe` 会让包达到 **523 MB**（实测）。分发请使用 **essentials / 精简构建**（各约 30–40 MB），包体积可控制在 **120–130 MB**（压缩后约 55–70 MB）。脚本在检测到 FFmpeg > 80 MB 时会告警提示。
+
+### 4.1 一键部署（源码方式，推荐开发/服务器）
 
 仓库内置幂等部署脚本，**可重复执行**，失败会保留备份并打印回滚步骤。
 
@@ -69,7 +105,7 @@ npm run dev           # Vite 5173 + API 8787
 
 前置要求：**Node >= 22.5**（内置 `node:sqlite`）、npm；FFmpeg/ffprobe 缺失不阻断部署，但对应的转码/录像/测流能力不可用（脚本会明确告警）。
 
-### 4.1 裸机 + 守护（当前现场在用）
+### 4.2 裸机 + 守护（当前现场在用）
 
 `scripts/fire-watchdog.ps1` 每 30 秒健康检查 `/healthz`，失败自动重启实例；`scripts/start-fire-watchdog.cmd` 已可放入用户启动文件夹实现登录自启（本项目 Windows 机器已配置）。Linux 可用 systemd 包装同样命令：
 
@@ -88,7 +124,7 @@ Environment=DATA_DIR=/var/lib/fire-vision
 WantedBy=multi-user.target
 ```
 
-### 4.2 Docker（推荐有 Docker 的现场）
+### 4.3 Docker（推荐有 Docker 的现场）
 
 ```bash
 docker compose up -d     # 构建时自动跑 npm test，数据落命名卷 fire-data
@@ -96,7 +132,7 @@ docker compose up -d     # 构建时自动跑 npm test，数据落命名卷 fire
 
 镜像内已含 FFmpeg；健康检查、只读根文件系统、`no-new-privileges`、资源上限均已配置。
 
-### 4.3 公网访问
+### 4.4 公网访问
 
 - 现场有公网 IP：HTTPS 反向代理（Nginx / Caddy）到 4173，务必开启 TLS
 - 现场无公网 IP（多数内网）：用**边缘网关**——现场跑 `npm run edge -- --config edge-gateway.json`，主动外连到公网中心服务，手机只访问中心。配置文件见 `edge-gateway.example.json`
@@ -278,7 +314,7 @@ A：设计如此——演示不持久化（重启自动清理残留点位），�
 A：演示点位地址只在演示运行期有效，重启后已自动清理；如遇残留 DEMO-01 点位，删除即可。
 
 **Q：手机在外网看不了内网画面？**
-A：外网不能主动入内网。用边缘网关（现场主动外连）或给现场公网 IP + HTTPS 反代，详见第 4.3 节。
+A：外网不能主动入内网。用边缘网关（现场主动外连）或给现场公网 IP + HTTPS 反代，详见第 4.4 节。
 
 ---
 

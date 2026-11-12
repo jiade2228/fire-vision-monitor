@@ -1,6 +1,6 @@
 # 部署流程评估与发行版打包方案
 
-> 状态：**方案设计（尚未实施）** · 适用版本基线：v1.1.4 · 2026-11-12
+> 状态：**P0 + P1 已实施（便携包可用）**，P2–P4 待实施 · 基线：v1.2.0 · 2026-11-12
 > 本文评估当前部署方式的复杂度，并给出可分发发行版的设计；文中"体积/耗时"均为本机实测或明确标注的估算，未实施项已注明。
 
 ---
@@ -69,6 +69,14 @@
 | 前端 `dist` | 1.1 MB | — |
 | 运行时依赖 | 约 3–5 MB | 82 个文件 |
 | **合计（精简后）** | **约 120–130 MB** | 压缩后安装包约 50–65 MB |
+
+**2026-11-12 实测修正**（打包脚本上线后验证）：
+
+| 组合 | 实测体积 | 说明 |
+|---|---|---|
+| Node + 应用 + 依赖（不含 FFmpeg） | **88.9 MB** | 压缩后 **34.7 MB**，803 个文件 |
+| 上述 + FFmpeg full + ffprobe full | **523.2 MB** | 单个可执行各 217 MB，**不适合分发** |
+| 目标组合（essentials 构建） | 约 130 MB | 需下载精简构建，脚本已加体积告警（>80 MB 提示） |
 
 ---
 
@@ -197,7 +205,16 @@ fire-vision/                     # 安装根目录
 
 ## 7. 实施步骤
 
-### 阶段 P0：目录布局改造（1–2 天）
+### ✅ P0：目录布局改造（已完成，v1.2.0）
+
+实现：`server/app-paths.mjs`（布局标记 + 三形态解析 + 可写回退）、
+`server/env-file.mjs`（配置文件解析）、`boot.mjs`（`--config`/`--data-dir` + 生效信息日志）、
+`index.mjs`（直接启动时同样走布局解析）。测试：`server/app-paths.test.mjs` 15 条。
+
+**实测**：源码形态 `dataDir` 与改造前完全一致（`<项目根>/data`）；便携包为 `<包>/data`。
+
+#### 原计划（保留供追溯）
+
 
 1. 新增 `APP_HOME` 解析（exe 所在目录）与 `--data-dir`/`--config` 参数
 2. 按平台确定默认数据目录，首次启动做可写探测与回退
@@ -206,7 +223,19 @@ fire-vision/                     # 安装根目录
 
 **验收**：从任意 cwd 启动都能找到 `dist` 与 `data`；数据目录不可写时给出明确错误而非崩溃。
 
-### 阶段 P1：便携包（2–3 天，最快见效）
+### ✅ P1：便携包（已完成，v1.2.0）
+
+实现：`scripts/package/portable.mjs`（收集运行时/代码/依赖/FFmpeg、生成启动脚本与快速开始）、
+`scripts/package/zip.mjs`（自带 ZIP 写入，规避各方 tar 行为差异）、
+`npm run build:portable` / `build:portable:zip`。
+
+**实测**：解压后 `mode=portable`、数据落包内、`/healthz` ok、页面 200。
+
+> 踩坑记录：Git Bash 的 GNU tar 用 `-a -c -f x.zip` **不会**生成 zip，而是生成 tar
+> 却用 `.zip` 扩展名（文件头是文件名而非 `PK`），用户双击解压会失败。已改为自带实现。
+
+#### 原计划（保留供追溯）
+
 
 1. 编写 `scripts/package/portable.mjs`：按平台收集 `node`、`ffmpeg`、`server`、`dist`、`node_modules`、`config` 模板
 2. 生成 `fire-vision-<version>-<platform>-<arch>.zip`（含 `README-QUICKSTART.txt` 与 `start.cmd`/`start.sh`）
@@ -267,7 +296,7 @@ fire-vision/                     # 安装根目录
 | 32 位 Windows | Node 22 已弱化 32 位支持，且现场算力不足，不支持 |
 | 移动端 | 现有是响应式 Web，手机通过浏览器访问即可，不做原生 App |
 | 代码混淆 | 不做。保留可读源码便于现场排障；如确需保护，可后续单独评估 bytecode 方案 |
-| 打包工具链落地 | 本文仅为方案；P1 起才产生实际产物，本文不声称已具备打包能力 |
+| P2–P4 未实施 | 原生安装包、签名公证、多架构产物仍未落地；当前仅有便携包 |
 
 ---
 
@@ -283,4 +312,4 @@ fire-vision/                     # 安装根目录
 
 **Expected output**: ~50–70 MB installers per platform, portable zips, `.deb`/`.rpm`/AppImage, signed `.dmg`, multi-arch container image, `latest.json` + checksums, and per-platform install docs.
 
-**Status**: design only — no packaging artifacts exist yet; implementation starts at phase P0 (directory layout).
+**Status**: P0 (directory layout) and P1 (portable bundle) are implemented and verified in v1.2.0 — a portable zip is produced by `npm run build:portable:zip`, with bundled Node and optional FFmpeg, data kept inside the bundle. P2–P4 (native installers, code signing/notarization, multi-arch) are still pending.
