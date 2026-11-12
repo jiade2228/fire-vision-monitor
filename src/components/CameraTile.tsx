@@ -28,6 +28,8 @@ interface Props {
   onConnectFile: (cameraId: string, file: File) => void;
   onReconnectNetwork: (cameraId: string) => void;
   onDisconnect: (cameraId: string) => void;
+  /** 服务器缺 FFmpeg（RTSP 转码不可用）：用于把笼统的“信号异常”变成可操作的提示。 */
+  ffmpegMissing?: boolean;
   onDetection: (cameraId: string, detection: FrameAnalysis, snapshot: string | null) => void;
 }
 
@@ -58,6 +60,7 @@ export default function CameraTile({
   onReconnectNetwork,
   onDisconnect,
   onDetection,
+  ffmpegMissing = false,
 }: Props) {
   const { videoRef, playback } = useVideoPlayback(suspended ? null : source);
   const { analysisWarning } = useFrameDetection({
@@ -161,8 +164,17 @@ export default function CameraTile({
         )}
         {source && playback === 'error' && (
           <span className="tile-signal-note tile-signal-note--error">
-            视频加载失败
-            <small>请断开后重新接入</small>
+            {ffmpegMissing ? (
+              <>
+                服务器缺少 FFmpeg，RTSP 无法转码
+                <small>安装 FFmpeg 或改用 HLS/HTTP 源；详见顶部提示</small>
+              </>
+            ) : (
+              <>
+                视频加载失败
+                <small>请断开后重新接入</small>
+              </>
+            )}
           </span>
         )}
         {source && analysisWarning && (

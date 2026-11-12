@@ -730,11 +730,9 @@ export default function AdminPanel({
     setCameraBusy(true);
     setError('');
     try {
-      if (editingId) {
-        await api.updateCamera(editingId, cameraForm);
-      } else {
-        await api.createCamera(cameraForm);
-      }
+      const result = editingId
+        ? await api.updateCamera(editingId, cameraForm)
+        : await api.createCamera(cameraForm);
       try {
         await onCamerasChanged();
       } catch {
@@ -744,6 +742,10 @@ export default function AdminPanel({
       setEditingId(null);
       setCameraForm(EMPTY_CAMERA);
       onNotify(editingId ? '点位配置已更新' : '新点位已创建', 'ok');
+      // 服务端预检警告（如 RTSP 点位但缺 FFmpeg）：保存成功也要让用户立刻看到能力受限。
+      for (const warning of result.warnings ?? []) {
+        onNotify(warning, 'warn');
+      }
     } catch (requestError) {
       setError(
         requestError instanceof ApiError ? requestError.message : '点位保存失败',

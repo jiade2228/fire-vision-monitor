@@ -1,4 +1,7 @@
 import VideoWall from '../components/VideoWall';
+
+/** 共享的空 Set 常量：FFmpeg 可用时不再创建新 Set 引发子组件重渲染。 */
+const EMPTY_STRING_SET: ReadonlySet<string> = new Set();
 import AlarmCard from '../components/AlarmCard';
 import OnboardingGuide from '../components/OnboardingGuide';
 import { SENSITIVITY_META } from '../lib/detector';
@@ -32,6 +35,8 @@ interface MonitorViewProps {
   demoBusy: boolean;
   user: SessionUser;
   pointsLoading: boolean;
+  /** RTSP 点位在服务器缺 FFmpeg 时的标记集合。 */
+  ffmpegMissingIds?: ReadonlySet<string>;
   pointsError: string | null;
   alarmsError: string | null;
   alarmsLoading: boolean;
@@ -81,6 +86,7 @@ export default function MonitorView({
   demoBusy,
   user,
   pointsLoading,
+  ffmpegMissingIds = EMPTY_STRING_SET,
   pointsError,
   alarmsError,
   alarmsLoading,
@@ -214,6 +220,7 @@ export default function MonitorView({
         )}
         <VideoWall
           cameras={cameras}
+          ffmpegMissingIds={ffmpegMissingIds}
           statusMap={statusMap}
           activeAlarms={activeAlarms}
           sources={sources}

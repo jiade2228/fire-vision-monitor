@@ -215,3 +215,141 @@ test('点位校验、告警分页与文件日志', async (t) => {
     assert.match(content, /"level":"info"/, '日志应为 JSON 行格式');
   });
 });
+
+/**
+ * FFmpeg 预检警告（云端验收反馈：感知滞后）。
+ *
+ * 单独起一个 ffmpeg 不可用的实例：FFMPEG_PATH 指向一个必然不存在的文件
+ * （resolveExecutable 对显式配置直接采用，spawnSync 必失败 → ffmpegAvailable=false）。
+ * 验证：创建 RTSP 点位响应带 warnings、HLS 点位不带、/api/system 如实报告。
+ */
+test('FFmpeg 缺失时创建 RTSP 点位返回预检警告', async (t) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fire-vision-warn-'));
+  const port2 = await getFreePort();
+  const base2 = `http://127.0.0.1:${port2}`;
+  const missingFfmpeg = path.join(dataDir, 'no-such-ffmpeg.exe');
+  const child = spawn(process.execPath, ['server/boot.mjs', '--port', String(port2)], {
+    cwd: root,
+    env: {
+      ...process.env,
+      DATA_DIR: dataDir,
+      CREDENTIALS_KEY: crypto.randomBytes(32).toString('base64'),
+      SERVER_DETECTION: '0',
+      FFMPEG_PATH: missingFfmpeg,
+      NODE_ENV: 'test',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  child.stdout.resume();
+  child.stderr.resume();
+
+  t.after(async () => {
+    if (child.exitCode === null) {
+      child.kill('SIGTERM');
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 3000);
+        child.once('exit', () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    }
+    await fs.rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(() => {});
+  });
+
+  // 等启动（复用同样的轮询逻辑，但端口不同）
+  {
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      if (child.exitCode !== null) throw new Error(`server exited ${child.exitCode}`);
+      try {
+        const response = await fetch(`${base2}/api/auth/status`);
+        if (response.ok) break;
+      } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  const request2 = async (pathName, { method = 'GET', body, cookie = '' } = {}) => {
+    const stepStarted = Date.now();
+    const response = await fetch(`${base2}${pathName}`, {
+      method,
+      headers: {
+        ...csrf,
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...(cookie ? { Cookie: cookie } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(10_000),
+    }).catch((requestError) => {
+      throw requestError;
+    });
+    const text = await response.text();
+    let payload = null;
+    if (text) {
+      try { payload = JSON.parse(text); } catch { payload = text; }
+    }
+    return { status: response.status, body: payload, cookie: (response.headers.getSetCookie?.() ?? []).map((v) => v.split(';')[0]).join('; ') };
+  };
+
+  const setup = await request2('/api/setup', {
+    method: 'POST',
+    body: { username: 'admin', displayName: '管理员', password: E2E_ADMIN_PASSWORD },
+  });
+  assert.equal(setup.status, 201, '初始化应成功');
+  const cookie = setup.cookie;
+
+  await t.test('/api/system 如实报告 ffmpeg 不可用', async () => {
+    const info = await request2('/api/system', { cookie });
+    assert.equal(info.status, 200);
+    assert.equal(info.body.ffmpegAvailable, false, '无效 FFMPEG_PATH 应判定为不可用');
+  });
+
+  // 说明：这里不用嵌套 t.test。实测（Node 22 / node:test）外层 test 内嵌套
+  // await t.test() 且父测试先完成多个请求时会出现调度挂起（父测试超时被
+  // cancelled、子测试从不调度），因此全部改为顺序断言。
+  const sites = await request2('/api/sites', { cookie });
+  const siteId = sites.body.defaultSiteId;
+  const created = await request2('/api/cameras', {
+    method: 'POST',
+    cookie,
+    body: {
+      name: 'RTSP 预检点位',
+      zone: 'A',
+      protocol: 'rtsp',
+      sourceUrl: 'rtsp://10.0.0.1:554/stream1',
+      enabled: true,
+      siteId,
+    },
+  });
+  assert.equal(created.status, 201, `创建应成功：${JSON.stringify(created.body)}`);
+  const warnings = created.body.warnings ?? [];
+  assert.equal(warnings.length, 1, '应有一条 FFmpeg 预检警告');
+  assert.match(warnings[0], /FFmpeg/, '警告文案应提及 FFmpeg');
+  assert.match(warnings[0], /FFMPEG_PATH/, '警告应给出恢复方法');
+
+  // PATCH 更新 RTSP 点位同样携带警告
+  const updated = await request2(`/api/cameras/${created.body.camera.id}`, {
+    method: 'PATCH',
+    cookie,
+    body: { name: 'RTSP 预检点位（改名）' },
+  });
+  assert.equal(updated.status, 200);
+  assert.equal((updated.body.warnings ?? []).length, 1, '更新后仍应警告');
+
+  // 创建 HLS 点位不带警告
+  const createdHls = await request2('/api/cameras', {
+    method: 'POST',
+    cookie,
+    body: {
+      name: 'HLS 无关点位',
+      zone: 'A',
+      protocol: 'hls',
+      sourceUrl: 'https://example.com/live/index.m3u8',
+      enabled: true,
+      siteId,
+    },
+  });
+  assert.equal(createdHls.status, 201);
+  assert.deepEqual(createdHls.body.warnings ?? [], [], 'HLS 点位不应触发 FFmpeg 警告');
+});

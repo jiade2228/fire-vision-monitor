@@ -20,7 +20,7 @@ export type AlarmStatus = 'pending' | 'confirmed' | 'false' | 'archived';
 export type CameraStatus = 'normal' | 'smoke' | 'fire';
 export type ViewKey = 'monitor' | 'alarms' | 'records';
 export type AlarmFilter = 'all' | 'pending' | 'active' | 'closed';
-export type ToastKind = 'info' | 'danger' | 'ok';
+export type ToastKind = 'info' | 'danger' | 'ok' | 'warn';
 
 export interface DetectionResult {
   level: AlarmLevel;

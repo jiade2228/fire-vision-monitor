@@ -23,6 +23,8 @@ interface Props {
   onConnectFile: (cameraId: string, file: File) => void;
   onReconnectNetwork: (cameraId: string) => void;
   onDisconnect: (cameraId: string) => void;
+  /** RTSP 点位在服务器缺 FFmpeg 时的标记集合。 */
+  ffmpegMissingIds?: ReadonlySet<string>;
   onDetection: (cameraId: string, detection: FrameAnalysis, snapshot: string | null) => void;
 }
 
@@ -42,6 +44,7 @@ export default function VideoWall({
   onReconnectNetwork,
   onDisconnect,
   onDetection,
+  ffmpegMissingIds = new Set<string>(),
 }: Props) {
   return (
     <div className="video-wall">
@@ -63,6 +66,7 @@ export default function VideoWall({
           onReconnectNetwork={onReconnectNetwork}
           onDisconnect={onDisconnect}
           onDetection={onDetection}
+          ffmpegMissing={ffmpegMissingIds.has(camera.id)}
         />
       ))}
     </div>

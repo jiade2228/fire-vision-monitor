@@ -230,6 +230,29 @@ export function registerCameraRoutes(app, deps) {
     },
   );
 
+  /**
+   * FFmpeg 依赖预检（D 系列反馈：感知滞后）。
+   *
+   * RTSP 转码播放、服务端识别、持续录像、告警短视频都依赖 FFmpeg。
+   * 缺失时**不阻断**创建/更新（FFmpeg 可能随后安装，healthz 与
+   * StreamManager.init 都会在下次启动重新探测），但必须在响应里
+   * 明确警告，避免用户建完点位、点开播放才看到 503。
+   *
+   * @param {string} protocol 点位协议。
+   * @param {boolean} enabled 是否启用。
+   * @returns {string[]} 警告列表（无警告为空数组）。
+   */
+  const ffmpegWarningsFor = (protocol, enabled) => {
+    if (protocol !== 'rtsp' || !enabled || streamManager.ffmpegAvailable) {
+      return [];
+    }
+    return [
+      '服务器未检测到 FFmpeg：该 RTSP 点位的转码播放暂不可用，服务端识别、持续录像、告警短视频同样受影响。' +
+        '安装 FFmpeg 并加入 PATH（或在 config/fire-vision.env 中设置 FFMPEG_PATH）后重启服务即可恢复；' +
+        'HLS/HTTP 点位不受影响。',
+    ];
+  };
+
   app.post('/api/cameras', requireAuth, capabilityGuard(CAPABILITIES.CAMERA_MANAGE), (req, res) => {
     const parsed = validateCameraInput(req.body);
     if (parsed.error) return res.status(400).json({ error: parsed.error });
@@ -262,7 +285,9 @@ export function registerCameraRoutes(app, deps) {
         ip: clientIp(req),
       });
       syncDetection();
-      res.status(201).json({ camera: cameraForClient(camera, req.user) });
+      res
+        .status(201)
+        .json({ camera: cameraForClient(camera, req.user), warnings: ffmpegWarningsFor(camera.protocol, camera.enabled) });
     } catch (error) {
       if (error?.code === 'DUPLICATE_SOURCE') {
         return res.status(409).json({ error: error.message });
@@ -335,7 +360,10 @@ export function registerCameraRoutes(app, deps) {
         ip: clientIp(req),
       });
       syncDetection();
-      res.json({ camera: cameraForClient(updated, req.user) });
+      res.json({
+        camera: cameraForClient(updated, req.user),
+        warnings: ffmpegWarningsFor(updated.protocol, updated.enabled),
+      });
     } catch (error) {
       if (error?.code === 'DUPLICATE_SOURCE') {
         return res.status(409).json({ error: error.message });

@@ -16,7 +16,7 @@ import { playAlertSound, primeAlertAudio } from './lib/alertSound';
 import { SENSITIVITY_META } from './lib/detector';
 import type { FrameAnalysis } from './lib/detector';
 import { api } from './lib/api';
-import type { ManagedCamera } from './lib/api';
+import type { ManagedCamera, SystemInfo } from './lib/api';
 import type {
   Alarm,
   AlarmHandlers,
@@ -54,6 +54,9 @@ function remoteSourceFor(point: ManagedCamera): RemoteSource | null {
     label: point.protocol === 'rtsp' ? 'RTSP 转 HLS' : point.protocol.toUpperCase(),
   };
 }
+
+/** 共享的空 Set 常量：避免 FFmpeg 可用时每次渲染创建新 Set 触发子组件重渲染。 */
+const EMPTY_STRING_SET: ReadonlySet<string> = new Set();
 
 export default function App() {
   const { user, logout } = useAuth();
@@ -98,6 +101,19 @@ export default function App() {
   const [toast, setToast] = useState<ToastState | null>(null);
   const [screenAwake, setScreenAwake] = useState(false);
   const [serverDetection, setServerDetection] = useState(false);
+  // FFmpeg 能力感知（云端验收反馈）：主界面常驻提示，让值守人员不用等播放失败才发现。
+  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
+
+  // RTSP 点位在 FFmpeg 缺失时的“需要 FFmpeg”标记（云端验收 D 系列反馈：
+  // 值守人员在主界面看不到能力受限，只能看到点位“错误”）。
+  const ffmpegMissingIds = useMemo(() => {
+    if (!systemInfo || systemInfo.ffmpegAvailable) return EMPTY_STRING_SET;
+    return new Set(
+      cameraPoints
+        .filter((point) => point.protocol === 'rtsp' && point.enabled)
+        .map((point) => point.id),
+    );
+  }, [cameraPoints, systemInfo]);
   const toastTimer = useRef<number | null>(null);
   const wakeLockDesiredRef = useRef(false);
   const wakeLockRef = useRef<{
@@ -111,6 +127,21 @@ export default function App() {
   useEffect(() => {
     alarmsRef.current = alarms;
   }, [alarms]);
+
+  useEffect(() => {
+    // FFmpeg 缺失时主界面给出常驻提示（HLS/HTTP 点位不受影响）。
+    // 拉取失败保持 null（不提示），不能因为一次网络抖动打断值守界面。
+    let cancelled = false;
+    void api
+      .system()
+      .then((info) => {
+        if (!cancelled) setSystemInfo(info);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [adminOpen]);
 
   useEffect(() => {
     sourcesRef.current = sources;
@@ -777,6 +808,17 @@ export default function App() {
           }}
         />
 
+        {systemInfo && !systemInfo.ffmpegAvailable && (
+          <div className="capability-banner" role="status">
+            <span className="capability-banner-icon" aria-hidden="true">⚠</span>
+            <span className="capability-banner-text">
+              服务器未检测到 <strong>FFmpeg</strong>：RTSP 转码播放、服务端识别、持续录像、
+              告警短视频、一键测流、回放导出暂不可用；<strong>HLS/HTTP 点位不受影响</strong>。
+              安装 FFmpeg 并加入 PATH（或在 config/fire-vision.env 中设置 FFMPEG_PATH）后重启即可恢复。
+            </span>
+          </div>
+        )}
+
         <StatsStrip alarms={alarms} onlineCount={onlineCount} totalCount={cameras.length} />
 
         <main className="app-main">
@@ -798,6 +840,7 @@ export default function App() {
               demoBusy={demoBusy}
               user={user}
               pointsLoading={pointsLoading}
+              ffmpegMissingIds={ffmpegMissingIds}
               pointsError={pointsError}
               alarmsError={alarmsError}
               alarmsLoading={alarmsLoading}

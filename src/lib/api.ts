@@ -304,6 +304,17 @@ export interface StorageUsage {
   mediaMaxBytes: number;
 }
 
+/**
+ * 点位创建/更新的响应。
+ *
+ * warnings：服务端预检发现的非阻断性问题（如 RTSP 点位但服务器缺 FFmpeg），
+ * 界面应在保存成功的提示旁展示，避免用户点开播放才看到 503。
+ */
+export interface CameraMutationResult {
+  camera: ManagedCamera;
+  warnings?: string[];
+}
+
 export interface SystemInfo {
   ffmpegAvailable: boolean;
   ffprobeAvailable?: boolean;
@@ -611,7 +622,7 @@ export const api = {
       ['cameras'],
     ),
   createCamera: (body: CameraInput) =>
-    request<{ camera: ManagedCamera }>('/api/cameras', {
+    request<CameraMutationResult>('/api/cameras', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
@@ -662,7 +673,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
   updateCamera: (id: string, body: Partial<CameraInput>) =>
-    request<{ camera: ManagedCamera }>(`/api/cameras/${encodeURIComponent(id)}`, {
+    request<CameraMutationResult>(`/api/cameras/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(body),
     }),

@@ -298,6 +298,11 @@
   color: var(--ok);
   border-color: var(--ok);
 }
+:root[data-theme='light'] .toast--warn {
+  background: var(--panel);
+  color: var(--tone-warn);
+  border-color: var(--warn);
+}
 :root[data-theme='light'] .admin-error {
   background: var(--panel-2);
   color: var(--tone-danger);
@@ -4014,6 +4019,12 @@ button {
   color: #a6f0cf;
 }
 
+.toast--warn {
+  border-color: rgba(251, 191, 36, 0.5);
+  background: rgba(56, 42, 10, 0.97);
+  color: #fbe3a3;
+}
+
 /* ---------------- Responsive ---------------- */
 @media (max-width: 720px) {
   .app-inner {
@@ -5116,4 +5127,34 @@ button {
 :root[data-theme='light'] .toolbar-field input[type='date'] {
   background: #ffffff;
   border-color: rgba(31, 58, 92, 0.24);
+}
+
+/* FFmpeg 能力提示条：主界面常驻（缺失时才渲染） */
+.capability-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  background: rgba(56, 42, 10, 0.55);
+  color: var(--tone-warn, #fbd88a);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.capability-banner strong {
+  color: inherit;
+}
+
+.capability-banner-icon {
+  flex: none;
+  font-size: 14px;
+}
+
+:root[data-theme='light'] .capability-banner {
+  background: #fff8e6;
+  border-color: rgba(165, 104, 0, 0.4);
+  color: #7a5200;
 }

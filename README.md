@@ -28,9 +28,24 @@
 ## 2. 系统要求
 
 - **Node.js ≥ 22.5**（使用内置 `node:sqlite`，Experimental）
-- **FFmpeg**（必须，加入 PATH 或用 `FFMPEG_PATH` 指定；FFprobe 可选，用于一键测流）
+- **FFmpeg**：**仅 RTSP 相关功能需要**（加入 PATH 或用 `FFMPEG_PATH` 指定；FFprobe 可选，用于一键测流）。缺失时服务会正常启动并在界面顶部提示，HLS/HTTP 点位不受影响
   - 无需 `libx264`：启动时自动探测编码器并回退（`libx264 → h264 → mpeg4`）
   - macOS 会自动探测 Homebrew 的 `/opt/homebrew/bin` 与 `/usr/local/bin`
+
+**功能 × FFmpeg 依赖矩阵**（缺失时的行为均已在代码中显式处理，不会出现静默失败）：
+
+| 功能 | 依赖 FFmpeg | 缺失时的表现 |
+|---|---|---|
+| HLS / HTTP 点位播放 | ❌ 不需要 | 正常播放 |
+| 边缘网关点位播放 | ❌ 不需要（现场侧转码） | 正常播放 |
+| 浏览器本地识别 | ❌ 不需要 | 正常运行 |
+| RTSP 点位转码播放 | ✅ 需要 | 点位瓦片显示「服务器缺少 FFmpeg」，接口返回 503 `FFMPEG_MISSING`；创建/启用时立即给出警告提示 |
+| 服务端 7×24 识别 | ✅ 需要 | 自动让位浏览器本地识别；管理面板提示 |
+| 持续录像（`RECORDING=1`） | ✅ 需要 | 不生成录像分段；时间线显示缺口 |
+| 告警抓拍与短视频 | ✅ 需要 | 告警仍会生成（识别依赖浏览器本地或服务端），但无抓拍图与短视频 |
+| 一键测流 / 探测 | ✅ 需要（FFprobe） | 接口返回 `probeAvailable: false` |
+| 持续录像回放 / MP4 导出 | ✅ 需要（无录像文件） | 时间线为空，提示无录像 |
+| 演示模式（合成火焰流） | ✅ 需要 | 管理面板禁用并提示 |
 - 操作系统：**Windows 10/11**、**Linux**、**macOS 11 (Big Sur) 及以上**
   - macOS 适配范围与安装步骤（含 launchd 守护）见 [docs/MACOS-COMPAT.md](./docs/MACOS-COMPAT.md)
 - 内存 / CPU：每路检测约一个 FFmpeg 抽帧进程（160×90@1fps，CPU 占用低）；每路观看转码一个 FFmpeg 进程。单路演示 + 观看总计 3 个进程，普通服务器无压力
@@ -54,9 +69,11 @@ npm run dev           # Vite 5173 + API 8787
 
 ## 4. 部署
 
-### 4.0 便携包（免装 Node/FFmpeg，推荐现场使用）
+### 4.0 便携包（免装 Node，FFmpeg 可选）
 
-打包后自带 Node 运行时与 FFmpeg，目标机**无需安装任何依赖**：
+打包后自带 Node 运行时，目标机**无需安装 Node**：
+
+> ⚠️ **FFmpeg 是否随包取决于构建参数**：默认 `npm run build:portable:zip` **不含 FFmpeg**（Gyan full 构建单个可执行 217 MB，会使包膨胀到 500 MB 以上）。FFmpeg 采购到位后，用 `--ffmpeg-dir <精简构建目录>` 指向 essentials 构建（ffmpeg+ffprobe 各 30–40 MB）即可产出内置包。**不含 FFmpeg 的包：HLS/HTTP 点位可播，RTSP 转码/录像/短视频不可用**（界面顶部会常驻提示，各功能的缺失表现见上方依赖矩阵）。
 
 ```bash
 npm run build:portable:zip        # 生成 dist-packages/fire-vision-<版本>-<平台>-<架构>.zip
