@@ -28,7 +28,10 @@
     "start": "node server/boot.mjs --port 4173",
     "preview": "node server/index.mjs --port 4173",
     "build:portable": "node scripts/package/portable.mjs",
-    "build:portable:zip": "node scripts/package/portable.mjs --archive"
+    "build:portable:zip": "node scripts/package/portable.mjs --archive",
+    "package:win": "node scripts/package/installer.mjs --target win",
+    "package:linux": "node scripts/package/installer.mjs --target linux",
+    "package:macos": "node scripts/package/installer.mjs --target macos"
   },
   "engines": {
     "node": ">=22.5"

@@ -18,7 +18,7 @@
 | 部署脚本 | `scripts/deploy.ps1`（Windows）、`scripts/deploy.sh`（Linux/macOS） |
 | 便携包构建 | `scripts/package/portable.mjs` + `zip.mjs`（自带运行时，`npm run build:portable:zip`） |
 | 备份工具 | `scripts/db-backup.mjs`（`VACUUM INTO` 一致性备份 + 完整性校验） |
-| 守护方案 | Windows：`scripts/fire-watchdog.ps1`；Linux：systemd 示例（见 README §4.2）；macOS：`scripts/launchd/*.plist` |
+| 守护方案 | Windows：`scripts/fire-watchdog.ps1`；Linux：systemd 示例（见 README §4.3）；macOS：`scripts/launchd/*.plist` |
 | 测试 | `server/*.test.mjs`（单元/集成）、`scripts/e2e-smoke.mjs`（E2E）、`scripts/contrast-scan.mjs`（浅色对比度） |
 | 文档 | 本文件、[README.md](./README.md)、[SECURITY.md](./SECURITY.md)、[CONTRIBUTING.md](./CONTRIBUTING.md)、[docs/MACOS-COMPAT.md](./docs/MACOS-COMPAT.md)、[docs/GITHUB.md](./docs/GITHUB.md)、[docs/DISTRIBUTION-PLAN.md](./docs/DISTRIBUTION-PLAN.md)、[docs/continuous-recording-design.md](./docs/continuous-recording-design.md)、[docs/REVIEW-CHECKLIST.md](./docs/REVIEW-CHECKLIST.md) |
 
@@ -67,7 +67,7 @@ node scripts/contrast-scan.mjs  # 浅色主题对比度，预期 0 处不达标
 ### 3.1 守护与自启
 
 - **Windows**：`scripts/fire-watchdog.ps1` 每 30 秒探测 `/healthz`，异常自动重启；连续 5 次启动失败进入 10 分钟退避并写 `data/startup-failed.marker`（需人工介入）。`scripts/start-fire-watchdog.cmd` 可放入启动文件夹。
-- **Linux**：systemd 单元示例见 README §4.2（`ExecStart` 指向 `server/boot.mjs`）。
+- **Linux**：systemd 单元示例见 README §4.3（`ExecStart` 指向 `server/boot.mjs`）。
 - **macOS**：`scripts/launchd/com.flamevision.monitor.plist`，安装步骤见 [docs/MACOS-COMPAT.md](./docs/MACOS-COMPAT.md)。
 
 ---

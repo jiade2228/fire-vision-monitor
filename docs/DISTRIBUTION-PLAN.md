@@ -1,6 +1,6 @@
 # 部署流程评估与发行版打包方案
 
-> 状态：**P0 + P1 已实施（便携包可用）**，P2–P4 待实施 · 基线：v1.2.0 · 2026-11-12
+> 状态：**P0 + P1 + P2 已实施**（便携包可用、Windows 安装包已编译通过），P3–P4 待实施 · 基线：v1.2.0 · 2026-11-12
 > 本文评估当前部署方式的复杂度，并给出可分发发行版的设计；文中"体积/耗时"均为本机实测或明确标注的估算，未实施项已注明。
 
 ---
@@ -244,7 +244,25 @@ fire-vision/                     # 安装根目录
 
 **验收**：全新 Windows 机器**不装 Node/FFmpeg**，解压后 3 分钟内跑通演示模式全链路。
 
-### 阶段 P2：原生安装包（3–5 天）
+### ✅ P2：原生安装包（已完成，v1.2.0；签名留待 P3）
+
+实现：`scripts/package/installer.mjs` + `templates/`（NSIS / systemd / nfpm / macOS postinstall）。
+`npm run package:win` / `package:linux` / `package:macos`。
+
+- **Windows**：NSIS 工程，`File /r` 复用便携包产物；数据目录固定 `%LOCALAPPDATA%\FireVision`
+  （避开 Program Files 不可写）；开机自启为「启动文件夹快捷方式」（当前用户，无需管理员、
+  无 WinSW 依赖）；卸载保留数据并明确提示路径；含完整 VERSIONINFO。
+  **实测：makensis 编译成功，22.4 MB，版本信息正确。**
+- **Linux**：systemd unit（`LimitNOFILE=4096`、`ProtectSystem=strict`、`ReadWritePaths` 放行数据与日志）
+  + nfpm 配置（deb/rpm）+ postinstall（建 `fire-vision` 系统用户、`/etc/fire-vision` 配置仅首次写入）。
+- **macOS**：pkgbuild payload 组装 + postinstall 写 LaunchDaemon（`KeepAlive SuccessfulExit=false`、
+  `SoftResourceLimits 4096`、PATH 含 Homebrew）。plist 经 XML 解析器校验合法。
+
+**未验证项**：Linux 的 nfpm 打包与真机安装（本机无 nfpm/Linux）、macOS 的 pkgbuild（本机非 macOS）、
+Windows 安装包的完整安装/卸载流程（需管理员权限，避免污染开发机）。
+
+#### 原计划（保留供追溯）
+
 
 1. Windows：NSIS 或 WiX 脚本（服务注册用 WinSW）
 2. Linux：`.deb`（`nfpm` 生成）+ systemd unit
@@ -296,7 +314,7 @@ fire-vision/                     # 安装根目录
 | 32 位 Windows | Node 22 已弱化 32 位支持，且现场算力不足，不支持 |
 | 移动端 | 现有是响应式 Web，手机通过浏览器访问即可，不做原生 App |
 | 代码混淆 | 不做。保留可读源码便于现场排障；如确需保护，可后续单独评估 bytecode 方案 |
-| P2–P4 未实施 | 原生安装包、签名公证、多架构产物仍未落地；当前仅有便携包 |
+| P3–P4 未实施 | 代码签名与 macOS 公证、多架构产物、自动更新仍未落地；安装包当前未签名 |
 
 ---
 
@@ -312,4 +330,4 @@ fire-vision/                     # 安装根目录
 
 **Expected output**: ~50–70 MB installers per platform, portable zips, `.deb`/`.rpm`/AppImage, signed `.dmg`, multi-arch container image, `latest.json` + checksums, and per-platform install docs.
 
-**Status**: P0 (directory layout) and P1 (portable bundle) are implemented and verified in v1.2.0 — a portable zip is produced by `npm run build:portable:zip`, with bundled Node and optional FFmpeg, data kept inside the bundle. P2–P4 (native installers, code signing/notarization, multi-arch) are still pending.
+**Status**: P0, P1 and P2 are implemented in v1.2.0. `npm run build:portable:zip` produces a portable zip (bundled Node, optional FFmpeg, data inside the bundle); `npm run package:win` produces an NSIS installer (compiled and verified at 22.4 MB, unsigned); Linux and macOS installer projects are generated (systemd/nfpm and pkgbuild). P3 (code signing, macOS notarization) and P4 (multi-arch, auto-update) remain pending.

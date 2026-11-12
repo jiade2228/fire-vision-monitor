@@ -90,7 +90,20 @@ fire-vision-<版本>-<平台>-<架构>/
 
 > ⚠️ **FFmpeg 体积**：Gyan "full" 构建单个可执行约 217 MB，`ffmpeg`+`ffprobe` 会让包达到 **523 MB**（实测）。分发请使用 **essentials / 精简构建**（各约 30–40 MB），包体积可控制在 **120–130 MB**（压缩后约 55–70 MB）。脚本在检测到 FFmpeg > 80 MB 时会告警提示。
 
-### 4.1 一键部署（源码方式，推荐开发/服务器）
+### 4.1 安装包（Windows）
+
+```bash
+npm run package:win          # 生成 dist-packages/fire-vision-<版本>-win-<架构>-setup.exe
+```
+
+- 安装到 `Program Files\FireVision`，**运行数据放在 `%LOCALAPPDATA%\FireVision`**（该目录可写，避免装到只读目录后数据库写失败）
+- 可选「开机自启（当前用户）」，用启动文件夹快捷方式实现，**不需要管理员常驻、不依赖第三方服务包装器**
+- 卸载**保留运行数据**，并在完成时提示数据路径（`credentials.key` 与 `app.db` 必须成对处理）
+- 安装包当前**未做代码签名**，Windows SmartScreen 会提示「未知发布者」；正式分发前需完成签名（见发行版方案 P3）
+
+Linux（`npm run package:linux`，生成 deb/rpm 工程 + systemd unit）与 macOS（`npm run package:macos`，生成 pkg 工程 + LaunchDaemon）**必须在对应操作系统上构建**。
+
+### 4.2 一键部署（源码方式，推荐开发/服务器）
 
 仓库内置幂等部署脚本，**可重复执行**，失败会保留备份并打印回滚步骤。
 
@@ -105,7 +118,7 @@ fire-vision-<版本>-<平台>-<架构>/
 
 前置要求：**Node >= 22.5**（内置 `node:sqlite`）、npm；FFmpeg/ffprobe 缺失不阻断部署，但对应的转码/录像/测流能力不可用（脚本会明确告警）。
 
-### 4.2 裸机 + 守护（当前现场在用）
+### 4.3 裸机 + 守护（当前现场在用）
 
 `scripts/fire-watchdog.ps1` 每 30 秒健康检查 `/healthz`，失败自动重启实例；`scripts/start-fire-watchdog.cmd` 已可放入用户启动文件夹实现登录自启（本项目 Windows 机器已配置）。Linux 可用 systemd 包装同样命令：
 
@@ -124,7 +137,7 @@ Environment=DATA_DIR=/var/lib/fire-vision
 WantedBy=multi-user.target
 ```
 
-### 4.3 Docker（推荐有 Docker 的现场）
+### 4.4 Docker（推荐有 Docker 的现场）
 
 ```bash
 docker compose up -d     # 构建时自动跑 npm test，数据落命名卷 fire-data
@@ -132,7 +145,7 @@ docker compose up -d     # 构建时自动跑 npm test，数据落命名卷 fire
 
 镜像内已含 FFmpeg；健康检查、只读根文件系统、`no-new-privileges`、资源上限均已配置。
 
-### 4.4 公网访问
+### 4.5 公网访问
 
 - 现场有公网 IP：HTTPS 反向代理（Nginx / Caddy）到 4173，务必开启 TLS
 - 现场无公网 IP（多数内网）：用**边缘网关**——现场跑 `npm run edge -- --config edge-gateway.json`，主动外连到公网中心服务，手机只访问中心。配置文件见 `edge-gateway.example.json`
@@ -314,7 +327,7 @@ A：设计如此——演示不持久化（重启自动清理残留点位），�
 A：演示点位地址只在演示运行期有效，重启后已自动清理；如遇残留 DEMO-01 点位，删除即可。
 
 **Q：手机在外网看不了内网画面？**
-A：外网不能主动入内网。用边缘网关（现场主动外连）或给现场公网 IP + HTTPS 反代，详见第 4.4 节。
+A：外网不能主动入内网。用边缘网关（现场主动外连）或给现场公网 IP + HTTPS 反代，详见第 4.5 节。
 
 ---
 
