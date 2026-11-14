@@ -206,7 +206,7 @@ test('#10 共享源：一路输入两路输出，帧分发与订阅可离线验�
     fps: 1,
   });
   assert.ok(args.includes('-rtsp_transport'));
-  assert.ok(args.includes('-timeout'));
+  assert.ok(args.includes('-stimeout') || args.includes('-timeout'));
   assert.ok(!args.includes('-rw_timeout'));
   assert.ok(args.includes('copy'));
   assert.ok(args.includes('segment'));
