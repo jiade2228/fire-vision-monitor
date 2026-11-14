@@ -1,0 +1,280 @@
+name: RTSP 超时参数校验
+
+# 目的：用 GitHub 托管 runner 覆盖 FFmpeg 版本边界，验证 server/ffmpeg-input.mjs 的
+# RTSP 超时参数分流（4.x → -stimeout，5.x+ → -timeout，非 RTSP → -rw_timeout）。
+# 同时把三个历史负向模式（rw_timeout not found / 监听模式 / EADDRINUSE）压到 0。
+#
+# 触发：手动，或改动到相关路径时。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'server/ffmpeg-input.mjs'
+      - 'server/ffmpeg-input.test.mjs'
+      - 'server/streams.mjs'
+      - 'server/probe.mjs'
+      - 'server/recording-capture.mjs'
+      - 'server/shared-source.mjs'
+      - '.github/workflows/rtsp-timeout-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  rtsp-timeout:
+    name: RTSP 超时校验（${{ matrix.os }}）
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 记录 FFmpeg 版本与 RTSP 超时选项清单
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          ffmpeg -hide_banner -version | tee out/ffmpeg-version.txt
+          MAJOR=$(ffmpeg -hide_banner -version | head -1 | sed -n 's/.*ffmpeg version n\{0,1\}\([0-9]\+\)\..*/\1/p')
+          echo "FFMPEG_MAJOR=$MAJOR" >> "$GITHUB_ENV"
+          {
+            echo "### ffmpeg -h demuxer=rtsp（timeout 相关）"
+            ffmpeg -hide_banner -h demuxer=rtsp 2>&1 | grep -i timeout || echo "(无 timeout 选项)"
+            echo
+            echo "### ffmpeg -h protocol=rtsp（timeout 相关）"
+            ffmpeg -hide_banner -h protocol=rtsp 2>&1 | grep -i timeout || echo "(无 timeout 选项)"
+          } | tee out/rtsp-timeout-options.txt
+
+      - name: 安装依赖并构建
+        run: |
+          npm ci
+          npm run build
+
+      - name: 安装 mediamtx 并推送本地合成 RTSP 流
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VER=$(gh api repos/bluenviron/mediamtx/releases/latest --jq .tag_name)
+          echo "mediamtx=${VER}" | tee out/versions.txt
+          curl -fL -o mediamtx.tar.gz \
+            "https://github.com/bluenviron/mediamtx/releases/download/${VER}/mediamtx_${VER}_linux_amd64.tar.gz"
+          tar xzf mediamtx.tar.gz
+          nohup ./mediamtx > out/mediamtx.log 2>&1 &
+          sleep 2
+          nohup ffmpeg -re -f lavfi -i "testsrc2=size=640x360:rate=15" \
+            -c:v libx264 -preset ultrafast -tune zerolatency -g 15 \
+            -f rtsp rtsp://127.0.0.1:8554/fire > out/ffmpeg-push.log 2>&1 &
+          sleep 4
+          tail -5 out/mediamtx.log || true
+
+      - name: 启服务、建管理员与 RTSP 点位
+        run: |
+          set -euo pipefail
+          export DATA_DIR="$PWD/data-ci"
+          RECORDING=1 PORT=4173 DATA_DIR="$DATA_DIR" SERVER_DETECTION=0 \
+            nohup node server/boot.mjs --port 4173 > out/server.log 2>&1 &
+          for i in $(seq 1 40); do
+            curl -sf http://127.0.0.1:4173/healthz >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:4173/healthz | tee out/healthz.json
+          echo
+          H='X-Requested-With: flame-vision'
+          curl -sf -c cj.txt -H "$H" -H 'Content-Type: application/json' \
+            -X POST http://127.0.0.1:4173/api/setup \
+            -d '{"username":"ci","displayName":"CI","password":"CiPassw0rd!2026"}' | tee out/setup.json
+          echo
+          curl -sf -b cj.txt -c cj.txt -H "$H" -H 'Content-Type: application/json' \
+            -X POST http://127.0.0.1:4173/api/auth/login \
+            -d '{"username":"ci","password":"CiPassw0rd!2026"}' | tee out/login.json
+          echo
+          SITE=$(curl -s -b cj.txt -H "$H" http://127.0.0.1:4173/api/sites \
+            | jq -r '.defaultSiteId // .sites[0].id // .sites[0].siteId')
+          echo "SITE=$SITE" >> "$GITHUB_ENV"
+          curl -sf -b cj.txt -H "$H" -H 'Content-Type: application/json' \
+            -X POST http://127.0.0.1:4173/api/cameras \
+            -d "{\"name\":\"CI-RTSP\",\"zone\":\"CI\",\"protocol\":\"rtsp\",\"sourceUrl\":\"rtsp://127.0.0.1:8554/fire\",\"enabled\":true,\"siteId\":\"$SITE\"}" \
+            | tee out/camera.json
+          echo
+          CAM=$(jq -r '.camera.id // .cameraId // .id' out/camera.json)
+          echo "CAM=$CAM" >> "$GITHUB_ENV"
+          sleep 3
+
+      - name: 路径 a：测流
+        run: |
+          set -euo pipefail
+          ( for i in $(seq 1 150); do
+              ps -eo args | grep -E '(ffmpeg|ffprobe) ' | grep -F 'rtsp://127.0.0.1:8554/fire' >> out/cmd-probe.txt || true
+              sleep 0.1
+            done ) &
+          SAMPLER=$!
+          CODE=$(curl -s -o out/probe-response.json -w '%{http_code}' \
+            -b cj.txt -H 'X-Requested-With: flame-vision' \
+            -X POST "http://127.0.0.1:4173/api/cameras/$CAM/test")
+          wait $SAMPLER || true
+          echo "probe_http=$CODE" | tee -a out/results.txt
+          cat out/probe-response.json | tee -a out/results.txt; echo
+
+      - name: 路径 b：播放 HLS
+        run: |
+          set -euo pipefail
+          ( for i in $(seq 1 400); do
+              ps -eo args | grep -E '(ffmpeg|ffprobe) ' | grep -F 'rtsp://127.0.0.1:8554/fire' >> out/cmd-stream.txt || true
+              sleep 0.1
+            done ) &
+          SAMPLER=$!
+          OK=0; CODE=000
+          for i in $(seq 1 60); do
+            CODE=$(curl -s -o out/index.m3u8 -w '%{http_code}' \
+              -b cj.txt -H 'X-Requested-With: flame-vision' \
+              "http://127.0.0.1:4173/streams/$CAM/index.m3u8")
+            if [ "$CODE" = "200" ] && grep -q '#EXTINF' out/index.m3u8; then OK=1; break; fi
+            sleep 1
+          done
+          wait $SAMPLER || true
+          echo "stream_http=$CODE stream_ready=$OK" | tee -a out/results.txt
+          [ "$OK" = "1" ]
+
+      - name: 路径 c：录像
+        run: |
+          set -euo pipefail
+          curl -s -b cj.txt -H 'X-Requested-With: flame-vision' \
+            http://127.0.0.1:4173/api/recordings/status | tee out/recordings-status-before.json; echo
+          sleep 95
+          ( for i in $(seq 1 20); do
+              ps -eo args | grep -E '(ffmpeg|ffprobe) ' | grep -F 'rtsp://127.0.0.1:8554/fire' >> out/cmd-recording.txt || true
+              sleep 0.1
+            done )
+          N=$(find data-ci/recordings -name '*.ts' 2>/dev/null | wc -l)
+          find data-ci/recordings -name '*.ts' 2>/dev/null | head -5 | tee out/recording-segments.txt
+          echo "recording_segments=$N" | tee -a out/results.txt
+          curl -s -b cj.txt -H 'X-Requested-With: flame-vision' \
+            http://127.0.0.1:4173/api/recordings/status | tee out/recordings-status-after.json; echo
+          [ "$N" -ge 1 ]
+
+      - name: 断言并生成汇总
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os, re, pathlib, sys
+
+          out = pathlib.Path('out')
+          out.mkdir(exist_ok=True)
+
+          ver = (out / 'ffmpeg-version.txt').read_text() if (out / 'ffmpeg-version.txt').exists() else ''
+          m = re.search(r'ffmpeg version\s+n?(\d+)\.', ver)
+          major = int(m.group(1)) if m else None
+          expected = 'stimeout' if (major is not None and major <= 4) else 'timeout'
+          options = (out / 'rtsp-timeout-options.txt').read_text() if (out / 'rtsp-timeout-options.txt').exists() else ''
+
+          results = {}
+          for line in (out / 'results.txt').read_text().splitlines() if (out / 'results.txt').exists() else []:
+              for part in line.split():
+                  if '=' in part:
+                      k, v = part.split('=', 1)
+                      results[k] = v
+
+          def cmd_lines(name):
+              p = out / name
+              if not p.exists():
+                  return []
+              seen, lines = set(), []
+              for raw in p.read_text(errors='replace').splitlines():
+                  line = raw.strip()
+                  if not line or 'rtsp://127.0.0.1:8554/fire' not in line:
+                      continue
+                  if line not in seen:
+                      seen.add(line)
+                      lines.append(line)
+              return lines
+
+          paths = {}
+          for label, fname in [('probe', 'cmd-probe.txt'), ('playback', 'cmd-stream.txt'), ('recording', 'cmd-recording.txt')]:
+              lines = cmd_lines(fname)
+              joined = '\n'.join(lines)
+              paths[label] = {
+                  'observed_commands': len(lines),
+                  'sample': lines[0][:400] if lines else '',
+                  'uses_expected_option': bool(lines) and all(f'-{expected} ' in l for l in lines),
+                  'has_rw_timeout': '-rw_timeout' in joined,
+                  'has_bare_timeout_on_4x': False,
+              }
+              if major is not None and major <= 4:
+                  paths[label]['has_bare_timeout_on_4x'] = any(
+                      ' -timeout ' in l and '-stimeout' not in l for l in lines
+                  )
+
+          negative_patterns = {
+              'Option rw_timeout not found': 0,
+              'Unable to open RTSP for listening': 0,
+              'EADDRINUSE': 0,
+              'Address already in use': 0,
+          }
+          for p in out.glob('*'):
+              if p.is_file() and p.suffix in {'.log', '.txt', '.json', '.m3u8'}:
+                  text = p.read_text(errors='replace')
+                  for pat in negative_patterns:
+                      negative_patterns[pat] += text.count(pat)
+
+          checks = {
+              'probe_ok': results.get('probe_http') == '200',
+              'playback_ok': results.get('stream_ready') == '1',
+              'recording_ok': int(results.get('recording_segments', '0') or 0) >= 1,
+              'probe_cmd_ok': paths['probe']['observed_commands'] > 0 and paths['probe']['uses_expected_option'],
+              'playback_cmd_ok': paths['playback']['observed_commands'] > 0 and paths['playback']['uses_expected_option'],
+              'recording_cmd_ok': paths['recording']['observed_commands'] > 0 and paths['recording']['uses_expected_option'],
+              'no_rw_timeout_in_rtsp': not any(v['has_rw_timeout'] for v in paths.values()),
+              'no_bare_timeout_on_4x': not any(v['has_bare_timeout_on_4x'] for v in paths.values()),
+              'negative_patterns_zero': all(v == 0 for v in negative_patterns.values()),
+          }
+
+          summary = {
+              'runner_os': os.environ.get('RUNNER_OS'),
+              'runner_image': os.environ.get('ImageOS', ''),
+              'ffmpeg_version_line': ver.splitlines()[0] if ver else '',
+              'ffmpeg_major': major,
+              'expected_rtsp_option': f'-{expected}',
+              'rtsp_timeout_options': [l.strip() for l in options.splitlines() if 'timeout' in l.lower()],
+              'results': results,
+              'paths': paths,
+              'negative_pattern_counts': negative_patterns,
+              'checks': checks,
+              'passed': all(checks.values()),
+          }
+          (out / 'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2))
+
+          md = ['# RTSP 超时参数校验', '',
+                f"- runner: `{os.environ.get('ImageOS','')}` / `{os.environ.get('RUNNER_OS','')}`",
+                f"- FFmpeg: `{summary['ffmpeg_version_line']}`（主版本 {major}）",
+                f"- 期望 RTSP 选项: `{summary['expected_rtsp_option']}`",
+                f"- 测流 HTTP: `{results.get('probe_http','-')}`，播放就绪: `{results.get('stream_ready','-')}`，录像分段: `{results.get('recording_segments','-')}`",
+                '', '## 三路径参数', '']
+          for label in ('probe', 'playback', 'recording'):
+              v = paths[label]
+              md.append(f"- **{label}**：采样 {v['observed_commands']} 条，参数正确={v['uses_expected_option']}，含 -rw_timeout={v['has_rw_timeout']}")
+              if v['sample']:
+                  md.append(f"  - `{v['sample']}`")
+          md += ['', '## 负向模式计数', '']
+          for k, v in negative_patterns.items():
+              md.append(f"- `{k}`: {v}")
+          md += ['', f"## 结论: {'PASS' if summary['passed'] else 'FAIL'}", '']
+          (out / 'summary.md').write_text('\n'.join(md))
+          print('\n'.join(md))
+          sys.exit(0 if summary['passed'] else 1)
+          PY
+
+      - name: 上传汇总
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rtsp-timeout-${{ matrix.os }}
+          path: out/
+          retention-days: 14
