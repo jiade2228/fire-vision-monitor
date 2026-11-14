@@ -16,6 +16,31 @@
 /** 对外暴露的处置状态（筛选/文档口径）。 */
 export const PUBLIC_ALARM_STATUSES = Object.freeze(['pending', 'confirmed', 'closed']);
 
+/**
+ * 关闭告警前必须完成的四步应急处置清单（顺序与界面一致）。
+ *
+ * 数据库没有为四步分别建列：四步统一存放在 `alarms.steps_json`
+ * （布尔数组，下标 0-3，见 server/schema.mjs）。这里的字段名与下标一一对应，
+ * 用于 PATCH 关闭校验在 409 响应里回传缺失项，便于前端提示。
+ */
+export const CLOSE_CHECKLIST_FIELDS = Object.freeze([
+  'notify_fire_control',
+  'start_smoke_exhaust',
+  'broadcast_evacuation',
+  'call_119',
+]);
+
+/**
+ * 计算未完成的清单字段名（按界面顺序）。
+ *
+ * @param {unknown} steps 告警 steps（`steps_json` 解析后的布尔数组）。
+ * @returns {string[]} 缺失字段名；空数组表示四步均已完成。
+ */
+export function missingCloseChecklistFields(steps) {
+  const list = Array.isArray(steps) ? steps : [];
+  return CLOSE_CHECKLIST_FIELDS.filter((_, index) => list[index] !== true);
+}
+
 const TO_INTERNAL = {
   pending: 'pending',
   confirmed: 'confirmed',

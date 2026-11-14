@@ -1,6 +1,6 @@
 {
   "name": "fire-vision-monitor",
-  "version": "1.2.8",
+  "version": "1.2.9",
   "private": true,
   "description": "火焰/烟雾视频识别监控平台：RTSP/ONVIF 接入、7×24 检测、告警抓拍与短视频、多渠道通知、多站点隔离、审计与趋势看板",
   "license": "MIT",

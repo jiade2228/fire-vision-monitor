@@ -257,6 +257,27 @@ test('API auth, roles, alarms, audit and backup', async (t) => {
   assert.equal(confirm.body.alarm.status, 'confirmed');
   assert.ok(confirm.body.alarm.confirmedAt);
 
+  // 四步清单未完成时，服务端拒绝关闭（仅前端禁用按钮不足以阻止直接 PATCH）。
+  const blockedArchive = await request(`/api/alarms/${createdAlarm.body.alarm.id}`, {
+    method: 'PATCH',
+    cookie: adminCookie,
+    body: { status: 'closed' },
+  });
+  assert.equal(blockedArchive.status, 409);
+  assert.deepEqual(blockedArchive.body.missing, [
+    'start_smoke_exhaust',
+    'broadcast_evacuation',
+    'call_119',
+  ]);
+
+  const finishSteps = await request(`/api/alarms/${createdAlarm.body.alarm.id}`, {
+    method: 'PATCH',
+    cookie: adminCookie,
+    body: { steps: [true, true, true, true] },
+  });
+  assert.equal(finishSteps.status, 200);
+  assert.deepEqual(finishSteps.body.alarm.steps, [true, true, true, true]);
+
   const archive = await request(`/api/alarms/${createdAlarm.body.alarm.id}`, {
     method: 'PATCH',
     cookie: adminCookie,
@@ -265,6 +286,50 @@ test('API auth, roles, alarms, audit and backup', async (t) => {
   assert.equal(archive.status, 200);
   // 对外统一 closed（落库 archived），见 server/alarm-status.mjs。
   assert.equal(archive.body.alarm.status, 'closed');
+
+  // 历史别名 archived 同样受四步清单约束。
+  const secondAlarm = await request('/api/alarms', {
+    method: 'POST',
+    cookie: operatorCookie,
+    body: alarmPayload,
+  });
+  assert.equal(secondAlarm.status, 201);
+  const secondId = secondAlarm.body.alarm.id;
+  const secondConfirm = await request(`/api/alarms/${secondId}`, {
+    method: 'PATCH',
+    cookie: adminCookie,
+    body: { status: 'confirmed' },
+  });
+  assert.equal(secondConfirm.status, 200);
+  assert.equal(secondConfirm.body.alarm.status, 'confirmed');
+
+  const blockedAlias = await request(`/api/alarms/${secondId}`, {
+    method: 'PATCH',
+    cookie: adminCookie,
+    body: { status: 'archived' },
+  });
+  assert.equal(blockedAlias.status, 409);
+  assert.deepEqual(blockedAlias.body.missing, [
+    'notify_fire_control',
+    'start_smoke_exhaust',
+    'broadcast_evacuation',
+    'call_119',
+  ]);
+
+  const aliasSteps = await request(`/api/alarms/${secondId}`, {
+    method: 'PATCH',
+    cookie: adminCookie,
+    body: { steps: [true, true, true, true] },
+  });
+  assert.equal(aliasSteps.status, 200);
+
+  const aliasArchive = await request(`/api/alarms/${secondId}`, {
+    method: 'PATCH',
+    cookie: adminCookie,
+    body: { status: 'archived' },
+  });
+  assert.equal(aliasArchive.status, 200);
+  assert.equal(aliasArchive.body.alarm.status, 'closed');
 
   const invalidTransition = await request(`/api/alarms/${createdAlarm.body.alarm.id}`, {
     method: 'PATCH',
