@@ -260,10 +260,11 @@ test('API auth, roles, alarms, audit and backup', async (t) => {
   const archive = await request(`/api/alarms/${createdAlarm.body.alarm.id}`, {
     method: 'PATCH',
     cookie: adminCookie,
-    body: { status: 'archived' },
+    body: { status: 'closed' },
   });
   assert.equal(archive.status, 200);
-  assert.equal(archive.body.alarm.status, 'archived');
+  // 对外统一 closed（落库 archived），见 server/alarm-status.mjs。
+  assert.equal(archive.body.alarm.status, 'closed');
 
   const invalidTransition = await request(`/api/alarms/${createdAlarm.body.alarm.id}`, {
     method: 'PATCH',

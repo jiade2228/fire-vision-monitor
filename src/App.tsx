@@ -602,7 +602,7 @@ export default function App() {
     (id: string) =>
       withAlarmLock(id, async () => {
         try {
-          await patchAlarm(id, { status: 'archived' });
+          await patchAlarm(id, { status: 'closed' });
           showToast('处置完成，告警已归档至处置记录', 'ok');
         } catch (error) {
           showToast(

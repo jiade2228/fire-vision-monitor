@@ -16,7 +16,11 @@ export type CameraSource =
 
 export type AlarmLevel = 'fire' | 'smoke' | 'offline' | 'camera_abnormal';
 export type DetectionSensitivity = 'low' | 'standard' | 'high';
-export type AlarmStatus = 'pending' | 'confirmed' | 'false' | 'archived';
+/**
+ * 告警状态：对外契约为 pending / confirmed / closed；
+ * false（误报）与 archived 为历史/兼容值，服务端已统一输出 closed。
+ */
+export type AlarmStatus = 'pending' | 'confirmed' | 'false' | 'archived' | 'closed';
 export type CameraStatus = 'normal' | 'smoke' | 'fire';
 export type ViewKey = 'monitor' | 'alarms' | 'records';
 export type AlarmFilter = 'all' | 'pending' | 'active' | 'closed';

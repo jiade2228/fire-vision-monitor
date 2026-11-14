@@ -9,7 +9,7 @@ interface Props {
 
 export default function RecordsView({ alarms }: Props) {
   const closed = alarms
-    .filter((a) => a.status === 'false' || a.status === 'archived')
+    .filter((a) => a.status === 'false' || a.status === 'archived' || a.status === 'closed')
     .sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0));
 
   const confirmed = alarms.filter((a) => a.confirmedAt !== undefined);
@@ -39,7 +39,9 @@ export default function RecordsView({ alarms }: Props) {
       <div className="record-stats">
         <div className="record-stat">
           <span>已归档</span>
-          <strong>{alarms.filter((a) => a.status === 'archived').length}</strong>
+          <strong>
+            {alarms.filter((a) => a.status === 'archived' || a.status === 'closed').length}
+          </strong>
         </div>
         <div className="record-stat">
           <span>判定误报</span>

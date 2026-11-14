@@ -74,7 +74,9 @@ export default function AlarmCenter({
       all: alarms.length,
       pending: alarms.filter((a) => a.status === 'pending').length,
       active: alarms.filter((a) => a.status === 'confirmed').length,
-      closed: alarms.filter((a) => a.status === 'false' || a.status === 'archived').length,
+      closed: alarms.filter(
+        (a) => a.status === 'false' || a.status === 'archived' || a.status === 'closed',
+      ).length,
     };
   }, [alarms, statusCounts]);
 

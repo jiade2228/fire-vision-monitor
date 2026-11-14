@@ -312,7 +312,14 @@ export function useAlarms() {
       const { status, level } = filtersRef.current;
       if (status === 'pending' && alarm.status !== 'pending') return;
       if (status === 'active' && alarm.status !== 'confirmed') return;
-      if (status === 'closed' && alarm.status !== 'false' && alarm.status !== 'archived') return;
+      if (
+        status === 'closed' &&
+        alarm.status !== 'false' &&
+        alarm.status !== 'archived' &&
+        alarm.status !== 'closed'
+      ) {
+        return;
+      }
       if (level !== 'all' && alarm.level !== level) return;
       setAlarms((prev) => upsertAlarm(prev, alarm));
     };

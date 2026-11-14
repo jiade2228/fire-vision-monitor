@@ -11,6 +11,7 @@ export const STATUS_META: Record<AlarmStatus, { label: string; tone: string }> =
   pending: { label: '待处置', tone: 'danger' },
   confirmed: { label: '处置中', tone: 'warn' },
   false: { label: '已判误报', tone: 'muted' },
+  closed: { label: '已关闭', tone: 'ok' },
   archived: { label: '已归档', tone: 'ok' },
 };
 

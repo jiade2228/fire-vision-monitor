@@ -13,6 +13,7 @@ import {
   loadSessionSecret,
 } from './secrets.mjs';
 import { openStore, parseRoi } from './store.mjs';
+import { toPublicAlarm } from './alarm-status.mjs';
 import { StreamError, StreamManager } from './streams.mjs';
 import { ffprobeAvailable, probeStream } from './probe.mjs';
 import { EdgeHub, parseEdgeSource } from './edge-hub.mjs';
@@ -166,7 +167,9 @@ let activeStore = null;
 let sseAuthCache = { revision: -1, users: new Map() };
 
 function broadcastEvent(event, data, siteId = null) {
-  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  // SSE 与 REST 保持同一对外口径：落库 archived 在推送前统一转成 closed。
+  const outgoing = data?.alarm ? { ...data, alarm: toPublicAlarm(data.alarm) } : data;
+  const payload = `event: ${event}\ndata: ${JSON.stringify(outgoing)}\n\n`;
   // 修订号变化时整表失效（比逐用户失效更简单，也覆盖新增/删除账号）。
   if (activeStore && sseAuthCache.revision !== activeStore.authRevision) {
     sseAuthCache = { revision: activeStore.authRevision, users: new Map() };

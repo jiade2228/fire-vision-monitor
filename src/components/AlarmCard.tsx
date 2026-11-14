@@ -267,7 +267,9 @@ function AlarmCard({ alarm, expanded, handlers, readOnly = false }: Props) {
             </>
           ))}
 
-          {(alarm.status === 'false' || alarm.status === 'archived') && (
+          {(alarm.status === 'false' ||
+            alarm.status === 'archived' ||
+            alarm.status === 'closed') && (
             <p className="alarm-closed">
               {alarm.status === 'false'
                 ? isDeviceHealth
