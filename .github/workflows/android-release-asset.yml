@@ -1,21 +1,29 @@
 name: Attach Debug APK to Release
 
-# 只把调试版 APK 作为资产追加到「已存在」的 Release：
-# - 不新建 tag、不新建 Release、不改 Release 说明；
+# 只把调试版 APK 作为资产追加到「已存在且已发布」的 Release：
+# - 不新建 tag、不新建 Release、不改 Release 说明、不动其它 tag；
 # - 鉴权只用仓库内置 GITHUB_TOKEN（permissions: contents: write），不引入任何 secret。
-# 触发方式：
-#   1) Actions 页面手动 Run workflow（可填目标 tag，默认 v1.2.7）；
-#   2) 修改本文件并推送时自检一次（便于无 token 环境下验证）。
+#
+# 触发方式与目标 tag 推导：
+#   1) tag push（v*）：目标 tag = github.ref_name，即当前推送的 tag；
+#   2) Actions 页面手动 Run workflow：目标 tag = 输入参数；
+#      输入留空时取当前 ref 对应的 tag（分支 ref 没有 tag，会直接失败）。
+# 任何情况下都不使用写死的版本号：取不到有效 tag 就失败退出。
+#
+# 自我防护（v1.2.9 教训：曾把新 APK 误挂到 v1.2.7）：
+#   - 目标 tag 必须形如 vX.Y.Z；
+#   - tag 版本必须与 package.json、android/app/build.gradle 的 versionName 一致；
+#   - Release 必须已存在且不是 draft（draft 拒挂）；
+#   - 资产名按 tag 版本生成（flamevision-<version>-debug.apk），只覆盖同名资产。
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '目标 Release tag（必须已存在，不会新建）'
-        required: true
-        default: 'v1.2.7'
+        description: '目标 Release tag（留空则取当前 ref 对应的 tag）'
+        required: false
+        type: string
   push:
-    paths:
-      - '.github/workflows/android-release-asset.yml'
+    tags: ['v*']
 
 permissions:
   contents: write
@@ -24,8 +32,6 @@ jobs:
   attach-apk:
     name: 构建并追加 debug APK
     runs-on: ubuntu-latest
-    env:
-      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || 'v1.2.7' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -50,42 +56,88 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: 探测目标 Release 是否存在（不新建）
-        id: probe
+      # 目标 tag：dispatch 输入优先；否则必须是 tag 推送的 ref_name。
+      # 不做任何版本回退，避免“推新 tag 却挂到旧 Release”。
+      - name: 解析目标 tag 并校验版本一致
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          TAG=""
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && -n "${INPUT_TAG:-}" ]]; then
+            TAG="$INPUT_TAG"
+          elif [[ "$REF_TYPE" == "tag" ]]; then
+            TAG="$REF_NAME"
+          fi
+          if [[ -z "$TAG" ]]; then
+            echo "::error::无法确定目标 tag（dispatch 未填输入且当前 ref 不是 tag），拒绝继续"
+            exit 1
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::非法 tag 格式：$TAG（要求 vX.Y.Z）"
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          GRADLE_VERSION="$(grep -oP 'versionName\s+"\K[^"]+' android/app/build.gradle | head -1)"
+          echo "目标 tag：$TAG；package.json=$PKG_VERSION；build.gradle versionName=$GRADLE_VERSION"
+          if [[ "$PKG_VERSION" != "$VERSION" ]]; then
+            echo "::error::tag 版本($VERSION) 与 package.json($PKG_VERSION) 不一致，拒绝上传"
+            exit 1
+          fi
+          if [[ "$GRADLE_VERSION" != "$VERSION" ]]; then
+            echo "::error::tag 版本($VERSION) 与 APK versionName($GRADLE_VERSION) 不一致，拒绝上传"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # tag push 时 Release 工作流与本书并行，Release 可能尚未创建：
+      # 最多轮询 10 分钟，出现后要求 published（draft 直接失败）。
+      - name: 校验目标 Release 存在且已发布
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
         run: |
           set -euo pipefail
           echo "目标 tag：$TAG"
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Release $TAG 尚未创建，本次只验证 APK 构建"
-          fi
-
-      - name: 手动触发时要求 Release 必须存在
-        if: github.event_name == 'workflow_dispatch' && steps.probe.outputs.exists != 'true'
-        run: |
-          echo "::error::Release $TAG 不存在；本工作流只追加资产，不新建 Release"
+          for attempt in $(seq 1 40); do
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft > /tmp/release.json 2>/dev/null; then
+              DRAFT="$(node -e "console.log(require('/tmp/release.json').isDraft)")"
+              if [[ "$DRAFT" != "false" ]]; then
+                echo "::error::Release $TAG 仍是 draft，拒绝挂载"
+                exit 1
+              fi
+              echo "Release $TAG 已存在且已发布"
+              exit 0
+            fi
+            echo "第 $attempt 次：Release $TAG 尚未出现，15s 后重试…"
+            sleep 15
+          done
+          echo "::error::Release $TAG 在 10 分钟内未出现；本工作流只追加资产，不新建 Release"
           exit 1
 
-      - name: 追加 APK 资产
-        if: steps.probe.outputs.exists == 'true'
+      - name: 追加 APK 资产（同名覆盖）
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+          VERSION: ${{ steps.resolve.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${TAG#v}"
           ASSET="flamevision-${VERSION}-debug.apk"
           cp android/app/build/outputs/apk/debug/app-debug.apk "$ASSET"
           ls -l "$ASSET"
+          # 只做资产级 upload --clobber：同名替换，不新建 Release、不改说明、不动其它 tag。
           gh release upload "$TAG" "$ASSET" --repo "$GITHUB_REPOSITORY" --clobber
 
       - name: 回显 Release 资产清单
-        if: steps.probe.outputs.exists == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
         run: |
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
             --json assets --jq '.assets[] | "\(.name)\t\(.size) bytes\t\(.url)"'
