@@ -37,6 +37,12 @@ jobs:
         with:
           node-version: 22
 
+      - name: 安装 FFmpeg（发行版自带版本，用于覆盖版本边界）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -hide_banner -version | head -1
+
       - name: 记录 FFmpeg 版本与 RTSP 超时选项清单
         run: |
           set -euo pipefail
