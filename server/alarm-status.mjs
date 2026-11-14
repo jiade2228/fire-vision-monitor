@@ -41,6 +41,39 @@ export function missingCloseChecklistFields(steps) {
   return CLOSE_CHECKLIST_FIELDS.filter((_, index) => list[index] !== true);
 }
 
+/**
+ * 设备健康告警 / 误报归档所需的单项确认。
+ *
+ * 这两类告警在语义上不适用火情四步，只要求一个「已到现场确认」；
+ * 复用 `steps_json` 的第 5 位（下标 4）存储，避免新增数据库列。
+ */
+export const CLOSE_CONFIRM_STEP_INDEX = 4;
+export const CLOSE_CONFIRM_FIELD = 'close_confirmed';
+
+/**
+ * 计算关闭告警前缺失的处置项。
+ *
+ * @param {{status?: string, level?: string, steps?: unknown}} alarm 告警对象。
+ * @returns {{error: string, missing: string[]}|null} null 表示允许关闭。
+ */
+export function closeAlarmBlock(alarm) {
+  if (!alarm) return null;
+  if (alarm.status === 'confirmed' && (alarm.level === 'fire' || alarm.level === 'smoke')) {
+    const missing = missingCloseChecklistFields(alarm.steps);
+    return missing.length
+      ? { error: '应急处置清单未完成，无法关闭告警', missing }
+      : null;
+  }
+  // 设备健康告警（offline / camera_abnormal）归档，以及误报 false → archived。
+  if (alarm.status === 'confirmed' || alarm.status === 'false') {
+    const steps = Array.isArray(alarm.steps) ? alarm.steps : [];
+    return steps[CLOSE_CONFIRM_STEP_INDEX] === true
+      ? null
+      : { error: '处置确认未完成，无法关闭告警', missing: [CLOSE_CONFIRM_FIELD] };
+  }
+  return null;
+}
+
 const TO_INTERNAL = {
   pending: 'pending',
   confirmed: 'confirmed',

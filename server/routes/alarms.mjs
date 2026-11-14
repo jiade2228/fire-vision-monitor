@@ -6,7 +6,7 @@ import { CAPABILITIES, resolveCapabilityGuard } from '../auth/roles.mjs';
 import { SHANGHAI_OFFSET_MS } from '../time.mjs';
 import {
   PUBLIC_ALARM_STATUSES,
-  missingCloseChecklistFields,
+  closeAlarmBlock,
   toInternalAlarmStatus,
   toPublicAlarm,
 } from '../alarm-status.mjs';
@@ -27,11 +27,6 @@ import {
 const ALARM_STATUS_FILTERS = new Set(PUBLIC_ALARM_STATUSES);
 /** 允许的等级筛选值（all 表示不限）。 */
 const ALARM_LEVEL_FILTERS = new Set(['all', 'fire', 'smoke', 'camera_abnormal']);
-/**
- * 适用四步应急处置清单的等级。
- * 设备健康类告警（offline / camera_abnormal）界面不展示清单，恢复后可直接归档。
- */
-const CLOSE_CHECKLIST_LEVELS = new Set(['fire', 'smoke']);
 
 export function registerAlarmRoutes(app, deps) {
   const {
@@ -384,20 +379,12 @@ export function registerAlarmRoutes(app, deps) {
         if (!transitions[alarm.status]?.includes(target)) {
           return res.status(409).json({ error: '当前告警状态不允许此操作' });
         }
-        // 服务端前置校验（与前端禁用态对齐）：火情/烟雾告警从 confirmed 关闭时，
-        // 必须完成四步应急处置清单，避免绕过界面直接 PATCH 关闭。
-        if (
-          target === 'archived' &&
-          alarm.status === 'confirmed' &&
-          CLOSE_CHECKLIST_LEVELS.has(alarm.level)
-        ) {
-          const missing = missingCloseChecklistFields(alarm.steps);
-          if (missing.length) {
-            return res.status(409).json({
-              error: '应急处置清单未完成，无法关闭告警',
-              missing,
-            });
-          }
+        // 服务端前置校验（与前端禁用态对齐）：
+        // - 火情/烟雾从 confirmed 关闭需完成四步清单；
+        // - 设备健康告警归档与误报 false → archived 需完成单项确认。
+        if (target === 'archived') {
+          const block = closeAlarmBlock(alarm);
+          if (block) return res.status(409).json(block);
         }
         changes.status = target;
         const timestamp = Date.now();
@@ -423,8 +410,9 @@ export function registerAlarmRoutes(app, deps) {
         }
         const effectiveStatus =
           req.body.status !== undefined ? toInternalAlarmStatus(req.body.status) : alarm.status;
-        if (effectiveStatus !== 'confirmed') {
-          return res.status(409).json({ error: '只有已确认告警可以更新处置步骤' });
+        // 误报告警归档前需要写入单项确认，故 false 也允许更新 steps。
+        if (effectiveStatus !== 'confirmed' && effectiveStatus !== 'false') {
+          return res.status(409).json({ error: '只有已确认或误报告警可以更新处置步骤' });
         }
         changes.steps = req.body.steps;
         events.push({

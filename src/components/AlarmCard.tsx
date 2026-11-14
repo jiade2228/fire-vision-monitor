@@ -1,6 +1,7 @@
 import { memo, useEffect, useState } from 'react';
 import type { Alarm, AlarmHandlers } from '../types';
 import {
+  CLOSE_CONFIRM_STEP_INDEX,
   EMERGENCY_STEPS,
   confidenceTone,
   getLevelMeta,
@@ -18,6 +19,7 @@ interface Props {
 function AlarmCard({ alarm, expanded, handlers, readOnly = false }: Props) {
   const total = alarm.steps.length;
   const done = alarm.steps.filter(Boolean).length;
+  const closeConfirmed = Boolean(alarm.steps[CLOSE_CONFIRM_STEP_INDEX]);
   const statusMeta = getStatusMeta(alarm.status);
   const levelMeta = getLevelMeta(alarm.level);
   const isDeviceHealth = alarm.level === 'offline' || alarm.level === 'camera_abnormal';
@@ -211,11 +213,39 @@ function AlarmCard({ alarm, expanded, handlers, readOnly = false }: Props) {
               {readOnly ? (
                 <p className="alarm-readonly">只读账号不可修改告警状态。</p>
               ) : (
-                <div className="alarm-actions">
-                  <button type="button" className="btn btn-ok" onClick={() => handlers.onArchive(alarm.id)}>
-                    设备已恢复，归档
-                  </button>
-                </div>
+                <>
+                  <ul className="checklist">
+                    <li>
+                      <button
+                        type="button"
+                        className={`step ${closeConfirmed ? 'is-done' : ''}`}
+                        onClick={() => handlers.onToggleStep(alarm.id, CLOSE_CONFIRM_STEP_INDEX)}
+                      >
+                        <span className="step-box" aria-hidden="true">
+                          {closeConfirmed ? '✓' : 1}
+                        </span>
+                        <span className="step-text">
+                          {alarm.level === 'camera_abnormal'
+                            ? '已到现场确认画面异常已处理（遮挡/光照/镜头）'
+                            : '已到现场确认设备状态，供电与网络已恢复'}
+                        </span>
+                      </button>
+                    </li>
+                  </ul>
+                  <div className="alarm-actions">
+                    <button
+                      type="button"
+                      className="btn btn-ok"
+                      onClick={() => handlers.onArchive(alarm.id)}
+                      disabled={!closeConfirmed}
+                    >
+                      设备已恢复，归档
+                    </button>
+                    {!closeConfirmed && (
+                      <span className="action-hint">勾选确认后可归档</span>
+                    )}
+                  </div>
+                </>
               )}
             </>
           ) : (

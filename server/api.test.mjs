@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 import { getFreePort } from './test-port.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -330,6 +331,94 @@ test('API auth, roles, alarms, audit and backup', async (t) => {
   });
   assert.equal(aliasArchive.status, 200);
   assert.equal(aliasArchive.body.alarm.status, 'closed');
+
+  // 误报 false → archived 的清理路径同样要求单项确认。
+  const thirdAlarm = await request('/api/alarms', {
+    method: 'POST',
+    cookie: operatorCookie,
+    body: alarmPayload,
+  });
+  assert.equal(thirdAlarm.status, 201);
+  const thirdId = thirdAlarm.body.alarm.id;
+  const markedFalse = await request(`/api/alarms/${thirdId}`, {
+    method: 'PATCH',
+    cookie: adminCookie,
+    body: { status: 'false' },
+  });
+  assert.equal(markedFalse.status, 200);
+  assert.equal(markedFalse.body.alarm.status, 'false');
+
+  const blockedFalseArchive = await request(`/api/alarms/${thirdId}`, {
+    method: 'PATCH',
+    cookie: adminCookie,
+    body: { status: 'archived' },
+  });
+  assert.equal(blockedFalseArchive.status, 409);
+  assert.deepEqual(blockedFalseArchive.body.missing, ['close_confirmed']);
+
+  const falseConfirm = await request(`/api/alarms/${thirdId}`, {
+    method: 'PATCH',
+    cookie: adminCookie,
+    body: { steps: [false, false, false, false, true] },
+  });
+  assert.equal(falseConfirm.status, 200);
+  assert.equal(falseConfirm.body.alarm.steps[4], true);
+
+  const falseArchive = await request(`/api/alarms/${thirdId}`, {
+    method: 'PATCH',
+    cookie: adminCookie,
+    body: { status: 'archived' },
+  });
+  assert.equal(falseArchive.status, 200);
+  assert.equal(falseArchive.body.alarm.status, 'closed');
+
+  // 设备健康告警（接口不开放创建，直接落一条 confirmed 的 offline 告警）。
+  const rawDb = new DatabaseSync(path.join(dataDir, 'app.db'));
+  rawDb.exec('PRAGMA busy_timeout = 5000');
+  const seededAt = Date.now();
+  rawDb
+    .prepare(
+      `INSERT INTO alarms
+       (id, camera_id, camera_name, zone, site_id, level, confidence, hotspot_x, hotspot_y,
+        snapshot_file, clip_file, status, note, steps_json, created_at, updated_at,
+        confirmed_at, false_at, archived_at, created_by, updated_by)
+       VALUES (?, ?, ?, ?, ?, 'offline', 0, 50, 50, NULL, NULL, 'confirmed', '',
+               '[false,false,false,false]', ?, ?, ?, NULL, NULL, NULL, NULL)`,
+    )
+    .run(
+      'device-health-alarm',
+      camera.body.camera.id,
+      camera.body.camera.name,
+      camera.body.camera.zone,
+      defaultSiteId,
+      seededAt,
+      seededAt,
+      seededAt,
+    );
+  rawDb.close();
+
+  const deviceBlocked = await request('/api/alarms/device-health-alarm', {
+    method: 'PATCH',
+    cookie: adminCookie,
+    body: { status: 'closed' },
+  });
+  assert.equal(deviceBlocked.status, 409);
+  assert.deepEqual(deviceBlocked.body.missing, ['close_confirmed']);
+
+  const deviceConfirm = await request('/api/alarms/device-health-alarm', {
+    method: 'PATCH',
+    cookie: adminCookie,
+    body: { steps: [false, false, false, false, true] },
+  });
+  assert.equal(deviceConfirm.status, 200);
+
+  const deviceArchive = await request('/api/alarms/device-health-alarm', {
+    method: 'PATCH',
+    cookie: adminCookie,
+    body: { status: 'closed' },
+  });
+  assert.equal(deviceArchive.status, 200);
+  assert.equal(deviceArchive.body.alarm.status, 'closed');
 
   const invalidTransition = await request(`/api/alarms/${createdAlarm.body.alarm.id}`, {
     method: 'PATCH',

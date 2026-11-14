@@ -7,6 +7,9 @@ export const EMERGENCY_STEPS = [
   '拨打 119 并引导消防车辆',
 ];
 
+/** 设备健康告警归档所需的单项确认在 steps 中的下标（0-3 为火情四步）。 */
+export const CLOSE_CONFIRM_STEP_INDEX = 4;
+
 export const STATUS_META: Record<AlarmStatus, { label: string; tone: string }> = {
   pending: { label: '待处置', tone: 'danger' },
   confirmed: { label: '处置中', tone: 'warn' },

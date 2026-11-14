@@ -584,10 +584,14 @@ export default function App() {
       withAlarmLock(id, async () => {
         const alarm = alarms.find((item) => item.id === id);
         if (!alarm) return;
+        // 设备健康告警的单项确认位于下标 4，旧数据可能只有 4 项，需要补齐后再翻转。
+        const steps = alarm.steps.length
+          ? [...alarm.steps]
+          : EMERGENCY_STEPS.map(() => false);
+        while (steps.length <= index) steps.push(false);
+        steps[index] = !steps[index];
         try {
-          await patchAlarm(id, {
-            steps: alarm.steps.map((done, i) => (i === index ? !done : done)),
-          });
+          await patchAlarm(id, { steps });
         } catch (error) {
           showToast(
             error instanceof Error ? error.message : '更新处置步骤失败',
