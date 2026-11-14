@@ -184,6 +184,12 @@
   color: var(--text-strong);
   border-color: var(--flame);
 }
+/* 计数徽章：深色主题下是浅字压深底，浅色主题下若沿用 rgba(6,12,20,0.6) 会合成出
+   中灰底 + 深色字，实测仅 2.88:1（v1.2.7 验收 BUG-3）。这里改成 8% 文本色浅底，
+   文字继续继承 chip 的深色，对比度约 11.9:1（非激活）/13.6:1（激活）。 */
+:root[data-theme='light'] .chip-count {
+  background: rgba(23, 36, 58, 0.08);
+}
 :root[data-theme='light'] .sound-toggle,
 :root[data-theme='light'] .wake-toggle {
   background: var(--panel-2);
