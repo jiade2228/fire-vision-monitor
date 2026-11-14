@@ -7,8 +7,8 @@
 | 项 | 值 |
 |---|---|
 | 应用 ID | `com.flamevision.monitor` |
-| versionName | `1.2.7` |
-| versionCode | `10207`（`major*10000 + minor*100 + patch`） |
+| versionName | `1.2.8` |
+| versionCode | `10208`（`major*10000 + minor*100 + patch`） |
 | minSdk | 24（Android 7.0） |
 | compileSdk / targetSdk | 35 |
 
