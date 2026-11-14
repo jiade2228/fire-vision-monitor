@@ -29,6 +29,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zipDirectory } from './zip.mjs';
+import { assertArtifactComplete } from './verify-artifacts.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..', '..');
@@ -342,6 +343,17 @@ async function main() {
       log('ok', `压缩包：${zipPath} (${(result.bytes / 1048576).toFixed(1)} MB, ${result.files} 个文件, ${((Date.now() - startedAt) / 1000).toFixed(1)}s)`);
     } catch (error) {
       log('warn', `压缩失败（可手动压缩目录）：${error.message}`);
+    }
+    // 内容闸门：压缩成功也不代表内容完整（v1.2.6 的坏包就是"构建成功"）。
+    // Linux 包必须含四项必备文件且 program/node 可执行；不通过就删掉坏包并失败。
+    if (platform !== 'win32' && fs.existsSync(zipPath)) {
+      try {
+        const checked = assertArtifactComplete(zipPath);
+        log('ok', `压缩包内容校验通过（${checked.total} 条目，四项必备文件齐全，node 可执行）`);
+      } catch (error) {
+        await fsp.rm(zipPath, { force: true });
+        throw new Error(`压缩包内容闸门未通过（已删除坏包）：${error.message}`);
+      }
     }
   }
 

@@ -19,6 +19,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { assertArtifactComplete } from './verify-artifacts.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..', '..');
@@ -158,27 +159,35 @@ function assertBundleComplete(bundleDir) {
   if (missing.length) {
     throw new Error(`便携包不完整，缺少：${missing.join('、')}（请先重新构建 portable 包）`);
   }
+  // POSIX 上 node 必须带执行位；Windows 的 NTFS 没有 Unix 执行位语义，跳过。
+  if (process.platform !== 'win32') {
+    const nodePath = path.join(bundleDir, 'program/node');
+    if ((fs.statSync(nodePath).mode & 0o111) === 0) {
+      throw new Error('便携包不完整：program/node 缺少可执行位（请重新构建 portable 包）');
+    }
+  }
 }
 
 /**
- * 打包后校验安装包内容。工具缺失时只告警不失败（Windows 本机通常没有 dpkg-deb/rpm）。
+ * 打包后校验安装包内容。
+ *
+ * v1.2.8 起改为直接解析归档结构（见 verify-artifacts.mjs），不再依赖
+ * dpkg-deb / rpm 是否存在：工具缺失时旧实现只告警并跳过，等于闸门形同虚设。
+ * 现在任一必备文件缺失或 node 无执行位都会抛错，中止打包。
+ *
+ * @param {string} file 产物路径。
+ * @param {string} format deb / rpm。
  */
 function verifyLinuxPackage(file, format) {
-  const tool = format === 'deb' ? 'dpkg-deb' : 'rpm';
-  const args = format === 'deb' ? ['-c', file] : ['-qpl', file];
-  const result = spawnSync(tool, args, { encoding: 'utf8' });
-  if (result.error || result.status !== 0) {
-    log('warn', `未找到 ${tool}，跳过 ${format} 内容校验（请在 Linux 环境复核）`);
-    return;
+  let result;
+  try {
+    result = assertArtifactComplete(file);
+  } catch (error) {
+    // 不留坏包：校验失败立即删除产物，避免被误上传。
+    fs.rmSync(file, { force: true });
+    throw error;
   }
-  const listing = String(result.stdout);
-  const missing = ['program/server/boot.mjs', 'program/dist/index.html', 'program/node'].filter(
-    (rel) => !listing.includes(rel),
-  );
-  if (missing.length) {
-    throw new Error(`${format} 缺少应用文件：${missing.join('、')}`);
-  }
-  log('ok', `${format} 内容校验通过（program/server、program/dist、program/node 均在包内）`);
+  log('ok', `${format} 内容校验通过（${result.total} 条目，四项必备文件齐全，node 可执行）`);
 }
 
 async function buildLinux(bundleDir) {

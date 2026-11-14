@@ -57,6 +57,16 @@ jobs:
       - name: 打包 deb / rpm
         run: node scripts/package/installer.mjs --target linux --skip-bundle --out dist-packages
 
+      # 包内容闸门：与本地 `npm run verify:artifacts` 同一套代码。
+      # zip/deb/rpm 任一缺少四项必备文件或 program/node 无执行位，本步失败，
+      # 后续上传不会执行，避免把坏包发到 Release（v1.2.6 教训）。
+      - name: 校验 zip / deb / rpm 内容闸门
+        run: |
+          node scripts/package/verify-artifacts.mjs \
+            dist-packages/fire-vision-*-linux-x64.zip \
+            dist-packages/fire-vision_*_x64.deb \
+            dist-packages/fire-vision_*_x64.rpm
+
       - name: 上传到 Release
         if: github.event_name == 'push' || inputs.upload_tag != ''
         env:
