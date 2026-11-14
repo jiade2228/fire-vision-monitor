@@ -127,7 +127,8 @@ jobs:
             -X POST "http://127.0.0.1:4173/api/cameras/$CAM/test")
           wait $SAMPLER || true
           echo "probe_http=$CODE" | tee -a out/results.txt
-          cat out/probe-response.json | tee -a out/results.txt; echo
+          cat out/probe-response.json | tee -a out/results.txt
+          printf '\n' | tee -a out/results.txt >/dev/null
 
       - name: 路径 b：播放 HLS
         run: |
@@ -154,13 +155,14 @@ jobs:
           set -euo pipefail
           curl -s -b cj.txt -H 'X-Requested-With: flame-vision' \
             http://127.0.0.1:4173/api/recordings/status | tee out/recordings-status-before.json; echo
-          sleep 95
+          sleep 100
           ( for i in $(seq 1 20); do
               ps -eo args | grep -E '(ffmpeg|ffprobe) ' | grep -F 'rtsp://127.0.0.1:8554/fire' >> out/cmd-recording.txt || true
               sleep 0.1
             done )
-          N=$(find data-ci/recordings -name '*.ts' 2>/dev/null | wc -l)
-          find data-ci/recordings -name '*.ts' 2>/dev/null | head -5 | tee out/recording-segments.txt
+          # 持续录像落在 data/continuous/<cameraId>/<UTC日>/<HHmmss>.ts
+          N=$(find data-ci -name '*.ts' 2>/dev/null | wc -l)
+          find data-ci -name '*.ts' 2>/dev/null | head -5 | tee out/recording-segments.txt
           echo "recording_segments=$N" | tee -a out/results.txt
           curl -s -b cj.txt -H 'X-Requested-With: flame-vision' \
             http://127.0.0.1:4173/api/recordings/status | tee out/recordings-status-after.json; echo
@@ -188,23 +190,39 @@ jobs:
                       k, v = part.split('=', 1)
                       results[k] = v
 
-          def cmd_lines(name):
+          def cmd_lines(name, requires=None, prefer=None):
               p = out / name
               if not p.exists():
                   return []
               seen, lines = set(), []
               for raw in p.read_text(errors='replace').splitlines():
                   line = raw.strip()
-                  if not line or 'rtsp://127.0.0.1:8554/fire' not in line:
+                  if 'rtsp://127.0.0.1:8554/fire' not in line:
+                      continue
+                  # 只保留服务端进程：ffprobe 直接带 URL；ffmpeg 必须有 -i <rtsp>。
+                  if line.startswith('ffprobe'):
+                      pass
+                  elif ' -i rtsp://127.0.0.1:8554/fire' not in line:
+                      continue
+                  if requires and requires not in line:
                       continue
                   if line not in seen:
                       seen.add(line)
                       lines.append(line)
+              if prefer:
+                  preferred = [l for l in lines if prefer(l)]
+                  if preferred:
+                      return preferred
               return lines
 
           paths = {}
-          for label, fname in [('probe', 'cmd-probe.txt'), ('playback', 'cmd-stream.txt'), ('recording', 'cmd-recording.txt')]:
-              lines = cmd_lines(fname)
+          specs = [
+              ('probe', 'cmd-probe.txt', None, lambda l: l.startswith('ffprobe')),
+              ('playback', 'cmd-stream.txt', '-f hls', None),
+              ('recording', 'cmd-recording.txt', '-f segment', None),
+          ]
+          for label, fname, requires, prefer in specs:
+              lines = cmd_lines(fname, requires, prefer)
               joined = '\n'.join(lines)
               paths[label] = {
                   'observed_commands': len(lines),
