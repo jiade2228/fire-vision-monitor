@@ -96,11 +96,11 @@ jobs:
           H='X-Requested-With: flame-vision'
           curl -sf -c cj.txt -H "$H" -H 'Content-Type: application/json' \
             -X POST http://127.0.0.1:4173/api/setup \
-            -d '{"username":"ci","displayName":"CI","password":"CiPassw0rd!2026"}' | tee out/setup.json
+            -d '{"username":"ciadmin","displayName":"CI","password":"CiPassw0rd!2026"}' | tee out/setup.json
           echo
           curl -sf -b cj.txt -c cj.txt -H "$H" -H 'Content-Type: application/json' \
             -X POST http://127.0.0.1:4173/api/auth/login \
-            -d '{"username":"ci","password":"CiPassw0rd!2026"}' | tee out/login.json
+            -d '{"username":"ciadmin","password":"CiPassw0rd!2026"}' | tee out/login.json
           echo
           SITE=$(curl -s -b cj.txt -H "$H" http://127.0.0.1:4173/api/sites \
             | jq -r '.defaultSiteId // .sites[0].id // .sites[0].siteId')
